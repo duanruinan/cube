@@ -1,0 +1,2 @@
+#!/bin/sh
+PKG_CONFIG_LIBDIR=${PKG_CONFIG_LIBDIR:-/home/ruinan/code/rk3399/buildroot/output/host/usr/aarch64-rockchip-linux-gnu/sysroot/usr/lib/pkgconfig:/home/ruinan/code/rk3399/buildroot/output/host/usr/aarch64-rockchip-linux-gnu/sysroot/usr/share/pkgconfig} PKG_CONFIG_SYSROOT_DIR=${PKG_CONFIG_SYSROOT_DIR:-/home/ruinan/code/rk3399/buildroot/output/host/usr/aarch64-rockchip-linux-gnu/sysroot} $(dirname $0)/pkgconf  $@

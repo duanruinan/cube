@@ -1,0 +1,18 @@
+prefix=/usr
+exec_prefix=/usr
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+sysconfdir=/etc
+localstatedir=/var
+PACKAGE=fontconfig
+confdir=${sysconfdir}/fonts
+cachedir=/var/cache/fontconfig
+
+Name: Fontconfig
+Description: Font configuration and customization library
+Version: 2.12.1
+Requires:  freetype2
+Requires.private:  expat
+Libs: -L${libdir} -lfontconfig
+Libs.private: -L/home/users/liuzhongzhi/rk3399_linux/buildroot/output/host/usr/aarch64-buildroot-linux-gnu/sysroot/usr/lib -lexpat   -L/home/users/liuzhongzhi/rk3399_linux/buildroot/output/host/usr/aarch64-buildroot-linux-gnu/sysroot/usr/lib -lfreetype    
+Cflags: -I${includedir} -I/home/users/liuzhongzhi/rk3399_linux/buildroot/output/host/usr/aarch64-buildroot-linux-gnu/sysroot/usr/include   -I/home/users/liuzhongzhi/rk3399_linux/buildroot/output/host/usr/aarch64-buildroot-linux-gnu/sysroot/usr/include/freetype2 -I/home/users/liuzhongzhi/rk3399_linux/buildroot/output/host/usr/aarch64-buildroot-linux-gnu/sysroot/usr/include    

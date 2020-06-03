@@ -1,0 +1,8 @@
+#!/bin/sh
+
+export LD_LIBRARY_PATH=$(pwd)/build/toolchain/aarch64-rockchip-linux-gnu/usr/lib
+export TOOLCHAIN_BIN=$(pwd)/build/toolchain/aarch64-rockchip-linux-gnu/usr/bin
+export TOOLCHAIN_SYSROOT=$(pwd)/build/toolchain/aarch64-rockchip-linux-gnu/usr/aarch64-rockchip-linux-gnu/sysroot
+
+make -C build RPATH=`pwd` PLATFORM=ROCKCHIP
+

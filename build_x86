@@ -1,0 +1,7 @@
+#!/bin/sh
+
+export TOOLCHAIN_BIN=""
+export TOOLCHAIN_SYSROOT=""
+
+make -C build RPATH=`pwd` PLATFORM=X86
+

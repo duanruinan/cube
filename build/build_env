@@ -1,0 +1,16 @@
+ifeq ($(PLATFORM), ROCKCHIP)
+CC := ${TOOLCHAIN_BIN}/aarch64-rockchip-linux-gnu-gcc
+LD := ${TOOLCHAIN_BIN}/aarch64-rockchip-linux-gnu-ld
+AR := ${TOOLCHAIN_BIN}/aarch64-rockchip-linux-gnu-ar
+CFLAGS += -DPLATFORM_ROCKCHIP
+else ifeq ($(PLATFORM), X86)
+CC := gcc
+LD := ld
+AR := ar
+CFLAGS += -DPLATFORM_X86
+endif
+
+CFLAGS += -Wall
+
+CFLAGS += -g
+
