@@ -1,0 +1,11 @@
+tags
+cscope*
+*.swp
+*.so
+*.o
+cube_manager
+cube
+test_kms
+detect_drm
+cube_log
+
