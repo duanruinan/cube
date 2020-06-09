@@ -10,7 +10,7 @@
 #include <unistd.h>
 #include <xf86drmMode.h>
 #include <xf86drm.h>
-#include "cube_utils.h"
+#include <cube_utils.h>
 
 struct drm_dev {
 	s32 fd;
@@ -235,29 +235,6 @@ struct dma_buf *dma_buf_create(s32 fd, u32 width, u32 height, u32 color)
 	printf("fb_id = %u\n", buffer->fb_id);
 
 	return buffer;
-}
-
-static void page_flip_handler(s32 fd, u32 crtc_id, u32 frame, u32 sec, u32 usec,
-			      void *data)
-{
-	struct timespec now;
-
-	clock_gettime(CLOCK_MONOTONIC, &now);
-	printf("%s(): [%ld, %ld] crtc_id: %u frame: %u sec: %u usec: %u\n",
-			__func__, now.tv_sec, now.tv_nsec,
-			crtc_id, frame, sec, usec);
-}
-
-static s32 drm_event_proc(s32 fd, u32 mask, void *data)
-{
-	drmEventContext ctx;
-
-	memset(&ctx, 0, sizeof(ctx));
-	ctx.version = 3;
-	ctx.page_flip_handler2 = page_flip_handler;
-	ctx.vblank_handler = NULL;
-	drmHandleEvent(fd, &ctx);
-	return 0;
 }
 
 s32 main(s32 argc, char **argv)
