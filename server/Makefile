@@ -34,7 +34,8 @@ drm.o: drm.c cube_scanout.h cube_compositor.h
 	$(CC) -c $< $(CFLAGS) -I${TOOLCHAIN_SYSROOT}/usr/include/libdrm -o $@
 
 test_drm: test_drm.o
-	$(CC) $^ -L$(RPATH)/utils -L$(RPATH)/server -lcube_scanout_drm -o $@
+	$(CC) $^ -L$(RPATH)/utils -L$(RPATH)/server -lcube_scanout_drm \
+		-lcube_utils -o $@
 
 test_drm.o: test_drm.c $(CUBE_UTILS_H)
 	$(CC) -c $< $(CFLAGS) -I${TOOLCHAIN_SYSROOT}/usr/include/libdrm -o $@

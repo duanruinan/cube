@@ -84,6 +84,8 @@ struct cb_buffer_info {
 	u32 strides[4];
 	u32 offsets[4];
 	s32 fd[4];
+	size_t sizes[4];
+	void *maps[4];
 	s32 planes;
 };
 

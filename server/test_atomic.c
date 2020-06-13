@@ -355,6 +355,8 @@ s32 main(s32 argc, char **argv)
 	sleep(1);
 	printf("#");
 	fflush(stdout);
+
+	sleep(60);
 	
 out:
 	for (i = 0; i < 3; i++) {
