@@ -829,27 +829,6 @@ static void drm_fb_ref(struct drm_fb *fb)
 		fb->ref_cnt++;
 }
 
-#if 0
-static void drm_fb_release_buffer(struct drm_fb *fb)
-{
-	struct drm_gem_close req;
-	struct drm_scanout *dev = fb->dev;
-
-	drm_debug("release buffer");
-	if (fb && fb->handles[0]) {
-		drm_debug("close GEM");
-		memset(&req, 0, sizeof(req));
-		req.handle = fb->handles[0];
-		drmIoctl(dev->fd, DRM_IOCTL_GEM_CLOSE, &req);
-	}
-
-	if (fb) {
-		if (fb->fb_id)
-			drmModeRmFB(dev->fd, fb->fb_id);
-		free(fb);
-	}
-}
-#else
 static void drm_fb_release_buffer(struct drm_fb *fb)
 {
 	struct drm_scanout *dev = fb->dev;
@@ -866,7 +845,6 @@ static void drm_fb_release_buffer(struct drm_fb *fb)
 		free(fb);
 	}
 }
-#endif
 
 static void drm_fb_unref(struct drm_fb *fb)
 {
@@ -1707,86 +1685,6 @@ err:
 	return NULL;
 }
 
-#if 0
-static struct cb_buffer *drm_scanout_import_buffer(struct scanout *so,
-						   struct cb_buffer_info *info)
-{
-	struct drm_fb *fb = NULL;
-	struct drm_scanout *dev = to_dev(so);
-	s32 ret;
-	struct drm_gem_close req;
-
-	if (!so || !info)
-		return NULL;
-
-	fb = calloc(1, sizeof(*fb));
-	if (!fb)
-		goto err;
-
-	fb->base.info = *info;
-	cb_signal_init(&fb->base.destroy_signal);
-
-	switch (info->pix_fmt) {
-	case CB_PIX_FMT_XRGB8888:
-		fb->fourcc = DRM_FORMAT_XRGB8888;
-		break;
-	case CB_PIX_FMT_ARGB8888:
-		fb->fourcc = DRM_FORMAT_ARGB8888;
-		break;
-	case CB_PIX_FMT_NV12:
-		fb->fourcc = DRM_FORMAT_NV12;
-		break;
-	case CB_PIX_FMT_NV16:
-		fb->fourcc = DRM_FORMAT_NV16;
-		break;
-	case CB_PIX_FMT_NV24:
-		fb->fourcc = DRM_FORMAT_NV24;
-		break;
-	case CB_PIX_FMT_RGB888:
-	case CB_PIX_FMT_RGB565:
-	case CB_PIX_FMT_YUYV:
-	case CB_PIX_FMT_YUV420:
-	case CB_PIX_FMT_YUV422:
-	case CB_PIX_FMT_YUV444:
-	default:
-		drm_err("unsupported format.");
-		goto err;
-	}
-
-	ret = drmPrimeFDToHandle(dev->fd, info->fd[0], &fb->handles[0]);
-	if (ret) {
-		drm_err("failed to import fd from external buffer. (%s)",
-			strerror(errno));
-		goto err;
-	}
-
-	ret = drmModeAddFB2(dev->fd, info->width, info->height, fb->fourcc,
-			    fb->handles, fb->base.info.strides,
-			    fb->base.info.offsets, &fb->fb_id, 0);
-	if (ret) {
-		drm_err("failed to create drm FB2. (%s)", strerror(errno));
-		goto err;
-	}
-
-	fb->dev = dev;
-
-	fb->ref_cnt = 1;
-
-	return &fb->base;
-
-err:
-	if (fb && fb->handles[0]) {
-		drm_debug("close GEM");
-		memset(&req, 0, sizeof(req));
-		req.handle = fb->handles[0];
-		drmIoctl(dev->fd, DRM_IOCTL_GEM_CLOSE, &req);
-	}
-
-	if (fb)
-		free(fb);
-	return NULL;
-}
-#else
 static struct cb_buffer *drm_scanout_import_buffer(struct scanout *so,
 						   struct cb_buffer_info *info)
 {
@@ -1873,7 +1771,6 @@ err:
 		free(fb);
 	return NULL;
 }
-#endif
 
 static void drm_scanout_pipeline_destroy(struct scanout *so, struct output *o)
 {
