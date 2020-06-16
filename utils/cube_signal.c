@@ -28,9 +28,30 @@ void cb_signal_init(struct cb_signal *signal)
 	INIT_LIST_HEAD(&signal->listener_list);
 }
 
+void cb_signal_fini(struct cb_signal *signal)
+{
+	struct cb_listener *l, *next_l;
+
+	list_for_each_entry_safe(l, next_l, &signal->listener_list, link) {
+		list_del(&l->link);
+	}
+}
+
 void cb_signal_add(struct cb_signal *signal, struct cb_listener *listener)
 {
 	list_add_tail(&listener->link, &signal->listener_list);
+}
+
+void cb_signal_rm(struct cb_signal *signal, struct cb_listener *listener)
+{
+	struct cb_listener *l, *next_l;
+
+	list_for_each_entry_safe(l, next_l, &signal->listener_list, link) {
+		if (l == listener) {
+			list_del(&l->link);
+			return;
+		}
+	}
 }
 
 struct cb_listener * cb_signal_get(struct cb_signal *signal,

@@ -45,11 +45,11 @@ struct cb_mode {
 	bool preferred;
 };
 
-struct buffer_commit_info {
+struct fb_info {
 	struct cb_buffer *buffer;
 	struct output *output;
 	struct plane *plane;
-	struct cb_rect *src, *dst;
+	struct cb_rect src, dst;
 	s32 zpos;
 	struct list_head link;
 };
@@ -60,12 +60,13 @@ struct scanout_commit_info {
 
 /* commit info helper functions */
 struct scanout_commit_info *scanout_commit_info_alloc(void);
-void scanout_commit_add_buffer_info(struct cb_buffer *buffer,
-				    struct output *output,
-				    struct plane *plane,
-				    struct cb_rect *src,
-				    struct cb_rect *dst,
-				    s32 zpos);
+void scanout_commit_add_fb_info(struct scanout_commit_info *commit,
+				struct cb_buffer *buffer,
+				struct output *output,
+				struct plane *plane,
+				struct cb_rect *src,
+				struct cb_rect *dst,
+				s32 zpos);
 void scanout_commit_info_free(struct scanout_commit_info *commit);
 
 /* a output represent a LCDC/CRTC */
@@ -84,16 +85,22 @@ struct output {
 	s32 (*switch_mode)(struct output *o, struct cb_mode *mode);
 
 	/* enable video output */
-	s32 (*enable)(struct output *o, struct cb_mode *mode,
-		      u32 width, u32 height);
+	s32 (*enable)(struct output *o, struct cb_mode *mode);
 
 	/* disable video output, may be because the monitor is unpluged. */
 	void (*disable)(struct output *o);
 
-	/* add callback function to get notification of the buffer
+	/* add callback function to get notification of the output
 	 * complete event.
 	 */
-	s32 (*add_bo_complete_notify)(struct output *o, struct cb_listener *l);
+	s32 (*add_output_complete_notify)(struct output *o,
+					  struct cb_listener *l);
+
+	/* add callback function to get notification of the 
+	 * page flip event.
+	 */
+	s32 (*add_output_page_flip_notify)(struct output *o,
+					   struct cb_listener *l);
 };
 
 enum dpms_state {
@@ -140,8 +147,10 @@ struct plane {
 	struct output *output;
 
 	/* input pixel format supported */
-	s32 count_fmts;
-	enum cb_pix_fmt *fmts;
+	s32 count_formats;
+	u32 *formats;
+
+	u64 zpos;
 };
 
 struct scanout {
@@ -158,14 +167,14 @@ struct scanout {
 	void (*pipeline_destroy)(struct scanout *so, struct output *o);
 
 	/* import buffer from external buffer information */
-	struct cb_buffer (*import_buffer)(struct scanout *so,
-					  struct cb_buffer_info *info);
+	struct cb_buffer *(*import_buffer)(struct scanout *so,
+					   struct cb_buffer_info *info);
 
 	void *(*scanout_data_alloc)(struct scanout *so);
 
 	s32 (*fill_scanout_data)(struct scanout *so,
 				 void *scanout_data,
-				 struct scanout_commit_info *info);
+				 struct scanout_commit_info *commit);
 
 	/* commit user settings to scanout */
 	void (*do_scanout)(struct scanout *so, void *scanout_data);

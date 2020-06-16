@@ -28,16 +28,16 @@ test_atomic.o: test_atomic.c $(CUBE_UTILS_H)
 
 libcube_scanout_drm.so: drm.o
 	$(CC) -shared -rdynamic $^ -L$(RPATH)/utils -lcube_utils \
-		-ldrm -ludev -o $@
+		-ldrm -ludev -lgbm -o $@
 
 drm.o: drm.c cube_scanout.h cube_compositor.h
 	$(CC) -c $< $(CFLAGS) -I${TOOLCHAIN_SYSROOT}/usr/include/libdrm -o $@
 
 test_drm: test_drm.o
 	$(CC) $^ -L$(RPATH)/utils -L$(RPATH)/server -lcube_scanout_drm \
-		-lcube_utils -o $@
+		-lcube_utils -ldrm -o $@
 
-test_drm.o: test_drm.c $(CUBE_UTILS_H)
+test_drm.o: test_drm.c $(CUBE_UTILS_H) cube_scanout.h
 	$(CC) -c $< $(CFLAGS) -I${TOOLCHAIN_SYSROOT}/usr/include/libdrm -o $@
 
 clean:

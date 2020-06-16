@@ -38,6 +38,11 @@ enum cb_pix_fmt {
 	CB_PIX_FMT_XRGB8888,
 
 	/**
+	 * 24-bit RGB 888 format. B [7:0]  G [15:8]  R [23:16]
+	 */
+	CB_PIX_FMT_RGB888,
+
+	/**
 	 * 16-bit RGB 565 format. B [4:0]  G [10:5]  R [15:11]
 	 */
 	CB_PIX_FMT_RGB565,
