@@ -35,6 +35,9 @@
 
 s32 cb_shm_init(struct cb_shm *shm, const char *shm_id, u32 size, s32 creator)
 {
+	if (creator)
+		shm_unlink(shm_id);
+
 	memset(shm, 0, sizeof(*shm));
 	strcpy(shm->name, shm_id);
 	shm->sz = size;
