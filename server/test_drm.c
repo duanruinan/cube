@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include <xf86drmMode.h>
 #include <xf86drm.h>
+#include <gbm.h>
 #include <cube_utils.h>
 #include <cube_event.h>
 #include <cube_scanout.h>
@@ -358,9 +359,9 @@ s32 main(s32 argc, char **argv)
 			  dev->dumb_buf[1]->info.height,
 			  dev->dumb_buf[1]->info.strides[0]);
 		output->enable(output, NULL);
-		dev->buffer[0] = dev->so->import_buffer(dev->so,
+		dev->buffer[0] = dev->so->import_dmabuf(dev->so,
 						&dev->dumb_buf[0]->info);
-		dev->buffer[1] = dev->so->import_buffer(dev->so,
+		dev->buffer[1] = dev->so->import_dmabuf(dev->so,
 						&dev->dumb_buf[1]->info);
 		dev->commit = scanout_commit_info_alloc();
 		scanout_commit_add_fb_info(dev->commit, dev->buffer[0],

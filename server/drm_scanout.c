@@ -414,9 +414,15 @@ struct drm_mode {
 	struct list_head link; /* link to output's modes */
 };
 
+enum drm_fb_type {
+	DRM_FB_TYPE_DMABUF = 0,
+	DRM_FB_GBM_SURFACE,
+};
+
 struct drm_fb {
 	struct cb_buffer base;
 	struct gbm_bo *bo;
+	enum drm_fb_type type;
 	u32 handles[4];
 	u32 fourcc;
 	s32 ref_cnt;
@@ -822,28 +828,41 @@ drm_plane_state_create(struct drm_output_state *os, struct drm_plane *plane)
 	return ps;
 }
 
+static void drm_fb_release_dmabuf(struct drm_fb *fb)
+{
+	struct drm_scanout *dev = fb->dev;
+
+	drm_debug("Release DMA-BUF.");
+	if (fb && fb->bo) {
+		drm_debug("Destroy gbm bo.");
+		gbm_bo_destroy(fb->bo);
+	}
+
+	if (fb) {
+		if (fb->fb_id) {
+			drm_debug("Remove DRM FB");
+			drmModeRmFB(dev->fd, fb->fb_id);
+		}
+		free(fb);
+	}
+}
+
+static void drm_fb_release_buffer(struct drm_fb *fb)
+{
+	switch (fb->type) {
+	case DRM_FB_TYPE_DMABUF:
+		drm_fb_release_dmabuf(fb);
+		break;
+	default:
+		break;
+	}
+}
+
 static void drm_fb_ref(struct drm_fb *fb)
 {
 	drm_debug("[REF] +");
 	if (fb)
 		fb->ref_cnt++;
-}
-
-static void drm_fb_release_buffer(struct drm_fb *fb)
-{
-	struct drm_scanout *dev = fb->dev;
-
-	drm_debug("release buffer");
-	if (fb && fb->bo) {
-		drm_debug("gbm bo destroy");
-		gbm_bo_destroy(fb->bo);
-	}
-
-	if (fb) {
-		if (fb->fb_id)
-			drmModeRmFB(dev->fd, fb->fb_id);
-		free(fb);
-	}
 }
 
 static void drm_fb_unref(struct drm_fb *fb)
@@ -1685,7 +1704,16 @@ err:
 	return NULL;
 }
 
-static struct cb_buffer *drm_scanout_import_buffer(struct scanout *so,
+static void drm_scanout_release_dmabuf(struct scanout *so,
+				       struct cb_buffer *buffer)
+{
+	struct drm_fb *fb = to_drm_fb(buffer);
+
+	drm_debug("Request to release DMA-BUF");
+	drm_fb_unref(fb);
+}
+
+static struct cb_buffer *drm_scanout_import_dmabuf(struct scanout *so,
 						   struct cb_buffer_info *info)
 {
 	struct drm_fb *fb = NULL;
@@ -1702,6 +1730,8 @@ static struct cb_buffer *drm_scanout_import_buffer(struct scanout *so,
 	fb = calloc(1, sizeof(*fb));
 	if (!fb)
 		goto err;
+
+	fb->type = DRM_FB_TYPE_DMABUF;
 
 	fb->base.info = *info;
 	cb_signal_init(&fb->base.destroy_signal);
@@ -1736,13 +1766,14 @@ static struct cb_buffer *drm_scanout_import_buffer(struct scanout *so,
 	fb->bo = gbm_bo_import(dev->gbm, GBM_BO_IMPORT_FD, &import_data,
 			       GBM_BO_USE_SCANOUT);
 	if (!fb->bo) {
-		drm_err("failed to import dma-buf by gbm. (%s)",
+		drm_err("Failed to import dma-buf by gbm. (%s)",
 			strerror(errno));
 		goto err;
 	}
 	fb->handles[0] = gbm_bo_get_handle(fb->bo).s32;
 	if (fb->handles[0] == (u32)(-1)) {
-		drm_err("failed to get dma-buf's handle.");
+		drm_err("Failed to get dma-buf's handle. (%s)",
+			strerror(errno));
 		goto err;
 	}
 
@@ -2244,7 +2275,8 @@ struct scanout *scanout_create(const char *dev_path, struct cb_event_loop *loop)
 
 	dev->base.pipeline_create = drm_scanout_pipeline_create;
 	dev->base.pipeline_destroy = drm_scanout_pipeline_destroy;
-	dev->base.import_buffer = drm_scanout_import_buffer;
+	dev->base.import_dmabuf = drm_scanout_import_dmabuf;
+	dev->base.release_dmabuf = drm_scanout_release_dmabuf;
 	dev->base.scanout_data_alloc = drm_scanout_data_alloc;
 	dev->base.do_scanout = drm_do_scanout;
 	dev->base.fill_scanout_data = drm_scanout_data_fill;
@@ -2257,59 +2289,5 @@ err:
 		dev->base.destroy(&dev->base);
 	}
 	return NULL;
-}
-
-/* commit info helper functions */
-struct scanout_commit_info *scanout_commit_info_alloc(void)
-{
-	struct scanout_commit_info *info = calloc(1, sizeof(*info));
-
-	if (!info)
-		return NULL;
-	INIT_LIST_HEAD(&info->fb_commits);
-
-	return info;
-}
-
-void scanout_commit_add_fb_info(struct scanout_commit_info *commit,
-				struct cb_buffer *buffer,
-				struct output *output,
-				struct plane *plane,
-				struct cb_rect *src,
-				struct cb_rect *dst,
-				s32 zpos)
-{
-	struct fb_info *info;
-
-	if (!commit)
-		return;
-
-	info = calloc(1, sizeof(*info));
-	if (!info)
-		return;
-
-	info->buffer = buffer;
-	info->output = output;
-	info->plane = plane;
-	info->src = *src;
-	info->dst = *dst;
-	info->zpos = zpos;
-
-	list_add_tail(&info->link, &commit->fb_commits);
-}
-
-void scanout_commit_info_free(struct scanout_commit_info *commit)
-{
-	struct fb_info *info, *next_info;
-
-	if (!commit)
-		return;
-
-	list_for_each_entry_safe(info, next_info, &commit->fb_commits, link) {
-		list_del(&info->link);
-		free(info);
-	}
-
-	free(commit);
 }
 

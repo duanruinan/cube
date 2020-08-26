@@ -60,7 +60,15 @@ struct scanout_commit_info {
 
 /* commit info helper functions */
 struct scanout_commit_info *scanout_commit_info_alloc(void);
-void scanout_commit_add_fb_info(struct scanout_commit_info *commit,
+void *scanout_commit_add_fb_info(struct scanout_commit_info *commit,
+				 struct cb_buffer *buffer,
+				 struct output *output,
+				 struct plane *plane,
+				 struct cb_rect *src,
+				 struct cb_rect *dst,
+				 s32 zpos);
+void scanout_commit_mod_fb_info(struct scanout_commit_info *commit,
+				void *fb_info,
 				struct cb_buffer *buffer,
 				struct output *output,
 				struct plane *plane,
@@ -166,9 +174,12 @@ struct scanout {
 	/* destroy pipeline */
 	void (*pipeline_destroy)(struct scanout *so, struct output *o);
 
-	/* import buffer from external buffer information */
-	struct cb_buffer *(*import_buffer)(struct scanout *so,
+	/* import buffer from external DMA-BUF fd */
+	struct cb_buffer *(*import_dmabuf)(struct scanout *so,
 					   struct cb_buffer_info *info);
+
+	/* release external DMA-BUF */
+	void (*release_dmabuf)(struct scanout *so, struct cb_buffer *buffer);
 
 	void *(*scanout_data_alloc)(struct scanout *so);
 

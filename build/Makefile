@@ -13,11 +13,11 @@ all:
 	-@cp $(RPATH)/utils/*.so $(RPATH)/out/usr/lib
 	-@cp $(RPATH)/server/*.so $(RPATH)/out/usr/lib
 	-@cp $(RPATH)/server/test_drm $(RPATH)/out/usr/bin
-	-@cp $(RPATH)/server/test_atomic $(RPATH)/out/usr/bin
 	-@cp $(RPATH)/utils/cube_log $(RPATH)/out/usr/bin
 	# -@cp $(RPATH)/server/cube $(RPATH)/out/usr/bin
 	-@cp $(RPATH)/client/cube_manager $(RPATH)/out/usr/bin
 	-@cp $(RPATH)/tools/detect_drm $(RPATH)/out/usr/bin
+	-@cp $(RPATH)/build/env.sh $(RPATH)/out
 
 clean:
 	make -C $(RPATH)/tools RPATH=$(RPATH) clean

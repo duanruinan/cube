@@ -3,7 +3,7 @@ include $(RPATH)/build/build_env
 .PHONY: all
 .PHONY: clean
 
-OBJS := test_atomic libcube_scanout_drm.so test_drm
+OBJS := test_atomic libcube_drm_scanout.so libcube_scanout_helper.so test_drm
 
 CFLAGS += -I$(RPATH)/utils
 CFLAGS += -I./
@@ -26,16 +26,22 @@ test_atomic: test_atomic.o
 test_atomic.o: test_atomic.c $(CUBE_UTILS_H)
 	$(CC) -c $< $(CFLAGS) -I${TOOLCHAIN_SYSROOT}/usr/include/libdrm -o $@
 
-libcube_scanout_drm.so: drm.o
+libcube_drm_scanout.so: drm_scanout.o
 	$(CC) -shared -rdynamic $^ -L$(RPATH)/utils -lcube_utils \
 		-ldrm -ludev -lgbm -o $@
 
-drm.o: drm.c cube_scanout.h cube_compositor.h
+drm_scanout.o: drm_scanout.c cube_scanout.h cube_compositor.h
 	$(CC) -c $< $(CFLAGS) -I${TOOLCHAIN_SYSROOT}/usr/include/libdrm -o $@
 
+libcube_scanout_helper.so: scanout_helper.o
+	$(CC) -shared -rdynamic $^ -L$(RPATH)/utils -lcube_utils -o $@
+
+scanout_helper.o: scanout_helper.c cube_scanout.h cube_compositor.h
+	$(CC) -c $< $(CFLAGS) -o $@
+
 test_drm: test_drm.o
-	$(CC) $^ -L$(RPATH)/utils -L$(RPATH)/server -lcube_scanout_drm \
-		-lcube_utils -ldrm -o $@
+	$(CC) $^ -L$(RPATH)/utils -L$(RPATH)/server -lcube_drm_scanout \
+		-lcube_scanout_helper -lcube_utils -ldrm -o $@
 
 test_drm.o: test_drm.c $(CUBE_UTILS_H) cube_scanout.h
 	$(CC) -c $< $(CFLAGS) -I${TOOLCHAIN_SYSROOT}/usr/include/libdrm -o $@
