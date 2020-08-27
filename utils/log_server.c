@@ -36,6 +36,8 @@
 
 static char short_options[] = "bhs:";
 
+#define MAX_LOG_SIZE (1 << 20)
+
 static struct option long_options[] = {
 	{"background", 0, NULL, 'b'},
 	{"help", 0, NULL, 'h'},
@@ -100,6 +102,7 @@ static s32 client_sock_cb(s32 fd, u32 mask, void *data)
 		.count = 0,
 	};
 	s32 flag; /* 0: length not received, 1: length received. */
+	off_t offs;
 
 	if (client->cursor >= ((u8 *)(client->log_buf) + sizeof(size_t))) {
 		flag = 1;
@@ -150,6 +153,20 @@ static s32 client_sock_cb(s32 fd, u32 mask, void *data)
 		client->byts_to_rd = sizeof(size_t);
 		/* printf("complete.\n"); */
 		if (client->server->log_file_fd > 0) {
+			offs = lseek(client->server->log_file_fd,
+				     0, SEEK_CUR);
+			if (offs > MAX_LOG_SIZE) {
+				char cmd[128];
+				sprintf(cmd, "cp -f %s/cube_log_%d.txt "
+					"%s/cube_log_%d_bak.txt",
+					LOG_SERVER_NAME_PREFIX,
+					client->server->seat,
+					LOG_SERVER_NAME_PREFIX,
+					client->server->seat);
+				system(cmd);
+				lseek(client->server->log_file_fd, 0, SEEK_SET);
+				ftruncate(client->server->log_file_fd, 0);
+			}
 			write(client->server->log_file_fd,
 			      (char *)&client->log_buf[0] + sizeof(size_t),
 			      client->log_sz);
