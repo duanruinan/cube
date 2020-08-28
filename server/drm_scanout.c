@@ -26,6 +26,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <assert.h>
 #include <libudev.h>
 #include <stdint.h>
 #include <inttypes.h>
@@ -105,7 +106,6 @@ struct drm_prop {
 
 enum {
 	CONNECTOR_PROP_EDID = 0,
-	CONNECTOR_PROP_DPMS,
 	CONNECTOR_PROP_CRTC_ID,
 	CONNECTOR_PROP_HDMI_QUANT_RANGE,
 	CONNECTOR_PROP_HDMI_OUTPUT_COLORIMETRY,
@@ -114,29 +114,6 @@ enum {
 	CONNECTOR_PROP_SATURATION,
 	CONNECTOR_PROP_HUE,
 	CONNECTOR_PROP_NR,
-};
-
-enum {
-	CONNECTOR_DPMS_IDX_ON = 0,
-	CONNECTOR_DPMS_IDX_OFF,
-	CONNECTOR_DPMS_IDX_STANDBY,
-	CONNECTOR_DPMS_IDX_SUSPEND,
-	CONNECTOR_DPMS_IDX_NR,
-};
-
-static struct enum_value connector_dpms_enum[] = {
-	[CONNECTOR_DPMS_IDX_ON] = {
-		.name = "On",
-	},
-	[CONNECTOR_DPMS_IDX_OFF] = {
-		.name = "Off",
-	},
-	[CONNECTOR_DPMS_IDX_STANDBY] = {
-		.name = "Standby",
-	},
-	[CONNECTOR_DPMS_IDX_SUSPEND] = {
-		.name = "Suspend",
-	},
 };
 
 enum {
@@ -200,16 +177,6 @@ static const struct drm_prop connector_props[] = {
 			},
 		},
 	},
-	[CONNECTOR_PROP_DPMS] = {
-		.name = "DPMS",
-		.type = DRM_PROP_TYPE_ENUM,
-		.c = {
-			.ev = {
-				.count_values = CONNECTOR_DPMS_IDX_NR,
-				.values = connector_dpms_enum,
-			},
-		},
-	},
 	[CONNECTOR_PROP_CRTC_ID] = {
 		.name = "CRTC_ID",
 		.type = DRM_PROP_TYPE_OBJECT,
@@ -249,6 +216,7 @@ enum {
 	PLANE_PROP_COLOR_SPACE,
 	PLANE_PROP_GLOBAL_ALPHA,
 	PLANE_PROP_BLEND_MODE,
+	PLANE_PROP_ALPHA_SRC,
 	PLANE_PROP_NR,
 };
 
@@ -268,6 +236,21 @@ static struct enum_value plane_type_enum[] = {
 	},
 	[PLANE_TYPE_IDX_CURSOR] = {
 		.name = "Cursor",
+	},
+};
+
+enum {
+	PLANE_ALPHA_SRC_PRE_MUL = 0,
+	PLANE_ALPHA_SRC_NON_PRE_MUL,
+	PLANE_ALPHA_SRC_NR,
+};
+
+static struct enum_value plane_alpha_src_enum[] = {
+	[PLANE_ALPHA_SRC_PRE_MUL] = {
+		.name = "true",
+	},
+	[PLANE_ALPHA_SRC_NON_PRE_MUL] = {
+		.name = "false",
 	},
 };
 
@@ -341,6 +324,16 @@ static const struct drm_prop plane_props[] = {
 	[PLANE_PROP_BLEND_MODE] = {
 		.name = "BLEND_MODE",
 		.type = DRM_PROP_TYPE_RANGE,
+	},
+	[PLANE_PROP_ALPHA_SRC] = {
+		.name = "ALPHA_SRC_PRE_MUL",
+		.type = DRM_PROP_TYPE_ENUM,
+		.c = {
+			.ev = {
+				.count_values = PLANE_ALPHA_SRC_NR,
+				.values = plane_alpha_src_enum,
+			},
+		},
 	},
 };
 
@@ -422,6 +415,7 @@ enum drm_fb_type {
 struct drm_fb {
 	struct cb_buffer base;
 	struct gbm_bo *bo;
+	struct gbm_surface *surface;
 	enum drm_fb_type type;
 	u32 handles[4];
 	u32 fourcc;
@@ -447,7 +441,6 @@ struct drm_plane_state {
 
 struct drm_output_state {
 	struct drm_output *output;
-	enum dpms_state dpms;
 	struct list_head link;
 	struct list_head plane_states;
 };
@@ -469,20 +462,17 @@ struct drm_output {
 	struct drm_prop props[CRTC_PROP_NR];
 
 	bool modeset_pending;
+	bool disable_pending;
 	struct drm_mode *current_mode, *pending_mode;
 	struct list_head modes;
 
 	struct drm_output_state *state_cur, *state_last;
-
-	struct cb_signal output_complete_signal;
-	struct cb_signal page_flip_signal;
 
 	bool page_flip_pending;
 
 	struct list_head link;
 	struct drm_plane *primary;
 	struct drm_plane *cursor;
-	struct drm_plane *overlay;
 
 	struct list_head planes;
 };
@@ -536,6 +526,7 @@ struct drm_scanout {
 	s32 sysnum;
 
 	struct gbm_device *gbm;
+	u32 gbm_format;
 
 	s32 fd;
 	struct cb_event_source *drm_source;
@@ -582,6 +573,81 @@ static void drm_scanout_set_dbg_level(struct scanout *so,
 {
 	if (level >= CB_LOG_ERR && level <= CB_LOG_DEBUG)
 		drm_dbg = level;
+}
+
+static enum cb_pix_fmt fourcc_to_cb_pix_fmt(u32 fourcc)
+{
+	switch (fourcc) {
+	case DRM_FORMAT_ARGB8888:
+		return CB_PIX_FMT_ARGB8888;
+	case DRM_FORMAT_XRGB8888:
+		return CB_PIX_FMT_XRGB8888;
+	case DRM_FORMAT_RGB888:
+		return CB_PIX_FMT_RGB888;
+	case DRM_FORMAT_RGB565:
+		return CB_PIX_FMT_RGB565;
+	case DRM_FORMAT_NV12:
+		return CB_PIX_FMT_NV12;
+	case DRM_FORMAT_NV16:
+		return CB_PIX_FMT_NV16;
+	case DRM_FORMAT_NV24:
+		return CB_PIX_FMT_NV24;
+	case DRM_FORMAT_YUYV:
+		return CB_PIX_FMT_YUYV;
+	case DRM_FORMAT_YUV420:
+		return CB_PIX_FMT_YUV420;
+	case DRM_FORMAT_YUV422:
+		return CB_PIX_FMT_YUV422;
+	case DRM_FORMAT_YUV444:
+		return CB_PIX_FMT_YUV444;
+	default:
+		return CB_PIX_FMT_UNKNOWN;
+	}
+}
+
+static u32 cb_pix_fmt_to_fourcc(enum cb_pix_fmt fmt)
+{
+	u32 fourcc;
+
+	switch (fmt) {
+	case CB_PIX_FMT_ARGB8888:
+		fourcc = DRM_FORMAT_ARGB8888;
+		break;
+	case CB_PIX_FMT_XRGB8888:
+		fourcc = DRM_FORMAT_XRGB8888;
+		break;
+	case CB_PIX_FMT_RGB888:
+		fourcc = DRM_FORMAT_RGB888;
+		break;
+	case CB_PIX_FMT_RGB565:
+		fourcc = DRM_FORMAT_RGB565;
+		break;
+	case CB_PIX_FMT_NV12:
+		fourcc = DRM_FORMAT_NV12;
+		break;
+	case CB_PIX_FMT_NV16:
+		fourcc = DRM_FORMAT_NV16;
+		break;
+	case CB_PIX_FMT_NV24:
+		fourcc = DRM_FORMAT_NV24;
+		break;
+	case CB_PIX_FMT_YUYV:
+		fourcc = DRM_FORMAT_YUYV;
+		break;
+	case CB_PIX_FMT_YUV420:
+		fourcc = DRM_FORMAT_YUV420;
+		break;
+	case CB_PIX_FMT_YUV422:
+		fourcc = DRM_FORMAT_YUV422;
+		break;
+	case CB_PIX_FMT_YUV444:
+		fourcc = DRM_FORMAT_YUV444;
+		break;
+	default:
+		fourcc = 0;
+	}
+
+	return fourcc;
 }
 
 static u64 drm_get_prop_value(struct drm_prop *prop_info,
@@ -704,7 +770,7 @@ static void drm_prop_prepare(struct drm_scanout *dev,
 				 dst[j].atomic ? " atomic" : "", dst[j].name);
 			for (k = 0; k < dst[j].c.ev.count_values; k++) {
 				for (m = 0; m < prop->count_enums; m++) {
-					/*drm_info("%s", prop->enums[m].name);*/
+					drm_info("%s", prop->enums[m].name);
 					if (!strcmp(prop->enums[m].name,
 						    dst[j].c.ev.values[k].name))
 						break;
@@ -716,11 +782,11 @@ static void drm_prop_prepare(struct drm_scanout *dev,
 				dst[j].c.ev.values[k].valid = true;
 				dst[j].c.ev.values[k].value
 					= prop->enums[m].value;
-				/*
+				
 				drm_info("\t%s - %llu",
 					 dst[j].c.ev.values[k].name,
 					 dst[j].c.ev.values[k].value);
-				*/
+				
 			}
 			break;
 		case DRM_PROP_TYPE_RANGE:
@@ -731,10 +797,10 @@ static void drm_prop_prepare(struct drm_scanout *dev,
 				dst[j].c.rv.values[k] = prop->values[k];
 			drm_info("Find range%s property: %s",
 				 dst[j].atomic ? " atomic" : "", dst[j].name);
-			/*
+			
 			drm_info("\t[%" PRId64 " - %" PRId64 "]",
 				 dst[j].c.rv.values[0], dst[j].c.rv.values[1]);
-			*/
+			
 			break;
 		case DRM_PROP_TYPE_SIGNED_RANGE:
 			dst[j].c.rv.count_values = prop->count_values;
@@ -744,10 +810,10 @@ static void drm_prop_prepare(struct drm_scanout *dev,
 				dst[j].c.rv.values[k] = prop->values[k];
 			drm_info("Find singed range%s property: %s",
 				 dst[j].atomic ? " atomic" : "", dst[j].name);
-			/*
+			
 			drm_info("\t[%" PRIu64 " - %" PRIu64 "]",
 				 dst[j].c.rv.values[0], dst[j].c.rv.values[1]);
-			*/
+			
 			break;
 		case DRM_PROP_TYPE_OBJECT:
 			drm_info("Find object%s property: %s",
@@ -778,11 +844,6 @@ static void drm_prop_finish(struct drm_prop *props, u32 count_props)
 	}
 
 	memset(props, 0, count_props * sizeof(*props));
-}
-
-static void drm_pending_state_destroy(struct drm_pending_state *ps)
-{
-
 }
 
 static struct drm_pending_state *
@@ -847,11 +908,23 @@ static void drm_fb_release_dmabuf(struct drm_fb *fb)
 	}
 }
 
+static void drm_fb_release_surface(struct drm_fb *fb)
+{
+	drm_debug("Release Surface-BUF.");
+	if (fb && fb->bo && fb->surface) {
+		drm_debug("release surface buffer");
+		gbm_surface_release_buffer(fb->surface, fb->bo);
+	}
+}
+
 static void drm_fb_release_buffer(struct drm_fb *fb)
 {
 	switch (fb->type) {
 	case DRM_FB_TYPE_DMABUF:
 		drm_fb_release_dmabuf(fb);
+		break;
+	case DRM_FB_GBM_SURFACE:
+		drm_fb_release_surface(fb);
 		break;
 	default:
 		break;
@@ -860,9 +933,12 @@ static void drm_fb_release_buffer(struct drm_fb *fb)
 
 static void drm_fb_ref(struct drm_fb *fb)
 {
+	if (!fb)
+		return;
+
 	drm_debug("[REF] +");
-	if (fb)
-		fb->ref_cnt++;
+	fb->ref_cnt++;
+	drm_debug("[REF] ID: %u %d", fb->fb_id, fb->ref_cnt);
 }
 
 static void drm_fb_unref(struct drm_fb *fb)
@@ -877,6 +953,7 @@ static void drm_fb_unref(struct drm_fb *fb)
 	}
 
 	fb->ref_cnt--;
+	drm_debug("[REF] ID: %u %d", fb->fb_id, fb->ref_cnt);
 	if (fb->ref_cnt == 0) {
 		drm_fb_release_buffer(fb);
 	}
@@ -897,6 +974,7 @@ static void drm_output_state_destroy(struct drm_output_state *os)
 {
 	struct drm_plane_state *pls, *next_pls;
 
+	drm_debug("destroy output state enter %p", os);
 	if (!os)
 		return;
 
@@ -907,6 +985,21 @@ static void drm_output_state_destroy(struct drm_output_state *os)
 	}
 
 	free(os);
+}
+
+static void drm_pending_state_destroy(struct drm_pending_state *ps)
+{
+	struct drm_output_state *os, *os_next;
+
+	if (!ps)
+		return;
+
+	list_for_each_entry_safe(os, os_next, &ps->output_states, link) {
+		list_del(&os->link);
+		drm_output_state_destroy(os);
+	}
+
+	free(ps);
 }
 
 static struct drm_output_state *
@@ -1005,8 +1098,20 @@ static s32 drm_output_commit(drmModeAtomicReq *req,
 	struct drm_plane *plane;
 	struct drm_plane_state *pls;
 
-	if (os->dpms == DPMS_ON) {
+	if (output->disable_pending) {
+		printf("deactive\n");
+		output->current_mode = NULL;
+		*flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
+		output->disable_pending = false;
+		ret |= set_crtc_prop(req, output, CRTC_PROP_ACTIVE, 0);
+		ret |= set_crtc_prop(req, output, CRTC_PROP_MODE_ID, 0);
+		ret |= set_connector_prop(req, head, CONNECTOR_PROP_CRTC_ID, 0);
+		return 0;
+	} else {
+		if (!output->base.head->connected)
+			return 0;
 		if (output->modeset_pending) {
+			printf("do modeset\n");
 			output->current_mode = output->pending_mode;
 			output->pending_mode = NULL;
 			if (!output->current_mode->blob_id) {
@@ -1023,21 +1128,10 @@ static s32 drm_output_commit(drmModeAtomicReq *req,
 				     output->current_mode->blob_id);
 		ret |= set_connector_prop(req, head, CONNECTOR_PROP_CRTC_ID,
 					  output->crtc_id);
-	} else {
-		if (output->modeset_pending) {
-			output->current_mode = output->pending_mode;
-			*flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
-		}
-		ret |= set_crtc_prop(req, output, CRTC_PROP_ACTIVE, 0);
-		ret |= set_crtc_prop(req, output, CRTC_PROP_MODE_ID, 0);
-		ret |= set_connector_prop(req, head, CONNECTOR_PROP_CRTC_ID, 0);
 	}
 
 	list_for_each_entry(pls, &os->plane_states, link) {
 		plane = pls->plane;
-
-		if (pls->fb)
-			drm_fb_ref(pls->fb);
 
 		ret |= set_plane_prop(req, plane, PLANE_PROP_FB_ID,
 				      pls->fb ? pls->fb->fb_id : 0);
@@ -1075,6 +1169,7 @@ static void drm_output_state_switch(struct drm_output_state *os, bool async)
 	drm_debug("switch output state");
 	if (async) {
 		output->state_last = output->state_cur;
+		drm_debug("last_state: %p", output->state_last);
 	} else {
 		drm_output_state_destroy(os);
 	}
@@ -1101,16 +1196,28 @@ static s32 drm_commit(struct drm_pending_state *ps, bool async)
 	drmModeAtomicReq *req = drmModeAtomicAlloc();
 	u32 flags = 0;
 	s32 ret = 0;
+	bool empty = true;
 
 	if (async)
-		flags = DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_ATOMIC_NONBLOCK;
+		flags = DRM_MODE_PAGE_FLIP_EVENT |
+			DRM_MODE_PAGE_FLIP_ASYNC |
+			DRM_MODE_ATOMIC_NONBLOCK;
 
 	list_for_each_entry(output, &dev->outputs, link) {
 		os = drm_get_output_state(ps, output);
-		ret = drm_output_commit(req, os, &flags);
-		if (ret) {
-			goto out;
+		if (output->disable_pending ||
+		    output->base.head->connected) {
+			ret = drm_output_commit(req, os, &flags);
+			if (ret) {
+				goto out;
+			}
+			empty = false;
 		}
+	}
+
+	if (empty) {
+		drm_warn("empty commit, do nothing.");
+		goto out1;
 	}
 
 	drm_debug("commit");
@@ -1120,6 +1227,7 @@ static s32 drm_commit(struct drm_pending_state *ps, bool async)
 		goto out;
 	}
 
+out1:
 	list_for_each_entry_safe(os, next_os, &ps->output_states, link) {
 		drm_output_state_switch(os, async);
 	}
@@ -1176,13 +1284,12 @@ static s32 drm_scanout_data_fill(struct scanout *so,
 			}
 		}
 
-		if (!output_found) {
+		if (!output_found)
 			os = drm_output_state_create(ps, output);
-			os->dpms = DPMS_ON;
-		}
 
 		pls = drm_plane_state_create(os, to_drm_plane(info->plane));
 		pls->fb = to_drm_fb(info->buffer);
+		drm_fb_ref(pls->fb);
 		pls->zpos = info->zpos;
 		pls->src_x = info->src.pos.x;
 		pls->src_y = info->src.pos.y;
@@ -1197,13 +1304,22 @@ static s32 drm_scanout_data_fill(struct scanout *so,
 	return 0;
 }
 
-static void drm_output_disable(struct output *o)
+static s32 drm_output_disable(struct output *o)
 {
 	struct drm_output *output = to_drm_output(o);
+	struct drm_pending_state *ps;
 
 	drm_info("disabling output...");
-	output->modeset_pending = true;
+	output->disable_pending = true;
+	if (output->page_flip_pending) {
+		drm_info("page flip pending while disabling, deferred.");
+		return -1;
+	}
+	ps = drm_pending_state_create(output->dev);
+	drm_output_state_create(ps, output);
+	drm_commit(ps, false);
 	drm_info("disable output complete.");
+	return 0;
 }
 
 static struct cb_mode *
@@ -1258,27 +1374,41 @@ drm_output_enumerate_plane(struct output *o, struct plane *last)
 	return NULL;
 }
 
-static s32 drm_output_add_output_complete_cb(struct output *o,
-					     struct cb_listener *l)
+static struct plane *
+drm_output_enumerate_plane_by_fmt(struct output *o,
+				  struct plane *last,
+				  enum cb_pix_fmt fmt)
 {
+	struct drm_plane *plane, *last_plane;
+	bool find_last = true;
 	struct drm_output *output = to_drm_output(o);
+	u32 fourcc = cb_pix_fmt_to_fourcc(fmt);
+	s32 i;
 
-	if (!o || !l)
-		return -EINVAL;
+	if (last) {
+		find_last = false;
+		last_plane = to_drm_plane(last);
+	}
 
-	cb_signal_add(&output->output_complete_signal, l);
-	return 0;
-}
+	list_for_each_entry(plane, &output->planes, link) {
+		for (i = 0; i < plane->base.count_formats; i++) {
+			if (plane->base.formats[i] == fourcc)
+				break;
+		}
+		if (i == plane->base.count_formats)
+			continue;
 
-static s32 drm_output_add_page_flip_cb(struct output *o, struct cb_listener *l)
-{
-	struct drm_output *output = to_drm_output(o);
+		if (!find_last && plane == last_plane) {
+			find_last = true;
+			continue;
+		}
 
-	if (!o || !l)
-		return -EINVAL;
+		if (find_last) {
+			return &plane->base;
+		}
+	}
 
-	cb_signal_add(&output->page_flip_signal, l);
-	return 0;
+	return NULL;
 }
 
 static s32 drm_output_enable(struct output *o, struct cb_mode *mode)
@@ -1288,9 +1418,11 @@ static s32 drm_output_enable(struct output *o, struct cb_mode *mode)
 
 	drm_info("enabling output...");
 	if (mode) {
+		/* use select mode */
 		output->pending_mode = new_mode;
-		output->modeset_pending = true;
 	}
+
+	output->modeset_pending = true;
 
 	drm_info("enable output complete.");
 	return 0;
@@ -1320,7 +1452,7 @@ static struct plane *drm_plane_create(struct drm_scanout *dev,
 	drmModeObjectProperties *props;
 	drmModePlane *p;
 	s32 i;
-	u32 type;
+	u32 type, alpha_src;
 
 	drm_info("Create plane ...");
 	plane = calloc(1, sizeof(*plane));
@@ -1377,6 +1509,18 @@ static struct plane *drm_plane_create(struct drm_scanout *dev,
 			plane->base.type = PLANE_TYPE_OVERLAY;
 		else if (!strcmp(plane_type_enum[type].name, "Cursor"))
 			plane->base.type = PLANE_TYPE_CURSOR;
+	}
+
+	alpha_src = drm_get_prop_value(&plane->props[PLANE_PROP_ALPHA_SRC],
+				       props);
+	if (alpha_src != (u32)(-1)) {
+		if (!strcmp(plane_alpha_src_enum[alpha_src].name, "true")) {
+			drm_debug("ALPHA_SRC_PRE_MUL: true");
+		} else if (!strcmp(plane_alpha_src_enum[alpha_src].name,
+			   "false")) {
+			drm_debug("ALPHA_SRC_PRE_MUL: false");
+		}
+		plane->base.alpha_src = alpha_src;
 	}
 	drmModeFreeObjectProperties(props);
 
@@ -1610,17 +1754,13 @@ static void drm_output_destroy(struct output *o)
 
 	drm_prop_finish(output->props, CRTC_PROP_NR);
 
-	cb_signal_fini(&output->output_complete_signal);
-	cb_signal_fini(&output->page_flip_signal);
-
 	free(output);
 }
 
 static struct output *drm_output_create(struct drm_scanout *dev,
 					s32 output_index,
 					s32 primary_plane_index,
-					s32 cursor_plane_index,
-					s32 overlay_plane_index)
+					s32 cursor_plane_index)
 {
 	struct drm_output *output = NULL;
 	struct plane *plane;
@@ -1635,8 +1775,6 @@ static struct output *drm_output_create(struct drm_scanout *dev,
 	output->dev = dev;
 	output->index = output_index;
 	INIT_LIST_HEAD(&output->planes);
-	cb_signal_init(&output->output_complete_signal);
-	cb_signal_init(&output->page_flip_signal);
 
 	if (output_index >= dev->res->count_crtcs)
 		goto err;
@@ -1668,19 +1806,9 @@ static struct output *drm_output_create(struct drm_scanout *dev,
 		list_add_tail(&(to_drm_plane(plane))->link, &output->planes);
 	}
 
-	if (overlay_plane_index >= 0) {
-		plane = drm_plane_create(dev, output, overlay_plane_index);
-		if (!plane)
-			goto err;
-		output->overlay = to_drm_plane(plane);
-		list_add_tail(&(to_drm_plane(plane))->link, &output->planes);
-	}
-
-	/* create other overlay */
+	/* create overlay */
 	for (i = 0; i < dev->pres->count_planes; i++) {
 		if (i == primary_plane_index)
-			continue;
-		if (i == overlay_plane_index)
 			continue;
 		if (i == cursor_plane_index)
 			continue;
@@ -1735,6 +1863,8 @@ static struct cb_buffer *drm_scanout_import_dmabuf(struct scanout *so,
 
 	fb->base.info = *info;
 	cb_signal_init(&fb->base.destroy_signal);
+	cb_signal_init(&fb->base.flip_signal);
+	cb_signal_init(&fb->base.complete_signal);
 
 	switch (info->pix_fmt) {
 	case CB_PIX_FMT_XRGB8888:
@@ -1763,7 +1893,8 @@ static struct cb_buffer *drm_scanout_import_dmabuf(struct scanout *so,
 		goto err;
 	}
 
-	fb->bo = gbm_bo_import(dev->gbm, GBM_BO_IMPORT_FD, &import_data,
+	fb->bo = gbm_bo_import(dev->gbm,
+			       GBM_BO_IMPORT_FD, &import_data,
 			       GBM_BO_USE_SCANOUT);
 	if (!fb->bo) {
 		drm_err("Failed to import dma-buf by gbm. (%s)",
@@ -1795,6 +1926,93 @@ err:
 	if (fb && fb->bo) {
 		drm_debug("gbm bo destroy");
 		gbm_bo_destroy(fb->bo);
+		fb->bo = NULL;
+	}
+
+	if (fb)
+		free(fb);
+	return NULL;
+}
+
+static void drm_scanout_release_surface_buf(struct scanout *so,
+					    struct cb_buffer *buffer)
+{
+	struct drm_fb *fb = to_drm_fb(buffer);
+
+	drm_debug("Request to release Surface-BUF");
+	drm_fb_unref(fb);
+}
+
+static void drm_fb_destroy_surface_fb(struct gbm_bo *bo, void *data)
+{
+	struct drm_fb *fb = data;
+	struct drm_scanout *dev = fb->dev;
+
+	if (fb) {
+		assert(fb->type == DRM_FB_GBM_SURFACE);
+		if (fb->fb_id) {
+			drm_debug("Remove DRM FB");
+			drmModeRmFB(dev->fd, fb->fb_id);
+		}
+		free(fb);
+	}
+}
+
+static struct cb_buffer *drm_scanout_import_surface_buf(struct scanout *so,
+							void *surface)
+{
+	struct drm_fb *fb = NULL;
+	struct drm_scanout *dev = to_dev(so);
+	struct gbm_bo *bo;
+	s32 ret;
+
+	bo = gbm_surface_lock_front_buffer((struct gbm_surface *)surface);
+	if (!bo) {
+		drm_err("failed to lock front buffer: %s, surface = %p",
+			strerror(errno), surface);
+		goto err;
+	}
+
+	fb = calloc(1, sizeof(*fb));
+	if (!fb)
+		goto err;
+
+	fb->type = DRM_FB_GBM_SURFACE;
+
+	fb->bo = bo;
+
+	fb->base.info.width = gbm_bo_get_width(bo);
+	fb->base.info.height = gbm_bo_get_height(bo);
+	fb->fourcc = gbm_bo_get_format(bo);
+
+	fb->base.info.strides[0] = gbm_bo_get_stride(bo);
+	fb->handles[0] = gbm_bo_get_handle(bo).u32;
+
+	ret = drmModeAddFB2(dev->fd,
+			    fb->base.info.width, fb->base.info.height,
+			    fb->fourcc,
+			    fb->handles, fb->base.info.strides,
+			    fb->base.info.offsets, &fb->fb_id, 0);
+	if (ret) {
+		drm_err("failed to create surface fb: %s", strerror(errno));
+		goto err;
+	}
+
+	gbm_bo_set_user_data(bo, fb, drm_fb_destroy_surface_fb);
+
+	cb_signal_init(&fb->base.destroy_signal);
+	cb_signal_init(&fb->base.flip_signal);
+	cb_signal_init(&fb->base.complete_signal);
+
+	fb->dev = dev;
+	fb->ref_cnt = 1;
+	fb->surface = surface;
+
+	return &fb->base;
+
+err:
+	if (fb && fb->bo) {
+		gbm_surface_release_buffer(surface, fb->bo);
 		fb->bo = NULL;
 	}
 
@@ -1892,6 +2110,30 @@ static void drm_head_update_modes(struct drm_head *head)
 		 new_mode->base.pixel_freq / 1000.0f);
 }
 
+static void drm_output_native_surface_destroy(struct output *o, void *surface)
+{
+	if (surface)
+		gbm_surface_destroy((struct gbm_surface *)surface);
+}
+
+static void *drm_output_native_surface_create(struct output *o)
+{
+	struct drm_output *output = to_drm_output(o);
+	struct drm_scanout *dev = output->dev;
+	struct drm_mode *mode;
+
+	assert(output->pending_mode);
+	mode = output->pending_mode;
+	printf("create surface %ux%u, %u, %p\n",
+		mode->internal.hdisplay, mode->internal.vdisplay,
+		dev->gbm_format, dev->gbm);
+	return gbm_surface_create(dev->gbm,
+				  mode->internal.hdisplay,
+				  mode->internal.vdisplay,
+				  dev->gbm_format,
+				  GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
+}
+
 static struct output *
 drm_scanout_pipeline_create(struct scanout *so, struct pipeline *pipeline_cfg)
 {
@@ -1921,8 +2163,7 @@ drm_scanout_pipeline_create(struct scanout *so, struct pipeline *pipeline_cfg)
 	/* create output and planes */
 	output = drm_output_create(dev, pipeline_cfg->output_index,
 				   pipeline_cfg->primary_plane_index,
-				   pipeline_cfg->cursor_plane_index,
-				   pipeline_cfg->overlay_plane_index);
+				   pipeline_cfg->cursor_plane_index);
 	if (!output)
 		goto err;
 
@@ -1937,7 +2178,9 @@ drm_scanout_pipeline_create(struct scanout *so, struct pipeline *pipeline_cfg)
 	output->disable = drm_output_disable;
 	output->enumerate_mode = drm_output_enumerate_mode;
 	output->enumerate_plane = drm_output_enumerate_plane;
-	output->add_output_complete_notify = drm_output_add_output_complete_cb;
+	output->enumerate_plane_by_fmt = drm_output_enumerate_plane_by_fmt;
+	output->native_surface_create = drm_output_native_surface_create;
+	output->native_surface_destroy = drm_output_native_surface_destroy;
 
 	drm_info("Create pipeline complete");
 
@@ -2138,18 +2381,52 @@ static void drm_scanout_destroy(struct scanout *so)
 	drm_info("Destroy scanout device complete.");
 }
 
-static void drm_output_complete(struct drm_output *output, bool init,
-				u32 sec, u32 usec)
+static void drm_output_emit_bo_flipped(struct drm_output_state *os)
 {
-	drm_output_state_destroy(output->state_last);
-	cb_signal_emit(&output->page_flip_signal, &output->base);
-	if (output->state_last) {
-		output->state_last = NULL;
-		if (!init) {
-			cb_signal_emit(&output->output_complete_signal,
-					&output->base);
+	struct drm_plane_state *pls;
+	struct cb_buffer *buffer;
+
+	if (!os)
+		return;
+
+	list_for_each_entry(pls, &os->plane_states, link) {
+		if (pls->fb) {
+			buffer = &pls->fb->base;
+			cb_signal_emit(&buffer->flip_signal, buffer);
 		}
 	}
+}
+
+static void drm_output_emit_bo_complete(struct drm_output_state *os)
+{
+	struct drm_plane_state *pls;
+	struct cb_buffer *buffer;
+
+	if (!os)
+		return;
+
+	list_for_each_entry(pls, &os->plane_states, link) {
+		if (pls->fb) {
+			buffer = &pls->fb->base;
+			cb_signal_emit(&buffer->complete_signal, buffer);
+		}
+	}
+}
+
+static void drm_output_complete(struct drm_output *output,
+				u32 sec, u32 usec)
+{
+	drm_debug("drm_output_complete, state_last: %p", output->state_last);
+	/* emit buffer flipped signal */
+	drm_output_emit_bo_flipped(output->state_cur);
+
+	/* emit buffer complete signal */
+	drm_output_emit_bo_complete(output->state_last);
+
+	drm_output_state_destroy(output->state_last);
+	if (output->state_last)
+		output->state_last = NULL;
+	drm_debug("drm_output_complete, leave.");
 }
 
 static void page_flip_handler(s32 fd, u32 crtc_id, u32 frame, u32 sec, u32 usec,
@@ -2160,8 +2437,11 @@ static void page_flip_handler(s32 fd, u32 crtc_id, u32 frame, u32 sec, u32 usec,
 
 	drm_debug("CRTC_ID: %u frame: %u (%u, %u)", crtc_id, frame, sec, usec);
 	list_for_each_entry(output, &dev->outputs, link) {
-		output->page_flip_pending = false;
-		drm_output_complete(output, false, sec, usec);
+		if (output->crtc_id == crtc_id) {
+			drm_debug("send page flip to user");
+			output->page_flip_pending = false;
+			drm_output_complete(output, sec, usec);
+		}
 	}
 }
 
@@ -2174,6 +2454,42 @@ static s32 drm_event_cb(s32 fd, u32 mask, void *data)
 	ctx.page_flip_handler2 = page_flip_handler;
 	ctx.vblank_handler = NULL;
 	drmHandleEvent(fd, &ctx);
+	return 0;
+}
+
+static void *drm_scanout_get_native_dev(struct scanout *so)
+{
+	struct drm_scanout *dev = to_dev(so);
+
+	return dev->gbm;
+}
+
+static u32 drm_scanout_get_native_format(struct scanout *so)
+{
+	struct drm_scanout *dev = to_dev(so);
+
+	return dev->gbm_format;
+}
+
+static s32 drm_add_buffer_flip_notify(struct scanout *so,
+				      struct cb_buffer *buffer,
+				      struct cb_listener *l)
+{
+	if (!so || !buffer || !l)
+		return -EINVAL;
+
+	cb_signal_add(&buffer->flip_signal, l);
+	return 0;
+}
+
+static s32 drm_add_buffer_complete_notify(struct scanout *so,
+					  struct cb_buffer *buffer,
+					  struct cb_listener *l)
+{
+	if (!so || !buffer || !l)
+		return -EINVAL;
+
+	cb_signal_add(&buffer->complete_signal, l);
 	return 0;
 }
 
@@ -2206,6 +2522,8 @@ struct scanout *scanout_create(const char *dev_path, struct cb_event_loop *loop)
 		goto err;
 
 	dev->gbm = gbm_create_device(dev->fd);
+	dev->gbm_format = GBM_FORMAT_XRGB8888;
+	printf("gbm = %p, gbm_format = %u\n", dev->gbm, dev->gbm_format);
 
 	drmSetMaster(dev->fd);
 
@@ -2277,9 +2595,15 @@ struct scanout *scanout_create(const char *dev_path, struct cb_event_loop *loop)
 	dev->base.pipeline_destroy = drm_scanout_pipeline_destroy;
 	dev->base.import_dmabuf = drm_scanout_import_dmabuf;
 	dev->base.release_dmabuf = drm_scanout_release_dmabuf;
+	dev->base.import_surface_buf = drm_scanout_import_surface_buf;
+	dev->base.release_surface_buf = drm_scanout_release_surface_buf;
 	dev->base.scanout_data_alloc = drm_scanout_data_alloc;
 	dev->base.do_scanout = drm_do_scanout;
 	dev->base.fill_scanout_data = drm_scanout_data_fill;
+	dev->base.get_native_dev = drm_scanout_get_native_dev;
+	dev->base.get_native_format = drm_scanout_get_native_format;
+	dev->base.add_buffer_flip_notify = drm_add_buffer_flip_notify;
+	dev->base.add_buffer_complete_notify = drm_add_buffer_complete_notify;
 
 	drm_info("Create scanout device complete.");
 	return &dev->base;

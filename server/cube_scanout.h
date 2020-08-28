@@ -82,12 +82,36 @@ struct output {
 	/* the sink of this output */
 	struct head *head;
 
+	/* enumerate plane list, so we can then get plane info. */
+	struct plane *(*enumerate_plane)(struct output *o, struct plane *last);
+
+	/* enumerate plane by fmt */
+	struct plane *(*enumerate_plane_by_fmt)(struct output *o,
+						struct plane *last,
+						enum cb_pix_fmt fmt);
+
 	/* enumerate mode list */
 	struct cb_mode *(*enumerate_mode)(struct output *o,
 					  struct cb_mode *last);
 
-	/* enumerate plane list, so we can then get plane info. */
-	struct plane *(*enumerate_plane)(struct output *o, struct plane *last);
+	/* create custom video timing */
+	struct cb_mode *(*create_mode)(struct output *o,
+				       u32 clock,
+				       u16 width,
+				       u16 hsync_start,
+				       u16 hsync_end,
+				       u16 htotal,
+				       u16 hskew,
+				       u16 height,
+				       u16 vsync_start,
+				       u16 vsync_end,
+				       u16 vtotal,
+				       u16 vscan,
+				       u32 vrefresh,
+				       bool interlaced,
+				       bool pos_hsync,
+				       bool pos_vsync,
+				       char *mode_name);
 
 	/* switch video mode timing */
 	s32 (*switch_mode)(struct output *o, struct cb_mode *mode);
@@ -96,19 +120,14 @@ struct output {
 	s32 (*enable)(struct output *o, struct cb_mode *mode);
 
 	/* disable video output, may be because the monitor is unpluged. */
-	void (*disable)(struct output *o);
+	s32 (*disable)(struct output *o);
 
-	/* add callback function to get notification of the output
-	 * complete event.
-	 */
-	s32 (*add_output_complete_notify)(struct output *o,
-					  struct cb_listener *l);
+	/* create native surface for renderer */
+	void *(*native_surface_create)(struct output *o);
 
-	/* add callback function to get notification of the 
-	 * page flip event.
-	 */
-	s32 (*add_output_page_flip_notify)(struct output *o,
-					   struct cb_listener *l);
+	/* destroy native surface */
+	void (*native_surface_destroy)(struct output *o, void *surface);
+
 };
 
 enum dpms_state {
@@ -138,6 +157,20 @@ struct head {
 	 * event.
 	 */
 	s32 (*add_head_changed_notify)(struct head *h, struct cb_listener *l);
+/*
+	s32 (*get_brightness)(struct head *h);
+	void (*set_brightness)(struct head *h, s32 val);
+	s32 (*get_contrast)(struct head *h);
+	void (*set_contrast)(struct head *h, s32 val);
+	s32 (*get_saturation)(struct head *h);
+	void (*set_saturation)(struct head *h, s32 val);
+	s32 (*get_hue)(struct head *h);
+	void (*set_hue)(struct head *h, s32 val);
+	enum cb_colorimetry (*get_colorimetry)(struct head *h);
+	void (*set_colorimetry)(struct head *h, enum cb_colorimetry val);
+	enum cb_quant_range (*get_quant_range)(struct head *h);
+	void (*set_quant_range)(struct head *h, enum cb_quant_range val);
+*/
 };
 
 enum plane_type {
@@ -159,6 +192,9 @@ struct plane {
 	u32 *formats;
 
 	u64 zpos;
+
+	/* source has been alpha blended or not */
+	u32 alpha_src;
 };
 
 struct scanout {
@@ -174,13 +210,6 @@ struct scanout {
 	/* destroy pipeline */
 	void (*pipeline_destroy)(struct scanout *so, struct output *o);
 
-	/* import buffer from external DMA-BUF fd */
-	struct cb_buffer *(*import_dmabuf)(struct scanout *so,
-					   struct cb_buffer_info *info);
-
-	/* release external DMA-BUF */
-	void (*release_dmabuf)(struct scanout *so, struct cb_buffer *buffer);
-
 	void *(*scanout_data_alloc)(struct scanout *so);
 
 	s32 (*fill_scanout_data)(struct scanout *so,
@@ -189,6 +218,37 @@ struct scanout {
 
 	/* commit user settings to scanout */
 	void (*do_scanout)(struct scanout *so, void *scanout_data);
+
+	/* get native device */
+	void *(*get_native_dev)(struct scanout *so);
+
+	/* get native pixel format */
+	u32 (*get_native_format)(struct scanout *so);
+
+	/* import buffer from external DMA-BUF fd */
+	struct cb_buffer *(*import_dmabuf)(struct scanout *so,
+					   struct cb_buffer_info *info);
+
+	/* release external DMA-BUF */
+	void (*release_dmabuf)(struct scanout *so, struct cb_buffer *buffer);
+
+	/* retrieve active buffer from surface */
+	struct cb_buffer *(*import_surface_buf)(struct scanout *so,
+						void *surface);
+
+	/* return buffer to surface */
+	void (*release_surface_buf)(struct scanout *so,
+				    struct cb_buffer *buffer);
+
+	/* add buffer flip cb */
+	s32 (*add_buffer_flip_notify)(struct scanout *so,
+				      struct cb_buffer *buffer,
+				      struct cb_listener *l);
+
+	/* add buffer complete cb */
+	s32 (*add_buffer_complete_notify)(struct scanout *so,
+					  struct cb_buffer *buffer,
+					  struct cb_listener *l);
 
 	/* debug set */
 	void (*set_dbg_level)(struct scanout *so, enum cb_log_level level);

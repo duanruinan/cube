@@ -97,6 +97,8 @@ struct cb_buffer_info {
 struct cb_buffer {
 	struct cb_buffer_info info;
 	struct cb_signal destroy_signal;
+	struct cb_signal flip_signal;
+	struct cb_signal complete_signal;
 };
 
 struct pipeline {
@@ -104,7 +106,6 @@ struct pipeline {
 	s32 output_index;
 	s32 primary_plane_index;
 	s32 cursor_plane_index;
-	s32 overlay_plane_index;
 };
 
 #endif
