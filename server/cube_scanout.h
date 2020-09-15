@@ -59,6 +59,10 @@ struct scanout_commit_info {
 };
 
 /* commit info helper functions */
+void scanout_buffer_dirty_init(struct cb_buffer *buffer);
+void scanout_set_buffer_dirty(struct cb_buffer *buffer, struct output *output);
+bool scanout_clr_buffer_dirty(struct cb_buffer *buffer, struct output *output);
+
 struct scanout_commit_info *scanout_commit_info_alloc(void);
 void *scanout_commit_add_fb_info(struct scanout_commit_info *commit,
 				 struct cb_buffer *buffer,
@@ -79,6 +83,18 @@ void scanout_commit_info_free(struct scanout_commit_info *commit);
 
 /* a output represent a LCDC/CRTC */
 struct output {
+	/* hardware index */
+	s32 index;
+
+	/* higher precision (mHz) refresh rate */
+	u32 refresh;
+
+	/* refresh time (nsec) */
+	u32 refresh_nsec;
+
+	/* flipped time. set by hardware. */
+	s64 sec, usec;
+
 	/* the sink of this output */
 	struct head *head;
 
@@ -90,28 +106,34 @@ struct output {
 						struct plane *last,
 						enum cb_pix_fmt fmt);
 
+	/* get current video mode */
+	struct cb_mode *(*get_current_mode)(struct output *o);
+
 	/* enumerate mode list */
 	struct cb_mode *(*enumerate_mode)(struct output *o,
 					  struct cb_mode *last);
 
+	/* get custom mode */
+	struct cb_mode *(*get_custom_mode)(struct output *o);
+
 	/* create custom video timing */
-	struct cb_mode *(*create_mode)(struct output *o,
-				       u32 clock,
-				       u16 width,
-				       u16 hsync_start,
-				       u16 hsync_end,
-				       u16 htotal,
-				       u16 hskew,
-				       u16 height,
-				       u16 vsync_start,
-				       u16 vsync_end,
-				       u16 vtotal,
-				       u16 vscan,
-				       u32 vrefresh,
-				       bool interlaced,
-				       bool pos_hsync,
-				       bool pos_vsync,
-				       char *mode_name);
+	struct cb_mode *(*create_custom_mode)(struct output *o,
+					      u32 clock,
+					      u16 width,
+					      u16 hsync_start,
+					      u16 hsync_end,
+					      u16 htotal,
+					      u16 hskew,
+					      u16 height,
+					      u16 vsync_start,
+					      u16 vsync_end,
+					      u16 vtotal,
+					      u16 vscan,
+					      u32 vrefresh,
+					      bool interlaced,
+					      bool pos_hsync,
+					      bool pos_vsync,
+					      char *mode_name);
 
 	/* switch video mode timing */
 	s32 (*switch_mode)(struct output *o, struct cb_mode *mode);
@@ -128,6 +150,8 @@ struct output {
 	/* destroy native surface */
 	void (*native_surface_destroy)(struct output *o, void *surface);
 
+	/* add output page flip cb */
+	s32 (*add_page_flip_notify)(struct output *o, struct cb_listener *l);
 };
 
 enum dpms_state {
@@ -157,6 +181,7 @@ struct head {
 	 * event.
 	 */
 	s32 (*add_head_changed_notify)(struct head *h, struct cb_listener *l);
+
 /*
 	s32 (*get_brightness)(struct head *h);
 	void (*set_brightness)(struct head *h, s32 val);
@@ -250,8 +275,38 @@ struct scanout {
 					  struct cb_buffer *buffer,
 					  struct cb_listener *l);
 
+	/* dumb buffer destroy */
+	void (*dumb_buffer_destroy)(struct scanout *so,
+				    struct cb_buffer *buffer);
+
+	/* dumb buffer create */
+	struct cb_buffer *(*dumb_buffer_create)(struct scanout *so,
+						struct cb_buffer_info *info);
+
+	/* cursor bo destroy */
+	void (*cursor_bo_destroy)(struct scanout *so,
+				  struct cb_buffer *buffer);
+
+	/* cursor bo create */
+	struct cb_buffer *(*cursor_bo_create)(struct scanout *so,
+					      struct cb_buffer_info *info);
+
+	/* cursor bo update */
+	void (*cursor_bo_update)(struct scanout *so,
+				 struct cb_buffer *curosr,
+				 u8 *data,
+				 u32 width,
+				 u32 height,
+				 u32 stride);
+
+	/* get suface pixel format */
+	u32 (*get_surface_pix_format)(struct scanout *so);
+
 	/* debug set */
 	void (*set_dbg_level)(struct scanout *so, enum cb_log_level level);
+
+	/* get clock type CLOCK_MONOTONIC / CLOCK_REALTIME */
+	u32 (*get_clock_type)(struct scanout *so);
 };
 
 struct scanout *scanout_create(const char *dev_path, struct cb_event_loop *l);

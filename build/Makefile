@@ -12,10 +12,13 @@ all:
 	-@mkdir -p $(RPATH)/out/usr/lib
 	-@cp $(RPATH)/utils/*.so $(RPATH)/out/usr/lib
 	-@cp $(RPATH)/server/*.so $(RPATH)/out/usr/lib
+	-@cp $(RPATH)/server/cube_server $(RPATH)/out/usr/bin
 	-@cp $(RPATH)/server/test_drm $(RPATH)/out/usr/bin
+	-@cp $(RPATH)/server/test_cache $(RPATH)/out/usr/bin
 	-@cp $(RPATH)/utils/cube_log $(RPATH)/out/usr/bin
 	# -@cp $(RPATH)/server/cube $(RPATH)/out/usr/bin
 	-@cp $(RPATH)/client/cube_manager $(RPATH)/out/usr/bin
+	-@cp $(RPATH)/client/test_client $(RPATH)/out/usr/bin
 	-@cp $(RPATH)/tools/detect_drm $(RPATH)/out/usr/bin
 	-@cp $(RPATH)/build/env.sh $(RPATH)/out
 

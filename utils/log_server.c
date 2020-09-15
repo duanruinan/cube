@@ -49,8 +49,6 @@ static struct option long_options[] = {
 #define LOG_BUF_MAX_LEN 4096
 #endif
 
-#define LOG_SERVER_NAME_PREFIX "/tmp"
-
 struct log_server;
 
 struct log_client {
@@ -334,8 +332,8 @@ static struct log_server *log_server_create(s32 seat)
 	if (!server->sock)
 		goto err;
 
-	snprintf(name, 64, "%s/cube_log_server-%d", LOG_SERVER_NAME_PREFIX,
-		 server->seat);
+	snprintf(name, 64, "%s/%s-%d", LOG_SERVER_NAME_PREFIX,
+		 LOG_SERVER_SOCK_NAME, server->seat);
 
 	unlink(name);
 	cb_socket_bind_listen(server->sock, name);

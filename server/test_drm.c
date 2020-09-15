@@ -2,12 +2,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <signal.h>
 #include <inttypes.h>
 #include <errno.h>
 #include <stdint.h>
 #include <sys/mman.h>
 #include <stdbool.h>
-#include <sys/mman.h>
 #include <drm_fourcc.h>
 #include <time.h>
 #include <fcntl.h>
@@ -20,17 +20,20 @@
 #include <cube_scanout.h>
 #include <cube_compositor.h>
 
+#define TEST_ROUTE_PLANE 1
 
 struct scandev {
 	bool enabled;
 	struct cb_event_loop *loop;
+	struct cb_event_source *sig_int_source;
+	struct cb_event_source *sig_tem_source;
 	struct output *output;
 	struct cb_event_source *repaint_timer_0;
 	struct cb_event_source *repaint_timer_1;
 	struct cb_event_source *disable_timer;
 	bool run;
 	struct plane *primary, *cursor, *overlay;
-	struct dma_buf *dumb_buf[2];
+	struct cb_buffer *dumb_buf[2];
 	u32 work_index;
 	struct cb_buffer *buffer[2];
 	struct scanout_commit_info *commit;
@@ -43,90 +46,50 @@ struct scandev {
 
 struct scandev *dev;
 
-struct dma_buf {
+struct dumb_buf {
 	struct cb_buffer_info info;
 	u32 handles[4];
 	s32 fd;
 };
 
-static void xrgb_buf_destroy(struct dma_buf *buf)
+static s32 signal_event_proc(s32 signal_number, void *data)
 {
-	struct drm_mode_destroy_dumb destroy_arg;
+	struct scandev *dev = data;
 
-	if (buf->info.maps[0] && buf->info.sizes[0]) {
-		munmap(buf->info.maps[0], buf->info.sizes[0]);
+	switch (signal_number) {
+	case SIGINT:
+		fprintf(stderr, "received SIGINT\n");
+		dev->run = false;
+		break;
+	case SIGTERM:
+		fprintf(stderr, "received SIGTERM\n");
+		dev->run = false;
+		break;
+	default:
+		fprintf(stderr, "Receive unknown signal %d", signal_number);
+		return -1;
 	}
 
-	if (buf->handles[0]) {
-		memset(&destroy_arg, 0, sizeof(destroy_arg));
-		destroy_arg.handle = buf->handles[0];
-		drmIoctl(buf->fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy_arg);
-	}
-
-	if (buf->info.fd[0] > 0)
-		close(buf->info.fd[0]);
-
-	if (buf->fd > 0)
-		close(buf->fd);
-
-	free(buf);
+	return 0;
 }
 
-static struct dma_buf *xrgb_buf_create(u32 width, u32 height)
+static void xrgb_buf_destroy(struct cb_buffer *buf)
 {
-	struct dma_buf *buf = calloc(1, sizeof(*buf));
-	struct drm_mode_create_dumb create_arg;
-	struct drm_mode_map_dumb map_arg;
-	s32 ret;
+	dev->so->dumb_buffer_destroy(dev->so, buf);
+}
 
-	buf->fd = open("/dev/dri/card0", O_RDWR, 0644);
-	buf->info.pix_fmt = CB_PIX_FMT_XRGB8888;
-	buf->info.width = width;
-	buf->info.height = height;
+static struct cb_buffer *xrgb_buf_create(u32 width, u32 height)
+{
+	struct cb_buffer_info info;
+	struct cb_buffer *buffer;
 
-	memset(&create_arg, 0, sizeof(create_arg));
-	create_arg.bpp = 32;
-	create_arg.width = (width + 16 - 1) & ~(16 - 1);
-	create_arg.height = (height + 16 - 1) & ~(16 - 1);
-	ret = drmIoctl(buf->fd, DRM_IOCTL_MODE_CREATE_DUMB, &create_arg);
+	memset(&info, 0, sizeof(info));
+	info.pix_fmt = CB_PIX_FMT_XRGB8888;
+	info.width = width;
+	info.height = height;
 
-	if (ret) {
-		printf("failed to create dumb buffer. (%s)\n", strerror(errno));
-		close(buf->fd);
-		return NULL;
-	}
-
-	buf->info.sizes[0] = create_arg.size;
-	buf->info.strides[0] = create_arg.pitch;
-	buf->info.offsets[0] = 0;
-	buf->info.planes = 1;
-
-	ret = drmPrimeHandleToFD(buf->fd, create_arg.handle, 0,
-				 &buf->info.fd[0]);
-	if (ret) {
-		printf("failed to export buffer. (%s)\n", strerror(errno));
-		close(buf->fd);
-		return NULL;
-	}
-
-	buf->handles[0] = create_arg.handle;
-
-	memset(&map_arg, 0, sizeof(map_arg));
-	map_arg.handle = buf->handles[0];
-	ret = drmIoctl(buf->fd, DRM_IOCTL_MODE_MAP_DUMB, &map_arg);
-	if (ret) {
-		printf("failed to map dumb. (%s)\n", strerror(errno));
-		return NULL;
-	}
-	buf->info.maps[0] = mmap(NULL, buf->info.sizes[0],
-				 PROT_WRITE, MAP_SHARED,
-				 buf->fd, map_arg.offset);
-	if (buf->info.maps[0] == MAP_FAILED) {
-		printf("failed to mmap. (%s)\n", strerror(errno));
-		return NULL;
-	}
-
-	return buf;
+	buffer = dev->so->dumb_buffer_create(dev->so, &info);
+	return buffer;
 }
 
 static void fill_dumb(u8 *data, u32 width, u32 height, u32 stride)
@@ -248,9 +211,6 @@ static void head_changed_cb(struct cb_listener *listener, void *data)
 		dev->src_rc.h = 480;
 		calc_edge(preferred->width, preferred->height,
 			  &dev->src_rc, &dev->dst_rc);
-		dev->surface[0] = head->output->native_surface_create(
-				head->output);
-		printf("surface: %p\n", dev->surface[0]);
 		head->output->enable(head->output, NULL);
 		dev->enabled = true;
 		fill_dumb(dev->dumb_buf[dev->work_index]->info.maps[0],
@@ -259,24 +219,24 @@ static void head_changed_cb(struct cb_listener *listener, void *data)
 			  dev->dumb_buf[dev->work_index]->info.strides[0]);
 
 		dev->commit = scanout_commit_info_alloc();
+		scanout_buffer_dirty_init(dev->buffer[dev->work_index]);
+		scanout_set_buffer_dirty(dev->buffer[dev->work_index], output);
 		scanout_commit_add_fb_info(dev->commit, dev->buffer[dev->work_index],
 				   output, dev->overlay, &dev->src_rc,
 				   &dev->dst_rc,
 				   dev->overlay->zpos);
 		dev->sd = dev->so->scanout_data_alloc(dev->so);
 		dev->so->fill_scanout_data(dev->so, dev->sd, dev->commit);
-		printf("[APP] commit %d\n", dev->work_index);
+		//printf("[APP] commit %d\n", dev->work_index);
 		dev->so->do_scanout(dev->so, dev->sd);
 		dev->work_index = 1 - dev->work_index;
 		scanout_commit_info_free(dev->commit);
 	} else {
-		head->output->native_surface_destroy(head->output,
-			dev->surface[0]);
+		output = head->output;
 		printf("[APP] try to disable\n");
 		dev->enabled = false;
-		if (head->output->disable(head->output) < 0) {
-			cb_event_source_timer_update(dev->disable_timer,
-					2, 0);
+		if (output->disable(output) < 0) {
+			cb_event_source_timer_update(dev->disable_timer, 2, 0);
 		}
 	}
 }
@@ -286,10 +246,18 @@ static void buffer_complete_cb(struct cb_listener *listener,
 {
 	if (data == dev->buffer[0]) {
 		printf("[APP] buffer[0] complete. %d->%d\n", dev->work_index, 0);
+#ifdef TEST_ONE_BUFFER
+		dev->work_index = 1;
+#else
 		dev->work_index = 0;
+#endif
 	} else if (data == dev->buffer[1]) {
 		printf("[APP] buffer[1] complete. %d->%d\n", dev->work_index, 1);
+#ifdef TEST_ONE_BUFFER
+		dev->work_index = 0;
+#else
 		dev->work_index = 1;
+#endif
 	} else {
 //		printf("illegal buffer address.\n");
 		return;
@@ -429,6 +397,10 @@ static s32 disable_timer_handler(void *data)
 static s32 output_repaint_timer_handler(void *data)
 {
 	//struct cb_buffer *buffer = data;
+#ifdef TEST_ROUTE_PLANE
+	static s32 zpos = 0;
+	struct plane *plane;
+#endif
 	if (!dev->enabled)
 		return 0;
 
@@ -441,15 +413,34 @@ static s32 output_repaint_timer_handler(void *data)
 	}
 */
 
+#ifdef TEST_ROUTE_PLANE
+	zpos = 1 - zpos;
+	if (zpos == 1)
+		plane = dev->overlay;
+	else
+		plane = dev->primary;
+#endif
+	scanout_buffer_dirty_init(dev->buffer[dev->work_index]);
+	scanout_set_buffer_dirty(dev->buffer[dev->work_index], dev->output);
 	scanout_commit_add_fb_info(dev->commit,
 			   dev->buffer[dev->work_index],
-			   dev->output, dev->overlay, &dev->src_rc,
+			   dev->output,
+#ifdef TEST_ROUTE_PLANE
+			   plane,
+#else
+			   dev->overlay,
+#endif
+			   &dev->src_rc,
 			   &dev->dst_rc,
+#ifdef TEST_ROUTE_PLANE
+			   zpos);
+#else
 			   dev->overlay->zpos);
+#endif
 	
 	dev->sd = dev->so->scanout_data_alloc(dev->so);
 	dev->so->fill_scanout_data(dev->so, dev->sd, dev->commit);
-	printf("[APP] commit %d\n", dev->work_index);
+	//printf("[APP] commit %d\n", dev->work_index);
 	dev->so->do_scanout(dev->so, dev->sd);
 	scanout_commit_info_free(dev->commit);
 	return 0;
@@ -491,6 +482,12 @@ s32 main(s32 argc, char **argv)
 	cb_log_init("/tmp/cube_log_server-0");
 	dev = calloc(1, sizeof(*dev));
 	dev->loop = cb_event_loop_create();
+	dev->sig_int_source = cb_event_loop_add_signal(dev->loop, SIGINT,
+							signal_event_proc,
+							dev);
+	dev->sig_tem_source = cb_event_loop_add_signal(dev->loop, SIGTERM,
+							signal_event_proc,
+							dev);
 	dev->so = scanout_create("/dev/dri/card0", dev->loop);
 	if (!dev->so)
 		goto out;
@@ -547,21 +544,22 @@ s32 main(s32 argc, char **argv)
 		dev->src_rc.h = 480;
 		calc_edge(preferred->width, preferred->height,
 			  &dev->src_rc, &dev->dst_rc);
-		dev->surface[0] = output->native_surface_create(
-				output);
-		printf("surface: %p\n", dev->surface[0]);
 		output->enable(output, NULL);
 		dev->enabled = true;
 		
 		dev->commit = scanout_commit_info_alloc();
+		scanout_buffer_dirty_init(dev->buffer[0]);
+		scanout_set_buffer_dirty(dev->buffer[0], output);
 		scanout_commit_add_fb_info(dev->commit, dev->buffer[0],
 					   output, dev->overlay, &dev->src_rc,
 					   &dev->dst_rc,
 					   dev->overlay->zpos);
 		dev->sd = dev->so->scanout_data_alloc(dev->so);
 		dev->so->fill_scanout_data(dev->so, dev->sd, dev->commit);
-		printf("[APP] commit %d\n", dev->work_index);
+		//printf("[APP] commit %d\n", dev->work_index);
+#ifndef TEST_ONE_BUFFER
 		dev->work_index = 1 - dev->work_index;
+#endif
 		dev->so->do_scanout(dev->so, dev->sd);
 		scanout_commit_info_free(dev->commit);
 	}
@@ -569,6 +567,7 @@ s32 main(s32 argc, char **argv)
 	while (dev->run) {
 		cb_event_loop_dispatch(dev->loop, -1);
 	}
+	
 	cb_event_loop_destroy(dev->loop);
 
 out:

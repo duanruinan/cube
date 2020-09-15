@@ -19,73 +19,50 @@
  * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
  * OTHER DEALINGS IN THE SOFTWARE.
  */
-#include <stdio.h>
-#include <stdlib.h>
-#include <errno.h>
-#include <string.h>
+#ifndef CUBE_RENDERER_H
+#define CUBE_RENDERER_H
+
+#include <stdint.h>
+#include <stdbool.h>
 #include <cube_utils.h>
-#include <cube_array.h>
+#include <cube_event.h>
+#include <cube_log.h>
+#include <cube_compositor.h>
+#include <cube_signal.h>
 
-void cb_array_init(struct cb_array *array)
-{
-	memset(array, 0, sizeof(*array));
-}
+struct renderer;
 
-void cb_array_release(struct cb_array *array)
-{
-	if (array->data)
-		free(array->data);
-	array->data = NULL;
-	memset(array, 0, sizeof(*array));
-}
+struct r_output {
+	void (*destroy)(struct r_output *o);
 
-void * cb_array_add(struct cb_array *array, u32 size)
-{
-	u32 alloc;
-	void *data, *p;
+	void (*repaint_output)(struct r_output *o);
 
-	if (!array || !size)
-		return NULL;
+	struct r_surface *(*attach_buffer)(struct cb_surface *surface,
+					   struct cb_buffer *buffer);
 
-	if (array->alloc > 0)
-		alloc = array->alloc;
-	else
-		alloc = 16;
+	void (*flush_damage)(struct cb_surface *surface);
+};
 
-	while (alloc < array->size + size)
-		alloc *= 2;
+struct renderer {
+	void (*destroy)(struct renderer *r);
 
-	if (array->alloc < alloc) {
-		if (array->alloc > 0)
-			data = realloc(array->data, alloc);
-		else
-			data = malloc(alloc);
+	struct r_output *(*output_create)(struct renderer *r,
+					 void *window_for_legacy,
+					 void *window,
+					 s32 *formats,
+					 s32 count_fmts,
+					 s32 *vid);
 
-		if (data == NULL)
-			return NULL;
-		array->data = data;
-		array->alloc = alloc;
-	}
+	struct cb_buffer *(*import_dmabuf)(struct renderer *r,
+					   struct cb_buffer_info *info);
 
-	p = array->data + array->size;
-	array->size += size;
+	void (*release_dmabuf)(struct renderer *r,
+			       struct cb_buffer *buffer);
+};
 
-	return p;
-}
+struct renderer *renderer_create(struct compositor *c,
+				 u32 *formats, s32 count_fmts,
+				 bool no_winsys, void *native_window, s32 *vid);
 
-s32 cb_array_copy(struct cb_array *dst, struct cb_array *src)
-{
-	if (!dst || !src)
-		return -EINVAL;
-
-	if (dst->size < src->size) {
-		if (!cb_array_add(dst, src->size - dst->size))
-			return -1;
-	} else {
-		dst->size = src->size;
-	}
-
-	memcpy(dst->data, src->data, src->size);
-	return 0;
-}
+#endif
 

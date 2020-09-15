@@ -3,7 +3,7 @@ include $(RPATH)/build/build_env
 .PHONY: all
 .PHONY: clean
 
-OBJS := cube_manager
+OBJS := cube_manager test_client
 
 CFLAGS += -I$(RPATH)/utils
 CFLAGS += -I./
@@ -24,6 +24,12 @@ cube_manager: cube_manager.o
 	$(CC) $^ -L$(RPATH)/utils -lcube_utils -o $@
 
 cube_manager.o: cube_manager.c $(CUBE_UTILS_H)
+	$(CC) -c $< $(CFLAGS) -o $@
+
+test_client: test_client.o
+	$(CC) $^ -L$(RPATH)/utils -lcube_utils -o $@
+
+test_client.o: test_client.c $(CUBE_UTILS_H)
 	$(CC) -c $< $(CFLAGS) -o $@
 
 clean:

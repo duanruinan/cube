@@ -26,6 +26,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <assert.h>
 #include <cube_utils.h>
 #include <cube_event.h>
 #include <cube_log.h>
@@ -113,5 +114,32 @@ void scanout_commit_info_free(struct scanout_commit_info *commit)
 	}
 
 	free(commit);
+}
+
+void scanout_buffer_dirty_init(struct cb_buffer *buffer)
+{
+	buffer->dirty = 0;
+}
+
+void scanout_set_buffer_dirty(struct cb_buffer *buffer, struct output *output)
+{
+	/* omit disconnected output */
+	if (!output->head->connected)
+		return;
+	buffer->dirty |= (1U << output->index);
+}
+
+bool scanout_clr_buffer_dirty(struct cb_buffer *buffer, struct output *output)
+{
+	if (!buffer->dirty)
+		return false;
+
+	buffer->dirty &= (~(1U << output->index));
+	printf("Clear %u: %08X\n", output->index, buffer->dirty);
+
+	if (!buffer->dirty)
+		return true;
+
+	return false;
 }
 
