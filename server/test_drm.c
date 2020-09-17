@@ -224,7 +224,7 @@ static void head_changed_cb(struct cb_listener *listener, void *data)
 		scanout_commit_add_fb_info(dev->commit, dev->buffer[dev->work_index],
 				   output, dev->overlay, &dev->src_rc,
 				   &dev->dst_rc,
-				   dev->overlay->zpos);
+				   dev->overlay->zpos, true);
 		dev->sd = dev->so->scanout_data_alloc(dev->so);
 		dev->so->fill_scanout_data(dev->so, dev->sd, dev->commit);
 		//printf("[APP] commit %d\n", dev->work_index);
@@ -322,7 +322,7 @@ static void parse_plane_info(struct output *output,
 				printf("\tFormat: %4.4s\n",
 					(char *)&plane->formats[i]);
 			printf("\tZPOS: %"PRId64"\n", (s64)plane->zpos);
-			printf("\tALPHA_SRC: %u\n", plane->alpha_src);
+			printf("\tALPHA_SRC: %u\n", plane->alpha_src_pre_mul);
 		}
 	} while (plane);
 
@@ -433,9 +433,9 @@ static s32 output_repaint_timer_handler(void *data)
 			   &dev->src_rc,
 			   &dev->dst_rc,
 #ifdef TEST_ROUTE_PLANE
-			   zpos);
+			   zpos, true);
 #else
-			   dev->overlay->zpos);
+			   dev->overlay->zpos, true);
 #endif
 	
 	dev->sd = dev->so->scanout_data_alloc(dev->so);
@@ -553,7 +553,7 @@ s32 main(s32 argc, char **argv)
 		scanout_commit_add_fb_info(dev->commit, dev->buffer[0],
 					   output, dev->overlay, &dev->src_rc,
 					   &dev->dst_rc,
-					   dev->overlay->zpos);
+					   dev->overlay->zpos, true);
 		dev->sd = dev->so->scanout_data_alloc(dev->so);
 		dev->so->fill_scanout_data(dev->so, dev->sd, dev->commit);
 		//printf("[APP] commit %d\n", dev->work_index);

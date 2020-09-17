@@ -51,7 +51,8 @@ void *scanout_commit_add_fb_info(struct scanout_commit_info *commit,
 				 struct plane *plane,
 				 struct cb_rect *src,
 				 struct cb_rect *dst,
-				 s32 zpos)
+				 s32 zpos,
+				 bool alpha_src_pre_mul)
 {
 	struct fb_info *info;
 
@@ -68,6 +69,7 @@ void *scanout_commit_add_fb_info(struct scanout_commit_info *commit,
 	info->src = *src;
 	info->dst = *dst;
 	info->zpos = zpos;
+	info->alpha_src_pre_mul = alpha_src_pre_mul;
 
 	list_add_tail(&info->link, &commit->fb_commits);
 
@@ -81,7 +83,8 @@ void scanout_commit_mod_fb_info(struct scanout_commit_info *commit,
 				struct plane *plane,
 				struct cb_rect *src,
 				struct cb_rect *dst,
-				s32 zpos)
+				s32 zpos,
+				bool alpha_src_pre_mul)
 {
 	struct fb_info *info;
 
@@ -99,6 +102,7 @@ void scanout_commit_mod_fb_info(struct scanout_commit_info *commit,
 	info->src = *src;
 	info->dst = *dst;
 	info->zpos = zpos;
+	info->alpha_src_pre_mul = alpha_src_pre_mul;
 }
 
 void scanout_commit_info_free(struct scanout_commit_info *commit)
@@ -135,7 +139,7 @@ bool scanout_clr_buffer_dirty(struct cb_buffer *buffer, struct output *output)
 		return false;
 
 	buffer->dirty &= (~(1U << output->index));
-	printf("Clear %u: %08X\n", output->index, buffer->dirty);
+	//printf("Clear %u: %08X\n", output->index, buffer->dirty);
 
 	if (!buffer->dirty)
 		return true;

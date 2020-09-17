@@ -51,6 +51,7 @@ struct fb_info {
 	struct plane *plane;
 	struct cb_rect src, dst;
 	s32 zpos;
+	bool alpha_src_pre_mul;
 	struct list_head link;
 };
 
@@ -70,7 +71,8 @@ void *scanout_commit_add_fb_info(struct scanout_commit_info *commit,
 				 struct plane *plane,
 				 struct cb_rect *src,
 				 struct cb_rect *dst,
-				 s32 zpos);
+				 s32 zpos,
+				 bool alpha_src_pre_mul);
 void scanout_commit_mod_fb_info(struct scanout_commit_info *commit,
 				void *fb_info,
 				struct cb_buffer *buffer,
@@ -78,7 +80,8 @@ void scanout_commit_mod_fb_info(struct scanout_commit_info *commit,
 				struct plane *plane,
 				struct cb_rect *src,
 				struct cb_rect *dst,
-				s32 zpos);
+				s32 zpos,
+				bool alpha_src_pre_mul);
 void scanout_commit_info_free(struct scanout_commit_info *commit);
 
 /* a output represent a LCDC/CRTC */
@@ -152,6 +155,9 @@ struct output {
 
 	/* add output page flip cb */
 	s32 (*add_page_flip_notify)(struct output *o, struct cb_listener *l);
+
+	/* query vblank */
+	s32 (*query_vblank)(struct output *o, struct timespec *ts);
 };
 
 enum dpms_state {
@@ -219,7 +225,7 @@ struct plane {
 	u64 zpos;
 
 	/* source has been alpha blended or not */
-	u32 alpha_src;
+	bool alpha_src_pre_mul;
 };
 
 struct scanout {

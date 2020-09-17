@@ -117,6 +117,8 @@ struct cb_server {
 	struct cb_event_source *sig_tem_source;
 	struct cb_event_source *mc_chg_timer;
 	struct cb_event_source *mc_collect_timer;
+	struct cb_event_source *comp_destroy_timer;
+	struct cb_event_source *test_hide_mc_timer;
 	u32 mc_cnt;
 	bool mc_pending;
 	u8 *mc_bufs[2];
@@ -218,30 +220,64 @@ static s32 signal_event_proc(s32 signal_number, void *data)
 	return 0;
 }
 
-static void cb_server_destroy(struct cb_server *server)
+static s32 cb_server_prepare_destroy(struct cb_server *server)
 {
 	struct cb_client_agent *client, *next;
-	s32 i;
 
 	if (!server)
-		return;
+		return 0;
 
 	if (server->loop) {
-		if (server->mc_collect_timer)
+		if (server->test_hide_mc_timer) {
+			cb_event_source_remove(server->test_hide_mc_timer);
+			server->test_hide_mc_timer = NULL;
+		}
+		if (server->mc_collect_timer) {
 			cb_event_source_remove(server->mc_collect_timer);
-		if (server->mc_chg_timer)
-			cb_event_source_remove(server->mc_chg_timer);
+			server->mc_collect_timer = NULL;
+		}
 
-		free(server->mc_bufs[0]);
-		free(server->mc_bufs[1]);
+		if (server->mc_chg_timer) {
+			cb_event_source_remove(server->mc_chg_timer);
+			server->mc_chg_timer = NULL;
+		}
 
 		list_for_each_entry_safe(client, next, &server->clients, link) {
 			list_del(&client->link);
 			cb_client_destroy(client);
 		}
 
-		if (server->c)
-			server->c->destroy(server->c);
+		if (server->c) {
+			if (server->c) {
+				if (server->c->destroy(server->c) < 0) {
+					cb_event_source_timer_update(
+						server->comp_destroy_timer,
+						3, 0);
+					return -EAGAIN;
+				}
+				server->c = NULL;
+			}
+		}
+
+		if (server->comp_destroy_timer) {
+			cb_event_source_remove(server->comp_destroy_timer);
+			server->comp_destroy_timer = NULL;
+		}
+	}
+
+	return 0;
+}
+
+static void cb_server_destroy(struct cb_server *server)
+{
+	s32 i;
+
+	if (!server)
+		return;
+
+	if (server->loop) {
+		free(server->mc_bufs[0]);
+		free(server->mc_bufs[1]);
 
 		if (server->sig_tem_source) {
 			cb_event_source_remove(server->sig_tem_source);
@@ -330,13 +366,15 @@ static void mc_flipped_cb(struct cb_listener *listener, void *data)
 	s32 ret;
 	struct cb_server *server = container_of(listener, struct cb_server,
 						mc_flipped_listener);
-	cb_event_source_timer_update(server->mc_chg_timer, 0, 0);
+	if (server->mc_chg_timer)
+		cb_event_source_timer_update(server->mc_chg_timer, 0, 0);
 	ret = server->c->set_mouse_cursor(server->c,
 					  server->mc_bufs[server->mc_cur],
-					  16, 16, 64, 0, 0, true);
+					  16, 16, 64, 0, 0, false);
 	if (ret) {
 		printf("ret = %d\n", ret);
-		cb_event_source_timer_update(server->mc_chg_timer,
+		if (server->mc_chg_timer)
+			cb_event_source_timer_update(server->mc_chg_timer,
 				     8, 0);
 	} else {
 		server->mc_cnt++;
@@ -361,7 +399,7 @@ static void head_changed_cb(struct cb_listener *listener, void *data)
 		cb_event_source_timer_update(disp->server->mc_chg_timer, 0, 0);
 		ret = c->set_mouse_cursor(c,
 			disp->server->mc_bufs[disp->server->mc_cur],
-				    16, 16, 64, 0, 0, true);
+				    16, 16, 64, 0, 0, false);
 		if (ret) {
 			printf("ret = %d\n", ret);
 			cb_event_source_timer_update(disp->server->mc_chg_timer,
@@ -371,8 +409,8 @@ static void head_changed_cb(struct cb_listener *listener, void *data)
 			disp->server->mc_cur = 1 - disp->server->mc_cur;
 		}
 	} else {
-		cb_event_source_timer_update(disp->server->mc_chg_timer,
-					     0, 0);
+//		cb_event_source_timer_update(disp->server->mc_chg_timer,
+//					     0, 0);
 	}
 }
 
@@ -428,10 +466,17 @@ static void compositor_ready_cb(struct cb_listener *listener, void *data)
 
 	printf("Set cursor\n");
 	ret =server->c->set_mouse_cursor(server->c, server->mc_bufs[server->mc_cur],
-				    16, 16, 64, 0, 0, true);
+				    16, 16, 64, 0, 0, false);
 	printf("ret = %d\n", ret);
-	server->mc_cur = 1 - server->mc_cur;
-	server->mc_cnt++;
+	if (ret) {
+		if (server->mc_chg_timer) {
+			cb_event_source_timer_update(server->mc_chg_timer,
+					     8, 0);
+		}
+	} else {
+		server->mc_cnt++;
+		server->mc_cur = 1 - server->mc_cur;
+	}
 
 }
 
@@ -439,9 +484,45 @@ static s32 mc_collect_proc(void *data)
 {
 	struct cb_server *server = data;
 
-	printf("mc update cnt: %u\n", server->mc_cnt);
+	printf("-----------mc update cnt: %u---------------\n", server->mc_cnt);
 	cb_event_source_timer_update(server->mc_collect_timer, 1000, 0);
 	server->mc_cnt = 0;
+
+	return 0;
+}
+
+static s32 comp_destroy_delayed_proc(void *data)
+{
+	struct cb_server *server = data;
+
+	printf("delay destroy\n");
+	if (cb_server_prepare_destroy(server) < 0) {
+		cb_event_source_timer_update(
+			server->comp_destroy_timer, 3, 0);
+	} else {
+		printf("exit loop\n");
+		server->exit = true;
+	}
+	return 0;
+}
+
+static s32 test_hide_mc_proc(void *data)
+{
+	struct cb_server *server = data;
+	static s32 cnt = 1;
+
+	if (cnt == 1) {
+		cnt--;
+		/* hide */
+		printf("hide cursor !\n");
+		server->c->hide_mouse_cursor(server->c);
+		cb_event_source_timer_update(server->test_hide_mc_timer,
+					5000, 0);
+	} else {
+		/* show */
+		printf("show cursor !\n");
+		server->c->show_mouse_cursor(server->c);
+	}
 
 	return 0;
 }
@@ -453,11 +534,12 @@ static s32 change_mc_delay_proc(void *data)
 	s32 ret;
 
 	ret = c->set_mouse_cursor(c,server->mc_bufs[server->mc_cur],
-				    16, 16, 64, 0, 0, true);
+				    16, 16, 64, 0, 0, false);
 	if (ret) {
-		printf("ret = %d\n", ret);
-		cb_event_source_timer_update(server->mc_chg_timer,
+		if (server->mc_chg_timer) {
+			cb_event_source_timer_update(server->mc_chg_timer,
 					     8, 0);
+		}
 	} else {
 		server->mc_cnt++;
 		server->mc_cur = 1 - server->mc_cur;
@@ -531,8 +613,22 @@ static struct cb_server *cb_server_create(s32 seat, char *dev)
 						       server);
 	if (!server->mc_collect_timer)
 		goto err;
+
+	server->comp_destroy_timer = cb_event_loop_add_timer(server->loop,
+						comp_destroy_delayed_proc,
+						server);
+	if (!server->comp_destroy_timer)
+		goto err;
+
 	server->mc_cnt = 0;
 	cb_event_source_timer_update(server->mc_collect_timer, 1000, 0);
+
+	server->test_hide_mc_timer = cb_event_loop_add_timer(server->loop,
+						test_hide_mc_proc,
+						server);
+	if (!server->test_hide_mc_timer)
+		goto err;
+	//cb_event_source_timer_update(server->test_hide_mc_timer, 10000, 0);
 
 	server->mc_cur = 0;
 	server->mc_bufs[0] = malloc(16*16*4);
@@ -540,7 +636,7 @@ static struct cb_server *cb_server_create(s32 seat, char *dev)
 		s32 i;
 		u32 *pixel = (u32 *)(server->mc_bufs[0]);
 		for (i = 0; i < 16 * 16; i++) {
-			pixel[i] = 0xFFFF0000;
+			pixel[i] = 0x80FF0000;
 		}
 	}
 	server->mc_bufs[1] = malloc(16*16*4);
@@ -548,7 +644,7 @@ static struct cb_server *cb_server_create(s32 seat, char *dev)
 		s32 i;
 		u32 *pixel = (u32 *)(server->mc_bufs[1]);
 		for (i = 0; i < 16 * 16; i++) {
-			pixel[i] = 0xFF0000FF;
+			pixel[i] = 0x800000FF;
 		}
 	}
 
@@ -600,6 +696,10 @@ s32 main(s32 argc, char **argv)
 	cb_server_run(server);
 err:
 	serv_notice("Cube server stopped.");
+	server->exit = false;
+	while (cb_server_prepare_destroy(server) < 0) {
+		cb_server_run(server);
+	}
 	cb_server_destroy(server);
 
 	return 0;

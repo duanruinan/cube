@@ -44,6 +44,13 @@
 #include <cube_client_agent.h>
 #include <cube_def_cursor.h>
 
+/*
+#define MC_DEBUG 1
+#define MC_DEBUG_BO_COMPLETE 1
+*/
+/*
+#define MC_SINGLE_SYNC 1
+*/
 #define DUMMY_WIDTH 1280
 #define DUMMY_HEIGHT 720
 
@@ -92,6 +99,7 @@ struct scanout_task {
 	struct plane *plane;
 	struct cb_rect *src, *dst;
 	s32 zpos;
+	bool alpha_src_pre_mul;
 	struct list_head link;
 };
 
@@ -239,11 +247,15 @@ struct cb_compositor {
 	/* mouse cursor's hot point position */
 	struct cb_pos mc_hot_pos;
 	/* mouse cursor's alpha is blended or not */
-	bool mc_alpha_blended;
+	bool mc_alpha_src_pre_mul;
 	/* hide cursor or not */
 	bool mc_hide;
 	/* cursor buffers */
 	struct cb_buffer *mc_buf[2];
+#ifdef MC_DEBUG_BO_COMPLETE
+	/* cursor buffer complete */
+	struct cb_listener mc_buf_l[2];
+#endif
 	/* cursor buffer source rect */
 	struct cb_rect mc_src;
 	/*
@@ -550,7 +562,19 @@ static void cancel_so_tasks(struct cb_output *output)
 			   sot->dst->pos.x, sot->dst->pos.y,
 			   sot->dst->w, sot->dst->h, sot->zpos,
 			   sot->buffer->dirty);
-		sot->buffer->dirty &= (~(1U << output->pipe));
+		if (sot->buffer && (sot->buffer->dirty & (1U << output->pipe))){
+			sot->buffer->dirty &= (~(1U << output->pipe));
+			if (!sot->buffer->dirty) {
+				if (sot->plane == output->cursor_plane) {
+					if (c->mc_update_pending) {
+						c->mc_update_pending = false;
+						cb_signal_emit(
+						  &c->mc_update_complete_signal,
+						  NULL);
+					}
+				}
+			}
+		}
 		cb_cache_put(sot, c->so_task_cache);
 	}
 }
@@ -561,11 +585,13 @@ static s32 suspend(struct cb_compositor *c)
 	s32 i;
 	struct cb_mode *mode;
 
+	printf("Suspend >>>>>>>>>>>>>>\n");
 	if (!c || !c->outputs)
 		return -EINVAL;
 
 	if (c->suspend_pending) {
 		comp_notice("suspend pending, try later.");
+		printf("suspend pending, try later.");
 		return -EAGAIN;
 	}
 
@@ -649,8 +675,10 @@ static s32 cb_compositor_destroy(struct compositor *comp)
 	s32 i, ret;
 
 	ret = suspend(c);
-	if (ret == -EAGAIN || c->suspend_pending)
+	if (ret == -EAGAIN || c->suspend_pending) {
+		printf("suspend pending !!!\n");
 		return -EAGAIN;
+	}
 
 	cb_compositor_input_fini(c);
 
@@ -730,7 +758,7 @@ static void fill_dummy(u8 *data, u32 width, u32 height, u32 stride)
 
 	for (i = 0; i < height; i++) {
 		for (j = 0; j < width; j++) {
-			pixel[j] = 0xFF000000;
+			pixel[j] = 0xFF0000FF;
 		}
 		pixel += (stride >> 2);
 	}
@@ -779,7 +807,7 @@ static void show_dummy(struct cb_output *output)
 	scanout_commit_add_fb_info(commit, output->dummy,
 				   output->output, output->primary_plane,
 				   &output->dummy_src, &output->crtc_view_port,
-				   0);
+				   0, true);
 	if (!c->mc_hide && output->mc_on_screen) {
 		c->mc_update_pending = false;
 		printf("Add FB dummy mc %p\n", c->mc_buf[c->mc_buf_cur]);
@@ -788,7 +816,11 @@ static void show_dummy(struct cb_output *output)
 					   output->output,
 					   output->cursor_plane,
 					   &c->mc_src,
-					   &output->mc_view_port, -1);
+					   &output->mc_view_port, -1,
+					   c->mc_alpha_src_pre_mul);
+#ifdef MC_DEBUG
+		printf("Commit MC []: %d\n", c->mc_buf_cur);
+#endif
 	}
 	sd = c->so->scanout_data_alloc(c->so);
 	c->so->fill_scanout_data(c->so, sd, commit);
@@ -825,6 +857,7 @@ static void add_mc_buffer_to_task(struct cb_compositor *c,
 			sot->zpos = -1;
 			sot->src = &c->mc_src;
 			sot->dst = &o->mc_view_port;
+			sot->alpha_src_pre_mul = c->mc_alpha_src_pre_mul;
 			list_add_tail(&sot->link, &o->so_tasks);
 		}
 	}
@@ -1020,6 +1053,10 @@ static void mc_flipped_cb(struct cb_listener *listener, void *data)
 
 	//printf(">>> Cursor bo %ld flipped.\n", index);
 	//printf(">>> Cursor dirty: %d\n", buffer->dirty);
+#ifdef MC_DEBUG
+	printf("MC bo %ld flipped\n", index);
+	comp_debug("MC bo %ld flipped", index);
+#endif
 	assert(!buffer->dirty);
 	c->mc_update_pending = false;
 	cb_signal_emit(&c->mc_update_complete_signal, NULL);
@@ -1187,6 +1224,7 @@ static struct cb_output *cb_output_create(struct cb_compositor *c,
 	output->desktop_rc.pos.y = 0;
 	output->desktop_rc.w = DUMMY_WIDTH;
 	output->desktop_rc.h = DUMMY_HEIGHT;
+
 	if (output->pipe == 0) {
 		output->desktop_rc.pos.x = 0;
 		output->desktop_rc.pos.y = 0;
@@ -1583,35 +1621,105 @@ static void cb_compositor_set_desktop_layout(struct compositor *comp,
 
 }
 
-static s32 cb_compositor_hide_mouse_cursor(struct compositor *comp)
+static void idle_repaint(void *data)
 {
+	struct cb_output *output = data;
+	struct timespec ts, now, vbl2now;
+	s32 ret;
 
-	return 0;
+	assert(output->repaint_status == REPAINT_START_FROM_IDLE);
+	ret = output->output->query_vblank(output->output, &ts);
+	if (!ret) {
+		clock_gettime(output->c->clock_type, &now);
+		timespec_sub(&vbl2now, &now, &ts);
+		if (timespec_to_nsec(&vbl2now) < output->output->refresh_nsec) {
+			output->repaint_status = REPAINT_WAIT_COMPLETION;
+			schedule_repaint(output, &ts);
+			return;
+		}
+	}
+
+	comp_warn("cannot query vblank from scanout backend, schedule now.");
+	output->repaint_status = REPAINT_WAIT_COMPLETION;
+	output->idle_repaint_source = NULL;
+	schedule_repaint(output, NULL);
 }
 
-static s32 cb_compositor_show_mouse_cursor(struct compositor *comp)
+static void cb_compositor_repaint_by_output(struct cb_output *output)
 {
-	return 0;
+	if (output->enabled) {
+		if (output->repaint_status != REPAINT_NOT_SCHEDULED) {
+			return;
+		}
+	}
+
+	//printf("repaint output %d\n", output->pipe);
+	/* comp_debug("repaint output %d", output->pipe); */
+	output->idle_repaint_source = cb_event_loop_add_idle(output->c->loop,
+							     idle_repaint,
+							     output);
+
+	output->repaint_status = REPAINT_START_FROM_IDLE;
 }
 
-static void cb_compositor_repaint_by_output(struct cb_output *output);
-static void cb_compositor_repaint(struct cb_compositor *c);
+static void cb_compositor_repaint(struct cb_compositor *c)
+{
+	s32 i = 0;
+
+	for (i = 0; i < c->count_outputs; i++) {
+		if (c->outputs[i]->enabled) {
+			cb_compositor_repaint_by_output(c->outputs[i]);
+		}
+	}
+}
+
+static void cancel_mc_buffer(struct cb_output *o)
+{
+	struct scanout_task *sot, *sot_next;
+	struct cb_compositor *c = o->c;
+
+	list_for_each_entry_safe(sot, sot_next, &o->so_tasks, link) {
+		if (sot->plane == o->cursor_plane) {
+			if (!sot->buffer)
+				continue;
+			if (sot->buffer->dirty & (1U << o->pipe)) {
+				list_del(&sot->link);
+				sot->buffer->dirty &= ~(1U << o->pipe);
+				printf("Cancel a mc buffer\n");
+				if (!sot->buffer->dirty) {
+					if (c->mc_update_pending) {
+						c->mc_update_pending = false;
+						cb_signal_emit(
+						  &c->mc_update_complete_signal,
+						  NULL);
+					}
+				}
+				cb_cache_put(sot, c->so_task_cache);
+			}
+		}
+	}
+}
 
 static s32 cb_compositor_set_mouse_cursor(struct compositor *comp,
 					  u8 *data, u32 width, u32 height,
 					  u32 stride,
 					  s32 hot_x, s32 hot_y,
-					  bool alpha_blended)
+					  bool alpha_src_pre_mul)
 {
 	struct cb_compositor *c = to_cb_c(comp);
 	struct cb_buffer *buffer;
 	bool dirty = false;
 	bool mc_on_screen;
 	s32 i;
+#ifdef MC_SINGLE_SYNC
+	bool sync_output_found;
+#endif
 
 	if (!data || !width || width > MC_MAX_WIDTH || !height ||
-	    height > MC_MAX_HEIGHT || !stride || !comp)
+	    height > MC_MAX_HEIGHT || !stride || !comp) {
+		printf("illegal param\n");
 		return -EINVAL;
+	}
 
 	if (c->mc_update_pending) {
 		printf("mc update pending\n");
@@ -1624,24 +1732,30 @@ static s32 cb_compositor_set_mouse_cursor(struct compositor *comp,
 
 	c->mc_hot_pos.x = hot_x;
 	c->mc_hot_pos.y = hot_y;
-	c->mc_alpha_blended = alpha_blended;
+	c->mc_alpha_src_pre_mul = alpha_src_pre_mul;
 
 	/* if mouse is hide, just update cursor data */
 	if (c->mc_hide) {
 		printf("cursor is hide\n");
-		return 0;
+		return -ENODEV;
 	}
 
 	buffer = c->mc_buf[1 - c->mc_buf_cur];
 
 	/* switch buffer index */
 	c->mc_buf_cur = 1 - c->mc_buf_cur;
+#ifdef MC_DEBUG
+	printf("Switch mc_buf_cur -> %d\n", c->mc_buf_cur);
+#endif
 
 	scanout_buffer_dirty_init(buffer);
 	for (i = 0; i < c->count_outputs; i++) {
 		/* if monitor is pluged out, do not set dirty bit */
 		if (!c->outputs[i]->enabled)
 			continue;
+#ifdef MC_SINGLE_SYNC
+		sync_output_found = false;
+#endif
 		/*
 		 * re-calculate mouse display position, because the hot point
 		 * may be changed.
@@ -1649,13 +1763,21 @@ static s32 cb_compositor_set_mouse_cursor(struct compositor *comp,
 		mc_on_screen = c->outputs[i]->mc_on_screen;
 		update_mc_view_port(c->outputs[i]);
 		if (c->outputs[i]->mc_on_screen) {
-			printf("set dirty %d\n", c->outputs[i]->pipe);
+#ifdef MC_SINGLE_SYNC
+			if (!sync_output_found) {
+				sync_output_found = true;
+				scanout_set_buffer_dirty(buffer,
+							 c->outputs[i]->output);
+			}
+#else
 			scanout_set_buffer_dirty(buffer, c->outputs[i]->output);
+#endif
 		}
 		/* if mouse cursor is not on the screen (e.g. extended screen),
 		 * do not set dirty bit */
 		if (!c->outputs[i]->mc_on_screen) {
 			if (mc_on_screen) {
+				cancel_mc_buffer(c->outputs[i]);
 				add_mc_buffer_to_task(c, NULL,
 						1U << c->outputs[i]->pipe);
 			} else {
@@ -1678,10 +1800,14 @@ static s32 cb_compositor_set_mouse_cursor(struct compositor *comp,
 	}
 	//printf(">>>>>> Cursor dirty: %d\n", buffer->dirty);
 
-	if (dirty)
+	if (dirty) {
 		c->mc_update_pending = true;
-	else
+	} else {
+#ifdef MC_DEBUG
+		printf("no dirty\n");
+#endif
 		return -EINVAL;
+	}
 
 	return 0;
 }
@@ -1827,7 +1953,8 @@ static void cursor_accel_set(s32 *dx, s32 *dy, float factor)
 	*dy = *dy * fy;
 }
 
-static void refresh_mc_desktop_pos(struct cb_compositor *c, s32 dx, s32 dy)
+static void refresh_mc_desktop_pos(struct cb_compositor *c, s32 dx, s32 dy,
+				   bool hide)
 {
 	s32 i, cur_screen;
 	bool mc_on_screen;
@@ -1847,8 +1974,20 @@ static void refresh_mc_desktop_pos(struct cb_compositor *c, s32 dx, s32 dy)
 			continue;
 		mc_on_screen = c->outputs[i]->mc_on_screen;
 		update_mc_view_port(c->outputs[i]);
+		if (c->mc_hide)
+			continue;
+
+		if (!c->mc_hide && hide) {
+			if (mc_on_screen) {
+				cancel_mc_buffer(c->outputs[i]);
+				add_mc_buffer_to_task(c, NULL,
+				      1U << c->outputs[i]->pipe);
+			}
+			continue;
+		}
 		if (!c->outputs[i]->mc_on_screen) {
 			if (mc_on_screen) {
+				cancel_mc_buffer(c->outputs[i]);
 				add_mc_buffer_to_task(c, NULL,
 				      1U << c->outputs[i]->pipe);
 			}
@@ -1857,7 +1996,30 @@ static void refresh_mc_desktop_pos(struct cb_compositor *c, s32 dx, s32 dy)
 		add_mc_buffer_to_task(c, c->mc_buf[c->mc_buf_cur],
 				      1U << c->outputs[i]->pipe);
 	}
+
+	if (!c->mc_hide && hide)
+		c->mc_hide = true;
+
 	cb_compositor_repaint(c);
+}
+
+static s32 cb_compositor_hide_mouse_cursor(struct compositor *comp)
+{
+	struct cb_compositor *c = to_cb_c(comp);
+
+	refresh_mc_desktop_pos(c, 0, 0, true);
+
+	return 0;
+}
+
+static s32 cb_compositor_show_mouse_cursor(struct compositor *comp)
+{
+	struct cb_compositor *c = to_cb_c(comp);
+
+	c->mc_hide = false;
+	refresh_mc_desktop_pos(c, 0, 0, false);
+
+	return 0;
 }
 
 static void event_proc(struct cb_compositor *c, struct input_event *evts,
@@ -1874,7 +2036,7 @@ static void event_proc(struct cb_compositor *c, struct input_event *evts,
 		case EV_SYN:
 			if (dx || dy) {
 				cursor_accel_set(&dx, &dy, 2.0f);
-				refresh_mc_desktop_pos(c, dx, dy);
+				refresh_mc_desktop_pos(c, dx, dy, false);
 /*
 				mouse_move_proc(disp, dx, dy);
 				disp->tx_buf[dst].type = EV_ABS;
@@ -2199,117 +2361,6 @@ err:
 	return -1;
 }
 
-#if 0
-/* repaint timer proc */
-static s32 output_repaint_timer_handler(void *data)
-{
-	struct cb_compositor *c = data;
-	struct cb_output *o;
-	struct scanout_task *sot, *sot_next;
-	s32 i;
-	struct scanout_commit_info *commit;
-	void *sd;
-	bool empty = true, output_empty;
-	s64 msec_to_repaint;
-	struct timespec now;
-	bool primary_empty;
-
-	commit = scanout_commit_info_alloc();
-
-	/*
-	 * deal with the output that has been scheduled repainting.
-	 * if the output has nothing to be repainted,
-	 *     reset repaint_status as REPAINT_NOT_SCHEDULED
-	 * else
-	 *     set repaint_status as REPAINT_WAIT_COMPLETION
-	 *         (waiting for page flip)
-	 */
-	for (i = 0; i < c->count_outputs; i++) {
-		o = c->outputs[i];
-		primary_empty = true;
-		output_empty = true;
-		if (o->repaint_status != REPAINT_SCHEDULED) {
-			printf("o %d is not schedule %d\n", o->pipe,
-				o->repaint_status);
-			continue;
-		}
-		clock_gettime(c->clock_type, &now);
-		msec_to_repaint = timespec_sub_to_msec(&o->next_repaint, &now);
-		if (msec_to_repaint > 1) {
-			/* the timer cb is not alarmed by this output */
-			continue;
-		} else if (msec_to_repaint < -1) {
-			comp_warn("output %d msec_to_repaint (%ld) < -1",
-				  o->pipe, msec_to_repaint);
-		}
-		list_for_each_entry_safe(sot, sot_next, &o->so_tasks, link) {
-			list_del(&sot->link);
-			if (sot->plane == o->primary_plane)
-				primary_empty = false;
-			//printf("Add FB %p to output %d\n", sot->buffer,o->pipe);
-			printf("_____________add fb to output %d\n",
-						o->output->index);
-			scanout_commit_add_fb_info(commit,
-					   sot->buffer,
-					   o->output,
-					   sot->plane,
-					   sot->src,
-					   sot->dst,
-					   -1);
-			cb_cache_put(sot, c->so_task_cache);
-			output_empty = false;
-			empty = false;
-		}
-		if (!output_empty) {
-			if (primary_empty) {
-				printf("_____________add fb to output %d\n",
-						o->output->index);
-				scanout_commit_add_fb_info(commit, o->dummy,
-				   o->output, o->primary_plane,
-				   &o->dummy_src, &o->crtc_view_port,
-				   0);
-				empty = false;
-			}
-			o->repaint_status = REPAINT_WAIT_COMPLETION;
-		} else {
-			if (!(c->mc_hide) && !o->mc_on_screen) {
-				printf("mc is not on screen %d\n", o->pipe);
-				if (primary_empty) {
-					printf("_____________add fb to output %d\n",
-						o->output->index);
-					scanout_commit_add_fb_info(commit,
-						o->dummy,
-						o->output,
-						o->primary_plane,
-						&o->dummy_src,
-						&o->crtc_view_port,
-						0);
-					empty = false;
-				}
-				o->dummy_flipped_pending = true;
-				o->repaint_status = REPAINT_WAIT_COMPLETION;
-			} else {
-				printf("reset o %d repaint\n", o->pipe);
-				o->repaint_status = REPAINT_NOT_SCHEDULED;
-			}
-		}
-	}
-
-	if (empty) {
-		printf("_____________out\n");
-		goto out;
-	}
-	sd = c->so->scanout_data_alloc(c->so);
-	printf("_____________fill\n");
-	c->so->fill_scanout_data(c->so, sd, commit);
-	c->so->do_scanout(c->so, sd);
-out:
-	scanout_commit_info_free(commit);
-
-	update_repaint_timer(c);
-	return 0;
-}
-#else
 /* repaint timer proc */
 static s32 output_repaint_timer_handler(void *data)
 {
@@ -2357,16 +2408,28 @@ static s32 output_repaint_timer_handler(void *data)
 				cb_cache_put(sot, c->so_task_cache);
 				continue;
 			}
-			if (sot->plane == o->cursor_plane)
-				printf("...0x%08X o: %u\n",
-					sot->buffer->dirty, o->pipe);
+#ifdef MC_DEBUG
+			if (o->cursor_plane == sot->plane) {
+				printf("Commit MC: %ld, cur %d\n",
+					(s64)(sot->buffer->userdata),
+					c->mc_buf_cur);
+				comp_debug("Commit MC: %ld, cur %d",
+					(s64)(sot->buffer->userdata),
+					c->mc_buf_cur);
+				/*
+				printf("Commit Dirty: %08X\n",
+					sot->buffer->dirty);
+				*/
+			}
+#endif
 			scanout_commit_add_fb_info(commit,
 					   sot->buffer,
 					   o->output,
 					   sot->plane,
 					   sot->src,
 					   sot->dst,
-					   -1);
+					   -1,
+					   sot->alpha_src_pre_mul);
 			cb_cache_put(sot, c->so_task_cache);
 			empty = false;
 		}
@@ -2375,7 +2438,7 @@ static s32 output_repaint_timer_handler(void *data)
 				scanout_commit_add_fb_info(commit, o->dummy,
 					o->output, o->primary_plane,
 					&o->dummy_src, &o->crtc_view_port,
-					0);
+					0, true);
 				empty = false;
 			}
 			o->repaint_status = REPAINT_WAIT_COMPLETION;
@@ -2396,51 +2459,18 @@ out:
 	update_repaint_timer(c);
 	return 0;
 }
+
+#ifdef MC_DEBUG_BO_COMPLETE
+static void mc_buf_complete_cb(struct cb_listener *listener, void *data)
+{
+	struct cb_buffer *buffer = data;
+	s64 index = (s64)(buffer->userdata);
+
+	struct cb_compositor *c = container_of(listener, struct cb_compositor,
+					       mc_buf_l[index]);
+	printf("MC CUR: %u, MC BO %ld Complete.\n", c->mc_buf_cur, index);
+}
 #endif
-
-static void idle_repaint(void *data)
-{
-	struct cb_output *output = data;
-
-	/* comp_debug("output %d repaint from idle.", output->pipe); */
-/*
-	if (output->repaint_status != REPAINT_START_FROM_IDLE)
-		printf("output [%d] repaint_status != IDLE %d\n",
-			output->pipe, output->repaint_status);
-*/
-	assert(output->repaint_status == REPAINT_START_FROM_IDLE);
-	output->repaint_status = REPAINT_WAIT_COMPLETION;
-	output->idle_repaint_source = NULL;
-	schedule_repaint(output, NULL);
-}
-
-static void cb_compositor_repaint_by_output(struct cb_output *output)
-{
-	if (output->enabled) {
-		if (output->repaint_status != REPAINT_NOT_SCHEDULED) {
-			return;
-		}
-	}
-
-	//printf("repaint output %d\n", output->pipe);
-	/* comp_debug("repaint output %d", output->pipe); */
-	output->idle_repaint_source = cb_event_loop_add_idle(output->c->loop,
-							     idle_repaint,
-							     output);
-
-	output->repaint_status = REPAINT_START_FROM_IDLE;
-}
-
-static void cb_compositor_repaint(struct cb_compositor *c)
-{
-	s32 i = 0;
-
-	for (i = 0; i < c->count_outputs; i++) {
-		if (c->outputs[i]->enabled) {
-			cb_compositor_repaint_by_output(c->outputs[i]);
-		}
-	}
-}
 
 struct compositor *compositor_create(char *device_name,
 				     struct cb_event_loop *loop,
@@ -2498,6 +2528,11 @@ struct compositor *compositor_create(char *device_name,
 		if (!c->mc_buf[i])
 			goto err;
 		c->mc_buf[i]->userdata = (void *)((s64)(i));
+#ifdef MC_DEBUG_BO_COMPLETE
+		c->mc_buf_l[i].notify = mc_buf_complete_cb;
+		c->so->add_buffer_complete_notify(c->so, c->mc_buf[i],
+						  &c->mc_buf_l[i]);
+#endif
 	}
 	c->mc_buf_cur = 1;
 	fill_cursor(c, DEF_MC_DAT, DEF_MC_WIDTH, DEF_MC_HEIGHT,
@@ -2507,6 +2542,8 @@ struct compositor *compositor_create(char *device_name,
 	c->mc_src.pos.x = c->mc_src.pos.y = 0;
 	c->mc_src.w = MC_MAX_WIDTH;
 	c->mc_src.h = MC_MAX_HEIGHT;
+
+	c->mc_hide = false;
 
 	/* register mc page flip handler */
 	for (i = 0; i < 2; i++) {
@@ -2525,13 +2562,6 @@ struct compositor *compositor_create(char *device_name,
 	}
 
 	scanout_buffer_dirty_init(c->mc_buf[c->mc_buf_cur]);
-/*
-	for (i = 0; i < c->count_outputs; i++) {
-		scanout_set_buffer_dirty(c->mc_buf[c->mc_buf_cur],
-					 c->outputs[i]->output);
-	}
-	printf(">>>>>> Cursor dirty: %d\n", c->mc_buf[c->mc_buf_cur]->dirty);
-*/
 
 	cb_signal_init(&c->ready_signal);
 

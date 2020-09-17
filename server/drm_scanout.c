@@ -43,7 +43,7 @@
 #include <cube_compositor.h>
 #include <cube_scanout.h>
 
-//static enum cb_log_level drm_dbg = CB_LOG_DEBUG;
+/* static enum cb_log_level drm_dbg = CB_LOG_DEBUG; */
 static enum cb_log_level drm_dbg = CB_LOG_NOTICE;
 
 #define drm_debug(fmt, ...) do { \
@@ -219,7 +219,7 @@ enum {
 	PLANE_PROP_COLOR_SPACE,
 	PLANE_PROP_GLOBAL_ALPHA,
 	PLANE_PROP_BLEND_MODE,
-	PLANE_PROP_ALPHA_SRC,
+	PLANE_PROP_ALPHA_SRC_PRE_MUL,
 	PLANE_PROP_NR,
 };
 
@@ -328,7 +328,7 @@ static const struct drm_prop plane_props[] = {
 		.name = "BLEND_MODE",
 		.type = DRM_PROP_TYPE_RANGE,
 	},
-	[PLANE_PROP_ALPHA_SRC] = {
+	[PLANE_PROP_ALPHA_SRC_PRE_MUL] = {
 		.name = "ALPHA_SRC_PRE_MUL",
 		.type = DRM_PROP_TYPE_ENUM,
 		.c = {
@@ -443,6 +443,7 @@ struct drm_plane_state {
 	u32 crtc_w, crtc_h;
 	u32 src_x, src_y;
 	u32 src_w, src_h;
+	bool alpha_src_pre_mul;
 };
 
 struct drm_output_state {
@@ -911,7 +912,7 @@ static void drm_fb_ref(struct drm_fb *fb)
 	drm_debug("[REF] +");
 	fb->ref_cnt++;
 	drm_debug("[REF] ID: %u %d", fb->fb_id, fb->ref_cnt);
-	//printf("[REF] ID: %u %d\n", fb->fb_id, fb->ref_cnt);
+	/* printf("[REF] ID: %u %d\n", fb->fb_id, fb->ref_cnt); */
 }
 
 static struct drm_plane_state *
@@ -1048,11 +1049,12 @@ static void drm_fb_unref(struct drm_fb *fb)
 
 	fb->ref_cnt--;
 	drm_debug("[UNREF] ID: %u %d", fb->fb_id, fb->ref_cnt);
-	//printf("[UNREF] ID: %u %d\n", fb->fb_id, fb->ref_cnt);
+	/* printf("[UNREF] ID: %u %d\n", fb->fb_id, fb->ref_cnt); */
 	if (fb->ref_cnt == 0) {
 		drm_fb_release_buffer(fb);
 	} else if (fb->ref_cnt == 1) { /* do not use any more */
 		buffer = &fb->base;
+		/* printf("[UNREF] bo complete. %p\n", buffer); */
 		cb_signal_emit(&buffer->complete_signal, buffer);
 	}
 }
@@ -1301,6 +1303,16 @@ static s32 drm_output_commit(drmModeAtomicReq *req,
 			ret |= set_plane_prop(req, plane, PLANE_PROP_ZPOS,
 				      pls->zpos);
 		}
+
+		if (pls->alpha_src_pre_mul) {
+			ret |= set_plane_prop(req, plane,
+				PLANE_PROP_ALPHA_SRC_PRE_MUL,
+				PLANE_ALPHA_SRC_PRE_MUL);
+		} else {
+			ret |= set_plane_prop(req, plane,
+				PLANE_PROP_ALPHA_SRC_PRE_MUL,
+				PLANE_ALPHA_SRC_NON_PRE_MUL);
+		}
 	}
 
 	return ret;
@@ -1448,6 +1460,7 @@ static s32 drm_scanout_data_fill(struct scanout *so,
 		pls->fb = to_drm_fb(info->buffer);
 */
 		pls->zpos = info->zpos;
+		pls->alpha_src_pre_mul = info->alpha_src_pre_mul;
 		pls->src_x = info->src.pos.x;
 		pls->src_y = info->src.pos.y;
 		pls->src_w = info->src.w;
@@ -1743,16 +1756,17 @@ static struct plane *drm_plane_create(struct drm_scanout *dev,
 			plane->base.type = PLANE_TYPE_CURSOR;
 	}
 
-	alpha_src = drm_get_prop_value(&plane->props[PLANE_PROP_ALPHA_SRC],
-				       props);
+	alpha_src = drm_get_prop_value(
+			&plane->props[PLANE_PROP_ALPHA_SRC_PRE_MUL],
+			props);
 	if (alpha_src != (u32)(-1)) {
 		if (!strcmp(plane_alpha_src_enum[alpha_src].name, "true")) {
-			drm_debug("ALPHA_SRC_PRE_MUL: true");
+			drm_debug("ALPHA_SRC_PRE_MUL: true, %u", alpha_src);
 		} else if (!strcmp(plane_alpha_src_enum[alpha_src].name,
 			   "false")) {
-			drm_debug("ALPHA_SRC_PRE_MUL: false");
+			drm_debug("ALPHA_SRC_PRE_MUL: false, %u", alpha_src);
 		}
-		plane->base.alpha_src = alpha_src;
+		plane->base.alpha_src_pre_mul = alpha_src;
 	}
 	drmModeFreeObjectProperties(props);
 
@@ -2107,6 +2121,49 @@ static s32 drm_output_add_page_flip_notify(struct output *o,
 
 	cb_signal_add(&output->flipped_signal, l);
 	return 0;
+}
+
+static u32 drm_waitvblank_pipe(struct drm_output *output)
+{
+	if (output->index > 1)
+		return (output->index << DRM_VBLANK_HIGH_CRTC_SHIFT) &
+				DRM_VBLANK_HIGH_CRTC_MASK;
+	else if (output->index > 0)
+		return DRM_VBLANK_SECONDARY;
+	else
+		return 0;
+}
+
+static s32 drm_output_query_vblank(struct output *o, struct timespec *ts)
+{
+	struct drm_output *output = to_drm_output(o);
+	drmVBlank vbl = {
+		.request.type = DRM_VBLANK_RELATIVE,
+		.request.sequence = 0,
+		.request.signal = 0,
+	};
+	s32 ret;
+
+	if (!o || !ts)
+		return -EINVAL;
+
+	vbl.request.type |= drm_waitvblank_pipe(output);
+	ret = drmWaitVBlank(output->dev->fd, &vbl);
+	if (ret < 0) {
+		drm_err("failed to wait vblank %s", strerror(errno));
+	}
+	if (vbl.reply.tval_sec <= 0 && vbl.reply.tval_usec <= 0) {
+		drm_err("illegal vblank time reply. %ld, %ld",
+			vbl.reply.tval_sec, vbl.reply.tval_usec);
+		ret = -1;
+	}
+
+	if (!ret) {
+		ts->tv_sec = vbl.reply.tval_sec;
+		ts->tv_nsec = vbl.reply.tval_usec * 1000;
+	}
+
+	return ret;
 }
 
 static void drm_output_destroy(struct output *o)
@@ -2788,6 +2845,7 @@ drm_scanout_pipeline_create(struct scanout *so, struct pipeline *pipeline_cfg)
 	output->native_surface_create = drm_output_native_surface_create;
 	output->native_surface_destroy = drm_output_native_surface_destroy;
 	output->add_page_flip_notify = drm_output_add_page_flip_notify;
+	output->query_vblank = drm_output_query_vblank;
 
 	drm_info("Create pipeline complete");
 
@@ -3042,6 +3100,7 @@ static void page_flip_handler(s32 fd, u32 crtc_id, u32 frame, u32 sec, u32 usec,
 {
 	struct drm_scanout *dev = data;
 	struct drm_output *output;
+	bool found = false;
 
 	drm_debug("CRTC_ID: %u frame: %u (%u, %u)", crtc_id, frame, sec, usec);
 	list_for_each_entry(output, &dev->outputs, link) {
@@ -3049,7 +3108,12 @@ static void page_flip_handler(s32 fd, u32 crtc_id, u32 frame, u32 sec, u32 usec,
 			drm_debug("send page flip to user");
 			output->page_flip_pending = false;
 			drm_output_complete(output, sec, usec);
+			found = true;
 		}
+	}
+
+	if (!found) {
+		drm_err("cannot find crtc_id %u", crtc_id);
 	}
 }
 
