@@ -35,12 +35,11 @@ struct renderer;
 struct r_output {
 	void (*destroy)(struct r_output *o);
 
-	void (*repaint_output)(struct r_output *o);
+	void (*repaint)(struct r_output *o, struct list_head *views);
 
-	struct r_surface *(*attach_buffer)(struct cb_surface *surface,
-					   struct cb_buffer *buffer);
-
-	void (*flush_damage)(struct cb_surface *surface);
+	void (*layout_changed)(struct r_output *o,
+			       struct cb_rect *render_area,
+			       u32 disp_w, u32 disp_h);
 };
 
 struct renderer {
@@ -51,13 +50,21 @@ struct renderer {
 					 void *window,
 					 s32 *formats,
 					 s32 count_fmts,
-					 s32 *vid);
+					 s32 *vid,
+					 struct cb_rect *render_area,
+					 u32 disp_w, u32 disp_h);
 
 	struct cb_buffer *(*import_dmabuf)(struct renderer *r,
 					   struct cb_buffer_info *info);
 
 	void (*release_dmabuf)(struct renderer *r,
 			       struct cb_buffer *buffer);
+
+	void (*attach_buffer)(struct renderer *r,
+			      struct cb_surface *surface,
+			      struct cb_buffer *buffer);
+
+	void (*flush_damage)(struct renderer *r, struct cb_surface *surface);
 };
 
 struct renderer *renderer_create(struct compositor *c,

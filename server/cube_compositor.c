@@ -57,12 +57,18 @@
 #define MC_MAX_WIDTH 64
 #define MC_MAX_HEIGHT 64
 
+#define GLOBAL_DESKTOP_SZ 65536.0f
+
 #define OUTPUT_DISABLE_DELAYED_MS 1
 #define OUTPUT_DISABLE_DELAYED_US 500
 #define DISABLE_ALL_DELAYED_MS 2
 #define DISABLE_ALL_DELAYED_US 0
 
 #define CONN_STATUS_DB_TIME 500
+
+#define TEST_DUMMY_VIEW 1
+#define TEST_DUMMY_YUV444P 1
+//#define TEST_DUMMY_NV24 1
 
 static enum cb_log_level comp_dbg = CB_LOG_DEBUG;
 
@@ -125,17 +131,24 @@ struct cb_output {
 	 *     for left/right border: desktop height / crtc height
 	 */
 	float scale;
+	/* global coordinates e.g. (0 - 65535) rect */
+	struct cb_rect g_desktop_rc;
 
 	/* physical output size */
 	u32 crtc_w, crtc_h;
 	/* view port in physical area */
 	struct cb_rect crtc_view_port;
+	/* renderer's surface fb src rect */
+	struct cb_rect native_surface_src;
 
 	/* scanout output */
 	struct output *output;
 
 	/* native surface */
 	void *native_surface;
+
+	/* renderer's output */
+	struct r_output *ro;
 
 	/* display connector */
 	struct head *head;
@@ -230,6 +243,11 @@ struct cb_compositor {
 	/* native device */
 	void *native_dev;
 
+#ifdef TEST_DUMMY_VIEW
+	struct cb_surface dummy_surf;
+	struct cb_view dummy_view;
+	struct shm_buffer dummy_buf;
+#endif
 	/* views in z-order from top to bottom */
 	struct list_head views;
 
@@ -244,6 +262,8 @@ struct cb_compositor {
 
 	/* mouse cursor's desktop position */
 	struct cb_pos mc_desktop_pos;
+	/* global coordinate mouse cursor's desktop position */
+	struct cb_pos mc_g_desktop_pos;
 	/* mouse cursor's hot point position */
 	struct cb_pos mc_hot_pos;
 	/* mouse cursor's alpha is blended or not */
@@ -376,11 +396,6 @@ static void cb_output_destroy(struct cb_output *output)
 	free(output);
 }
 
-static void reset_mouse_pos(struct cb_compositor *c)
-{
-	c->mc_desktop_pos.x = c->mc_desktop_pos.y = 0;
-}
-
 static s32 check_mouse_pos(struct cb_compositor *c, s32 x, s32 y)
 {
 	s32 i;
@@ -443,11 +458,43 @@ static void normalize_mouse_pos(struct cb_compositor *c, s32 cur_screen,
 	}
 }
 
+static void gen_global_pos(struct cb_output *o)
+{
+	s32 dx, dy;
+	s32 abs_dx, abs_dy;
+	struct cb_compositor *c = o->c;
+
+	if (!o->enabled)
+		return;
+	if (!o->mc_on_screen)
+		return;
+	dx = c->mc_desktop_pos.x - o->desktop_rc.pos.x;
+	dy = c->mc_desktop_pos.y - o->desktop_rc.pos.y;
+	if (dx < 0 || dy < 0)
+		return;
+
+	/*
+	 *    dx            w
+	 * --------  =  ---------
+	 *  abs_dx        abs_w
+	 */
+	abs_dx = (float)dx * o->g_desktop_rc.w / o->desktop_rc.w;
+	/*
+	 *    dy            h
+	 * --------  =  ---------
+	 *  abs_dy        abs_h
+	 */
+	abs_dy = (float)dy * o->g_desktop_rc.h / o->desktop_rc.h;
+	c->mc_g_desktop_pos.x = abs_dx + o->g_desktop_rc.pos.x;
+	c->mc_g_desktop_pos.y = abs_dy + o->g_desktop_rc.pos.y;
+	/* printf("%d, %d\n", c->mc_g_desktop_pos.x, c->mc_g_desktop_pos.y); */
+}
+
 /*
  * Calculate mouse cursor display position on screen.
  * it depend update_crtc_view_port to calculate desktop scaler
  */
-static void update_mc_view_port(struct cb_output *output)
+static void update_mc_view_port(struct cb_output *output, bool gen_g_pos)
 {
 	struct cb_compositor *c = output->c;
 	s32 dx, dy;
@@ -463,6 +510,8 @@ static void update_mc_view_port(struct cb_output *output)
 			(s32)(output->desktop_rc.pos.y
 				+ output->desktop_rc.h))) {
 		output->mc_on_screen = true;
+		if (gen_g_pos)
+			gen_global_pos(output);
 		output->mc_view_port.pos.x = output->crtc_view_port.pos.x;
 		output->mc_view_port.pos.y = output->crtc_view_port.pos.y;
 		dx = c->mc_desktop_pos.x - output->desktop_rc.pos.x;
@@ -493,6 +542,10 @@ static void update_crtc_view_port(struct cb_output *output)
 		memset(&output->crtc_view_port, 0,
 			sizeof(output->crtc_view_port));
 	} else {
+		output->native_surface_src.w = mode->width;
+		output->native_surface_src.h = mode->height;
+		output->native_surface_src.pos.x = 0;
+		output->native_surface_src.pos.y = 0;
 		output->crtc_w = mode->width;
 		output->crtc_h = mode->height;
 		calc = output->crtc_w * output->desktop_rc.h
@@ -538,7 +591,7 @@ static void update_crtc_view_port(struct cb_output *output)
 			output->crtc_view_port.w,
 			output->crtc_view_port.h);
 
-	update_mc_view_port(output);
+	update_mc_view_port(output, true);
 }
 
 static void cancel_so_tasks(struct cb_output *output)
@@ -621,6 +674,16 @@ static s32 suspend(struct cb_compositor *c)
 						     OUTPUT_DISABLE_DELAYED_US);
 				c->disable_all_pending++;
 			} else {
+				if (o->ro) {
+					o->ro->destroy(o->ro);
+					o->ro = NULL;
+				}
+				if (o->native_surface) {
+					o->output->native_surface_destroy(
+							o->output,
+							o->native_surface);
+					o->native_surface = NULL;
+				}
 				/* update view port when output is disabled. */
 				update_crtc_view_port(o);
 				o->disable_pending = false;
@@ -673,6 +736,7 @@ static s32 cb_compositor_destroy(struct compositor *comp)
 {
 	struct cb_compositor *c = to_cb_c(comp);
 	s32 i, ret;
+	struct cb_view *view, *view_next;
 
 	ret = suspend(c);
 	if (ret == -EAGAIN || c->suspend_pending) {
@@ -713,6 +777,19 @@ static s32 cb_compositor_destroy(struct compositor *comp)
 
 	if (c->r)
 		c->r->destroy(c->r);
+
+	list_for_each_entry_safe(view, view_next, &c->views, link) {
+		list_del(&view->link);
+#ifdef TEST_DUMMY_VIEW
+		if (view == &c->dummy_view) {
+			cb_shm_release(&c->dummy_buf.shm);
+			if (view->surface && view->surface->renderer_state) {
+				free(view->surface->renderer_state);
+				view->surface->renderer_state = NULL;
+			}
+		}
+#endif
+	}
 
 	if (c->so)
 		c->so->destroy(c->so);
@@ -869,6 +946,8 @@ static void head_changed_cb(struct cb_listener *listener, void *data)
 					   conn_st_chg_changed_l);
 	struct head *head = o->head;
 	struct output *output = o->output;
+	struct cb_compositor *c = o->c;
+	s32 vid;
 
 	if (o->c->disable_head_detect)
 		return;
@@ -886,6 +965,19 @@ static void head_changed_cb(struct cb_listener *listener, void *data)
 		/* update view port before show dummy */
 		update_crtc_view_port(o);
 		show_dummy(o);
+		o->native_surface = output->native_surface_create(output);
+		if (!o->native_surface) {
+			comp_err("failed to create native surface");
+			assert(o->native_surface);
+		}
+		o->ro = c->r->output_create(c->r, NULL, o->native_surface,
+					    (s32 *)(&c->native_fmt), 1, &vid,
+					    &o->desktop_rc,
+					    o->crtc_w, o->crtc_h);
+		if (!o->ro) {
+			comp_err("failed to create renderer output");
+			assert(o->ro);
+		}
 		printf("output %d is enabled. repaint_status: %d\n",
 			o->pipe, o->repaint_status);
 	} else {
@@ -900,6 +992,16 @@ static void head_changed_cb(struct cb_listener *listener, void *data)
 						     OUTPUT_DISABLE_DELAYED_MS,
 						     OUTPUT_DISABLE_DELAYED_US);
 		} else {
+			if (o->ro) {
+				o->ro->destroy(o->ro);
+				o->ro = NULL;
+			}
+			if (o->native_surface) {
+				o->output->native_surface_destroy(
+						output,
+						o->native_surface);
+				o->native_surface = NULL;
+			}
 			o->disable_pending = false;
 			printf("output %d is disabled. repaint_status: %d\n",
 				o->pipe, o->repaint_status);
@@ -957,7 +1059,9 @@ static s32 suspend_timer_cb(void *data)
 static s32 output_disable_timer_cb(void *data)
 {
 	struct cb_output *o = data;
+	struct cb_compositor *c = o->c;
 	struct output *output = o->output;
+	s32 vid;
 
 	printf("Try to disable output: %d\n", o->pipe);
 	comp_notice("Try to disable output: %d", o->pipe);
@@ -967,6 +1071,16 @@ static s32 output_disable_timer_cb(void *data)
 					     OUTPUT_DISABLE_DELAYED_US);
 	} else {
 		if (o->switch_mode_pending && o->pending_mode) {
+			if (o->ro) {
+				o->ro->destroy(o->ro);
+				o->ro = NULL;
+			}
+			if (o->native_surface) {
+				o->output->native_surface_destroy(
+					output,
+					o->native_surface);
+				o->native_surface = NULL;
+			}
 			output->switch_mode(output, o->pending_mode);
 			output->enable(output, o->pending_mode);
 			o->repaint_status = REPAINT_NOT_SCHEDULED;
@@ -975,10 +1089,36 @@ static s32 output_disable_timer_cb(void *data)
 			/* update view port before show dummy */
 			update_crtc_view_port(o);
 			show_dummy(o);
+			o->native_surface = output->native_surface_create(
+						output);
+			if (!o->native_surface) {
+				comp_err("failed to create native surface");
+				assert(o->native_surface);
+			}
+			o->ro = c->r->output_create(c->r, NULL,
+						    o->native_surface,
+						    (s32 *)(&c->native_fmt),
+						    1, &vid,
+						    &o->desktop_rc,
+						    o->crtc_w, o->crtc_h);
+			if (!o->ro) {
+				comp_err("failed to create renderer output");
+				assert(o->ro);
+			}
 			o->switch_mode_pending = false;
 			o->pending_mode = NULL;
 			cb_signal_emit(&o->switch_mode_signal, NULL);
 		} else {
+			if (o->ro) {
+				o->ro->destroy(o->ro);
+				o->ro = NULL;
+			}
+			if (o->native_surface) {
+				o->output->native_surface_destroy(
+						output,
+						o->native_surface);
+				o->native_surface = NULL;
+			}
 			printf("output %d is disabled. repaint_status: %d\n",
 				o->pipe, o->repaint_status);
 			o->repaint_status = REPAINT_NOT_SCHEDULED;
@@ -1176,6 +1316,7 @@ static struct cb_output *cb_output_create(struct cb_compositor *c,
 	struct cb_output *output = NULL;
 	struct scanout *so;
 	struct cb_buffer_info info;
+	s32 vid;
 
 	if (!c || !pipecfg)
 		goto err;
@@ -1220,21 +1361,41 @@ static struct cb_output *cb_output_create(struct cb_compositor *c,
 	so->add_buffer_flip_notify(so, output->dummy, &output->dummy_flipped_l);
 
 	/* set desktop size as DUMMY SIZE */
+	/* duplicated */
 	output->desktop_rc.pos.x = 0;
 	output->desktop_rc.pos.y = 0;
 	output->desktop_rc.w = DUMMY_WIDTH;
 	output->desktop_rc.h = DUMMY_HEIGHT;
+	output->g_desktop_rc.pos.x = 0;
+	output->g_desktop_rc.pos.y = 0;
+	output->g_desktop_rc.w = GLOBAL_DESKTOP_SZ;
+	output->g_desktop_rc.h = GLOBAL_DESKTOP_SZ;
 
+	/* extended */
 	if (output->pipe == 0) {
 		output->desktop_rc.pos.x = 0;
 		output->desktop_rc.pos.y = 0;
 		output->desktop_rc.w = 2560;
 		output->desktop_rc.h = 1440;
+		output->g_desktop_rc.pos.x = 0;
+		output->g_desktop_rc.pos.y = 0;
+		output->g_desktop_rc.w = GLOBAL_DESKTOP_SZ
+				/ (2560 + 1600) * 2560;
+		output->g_desktop_rc.h = GLOBAL_DESKTOP_SZ;
 	} else {
 		output->desktop_rc.pos.x = 2560;
 		output->desktop_rc.pos.y = 0;
 		output->desktop_rc.w = 1600;
 		output->desktop_rc.h = 900;
+		output->g_desktop_rc.pos.x = GLOBAL_DESKTOP_SZ /
+				(2560 + 1600) * 2560;
+		output->g_desktop_rc.pos.y = 0;
+		output->g_desktop_rc.w = GLOBAL_DESKTOP_SZ
+				- output->g_desktop_rc.pos.x;
+		output->g_desktop_rc.h = GLOBAL_DESKTOP_SZ
+				/ 1440 * 900;
+		printf("******************** %u,%u *******************\n",
+			output->g_desktop_rc.w, output->g_desktop_rc.h);
 	}
 
 	/* prepare disable timer */
@@ -1275,6 +1436,21 @@ static struct cb_output *cb_output_create(struct cb_compositor *c,
 		update_crtc_view_port(output);
 		output->enabled = true;
 		show_dummy(output);
+		output->native_surface = output->output->native_surface_create(
+						output->output);
+		if (!output->native_surface) {
+			comp_err("failed to create native surface");
+			assert(output->native_surface);
+		}
+		output->ro = c->r->output_create(c->r, NULL,
+					output->native_surface,
+					(s32 *)(&c->native_fmt), 1, &vid,
+					&output->desktop_rc,
+					output->crtc_w, output->crtc_h);
+		if (!output->ro) {
+			comp_err("failed to create renderer output");
+			assert(output->ro);
+		}
 		/* set initial debounced head status as 'plug in' */
 		output->conn_st_db = true;
 	} else {
@@ -1301,7 +1477,7 @@ static void cb_compositor_resume(struct compositor *comp)
 	struct cb_compositor *c = to_cb_c(comp);
 	struct cb_output *o;
 	struct cb_mode *mode = NULL;
-	s32 i;
+	s32 i, vid;
 
 	if (!comp)
 		return;
@@ -1343,6 +1519,22 @@ static void cb_compositor_resume(struct compositor *comp)
 			update_crtc_view_port(o);
 			o->enabled = true;
 			show_dummy(o);
+			o->native_surface = o->output->native_surface_create(
+							o->output);
+			if (!o->native_surface) {
+				comp_err("failed to create native surface");
+				assert(o->native_surface);
+			}
+			o->ro = c->r->output_create(c->r, NULL,
+						o->native_surface,
+						(s32 *)(&c->native_fmt), 1,
+						&vid,
+						&o->desktop_rc,
+						o->crtc_w, o->crtc_h);
+			if (!o->ro) {
+				comp_err("failed to create renderer output");
+				assert(o->ro);
+			}
 			/* set initial debounced head status as 'plug in' */
 			o->conn_st_db = true;
 		} else {
@@ -1364,6 +1556,7 @@ static s32 cb_compositor_switch_mode(struct compositor *comp, s32 pipe,
 {
 	struct cb_compositor *c = to_cb_c(comp);
 	struct cb_output *o;
+	s32 vid;
 
 	if (!comp || !mode || pipe < 0)
 		return -EINVAL;
@@ -1389,6 +1582,16 @@ static s32 cb_compositor_switch_mode(struct compositor *comp, s32 pipe,
 					     OUTPUT_DISABLE_DELAYED_MS,
 					     OUTPUT_DISABLE_DELAYED_US);
 	} else {
+		if (o->ro) {
+			o->ro->destroy(o->ro);
+			o->ro = NULL;
+		}
+		if (o->native_surface) {
+			o->output->native_surface_destroy(
+					o->output,
+					o->native_surface);
+			o->native_surface = NULL;
+		}
 		o->output->switch_mode(o->output, mode);
 		o->output->enable(o->output, mode);
 		o->repaint_status = REPAINT_NOT_SCHEDULED;
@@ -1397,6 +1600,19 @@ static s32 cb_compositor_switch_mode(struct compositor *comp, s32 pipe,
 		/* update view port before show dummy */
 		update_crtc_view_port(o);
 		show_dummy(o);
+		o->native_surface = o->output->native_surface_create(o->output);
+		if (!o->native_surface) {
+			comp_err("failed to create native surface");
+			assert(o->native_surface);
+		}
+		o->ro = c->r->output_create(c->r, NULL, o->native_surface,
+					    (s32 *)(&c->native_fmt), 1, &vid,
+					    &o->desktop_rc,
+					    o->crtc_w, o->crtc_h);
+		if (!o->ro) {
+			comp_err("failed to create renderer output");
+			assert(o->ro);
+		}
 		o->pending_mode = NULL;
 		o->switch_mode_pending = false;
 		o->disable_pending = false;
@@ -1761,7 +1977,7 @@ static s32 cb_compositor_set_mouse_cursor(struct compositor *comp,
 		 * may be changed.
 		 */
 		mc_on_screen = c->outputs[i]->mc_on_screen;
-		update_mc_view_port(c->outputs[i]);
+		update_mc_view_port(c->outputs[i], false);
 		if (c->outputs[i]->mc_on_screen) {
 #ifdef MC_SINGLE_SYNC
 			if (!sync_output_found) {
@@ -1953,6 +2169,11 @@ static void cursor_accel_set(s32 *dx, s32 *dy, float factor)
 	*dy = *dy * fy;
 }
 
+static void reset_mouse_pos(struct cb_compositor *c)
+{
+	c->mc_desktop_pos.x = c->mc_desktop_pos.y = 0;
+}
+
 static void refresh_mc_desktop_pos(struct cb_compositor *c, s32 dx, s32 dy,
 				   bool hide)
 {
@@ -1973,7 +2194,7 @@ static void refresh_mc_desktop_pos(struct cb_compositor *c, s32 dx, s32 dy,
 		if (!c->outputs[i]->enabled)
 			continue;
 		mc_on_screen = c->outputs[i]->mc_on_screen;
-		update_mc_view_port(c->outputs[i]);
+		update_mc_view_port(c->outputs[i], true);
 		if (c->mc_hide)
 			continue;
 
@@ -2361,6 +2582,50 @@ err:
 	return -1;
 }
 
+static void add_renderer_buffer_to_task(struct cb_output *o,
+					struct cb_buffer *buffer)
+{
+	struct scanout_task *sot;
+
+	sot = cb_cache_get(o->c->so_task_cache, false);
+	sot->buffer = buffer;
+	sot->plane = o->primary_plane;
+	sot->zpos = -1;
+	sot->src = &o->native_surface_src;
+	sot->dst = &o->crtc_view_port;
+	sot->alpha_src_pre_mul = true;
+	list_add_tail(&sot->link, &o->so_tasks);
+}
+
+static void do_renderer_repaint(struct cb_output *o)
+{
+	struct cb_compositor *c = o->c;
+	struct r_output *ro = o->ro;
+	struct cb_buffer *buffer;
+
+	printf("==================== do renderer repaint=================\n");
+	printf(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>repaint output: %d\n", o->pipe);
+	//getchar();
+	//getchar();
+	ro->repaint(ro, &c->views);
+	printf(">>>>>>>>>>>>>>>>>>>>>>>>>>>>import surface\n");
+	//getchar();
+	//getchar();
+	if (o->pipe == 1)
+		return;
+	buffer = c->so->import_surface_buf(c->so, o->native_surface);
+	if (!buffer) {
+		comp_err("failed to import surface buffer.");
+		printf("failed to import surface buffer.\n");
+		return;
+	}
+
+	printf(">>>>>>>>>>>>>>>>>>>>>>>>>>>>add to task\n");
+	//getchar();
+	//getchar();
+	add_renderer_buffer_to_task(o, buffer);
+}
+
 /* repaint timer proc */
 static s32 output_repaint_timer_handler(void *data)
 {
@@ -2372,7 +2637,7 @@ static s32 output_repaint_timer_handler(void *data)
 	void *sd;
 	s64 msec_to_repaint;
 	struct timespec now;
-	bool primary_empty, output_empty, empty = true;
+	bool primary_empty, output_empty, cursor_empty, empty = true;
 
 	commit = scanout_commit_info_alloc();
 
@@ -2399,6 +2664,9 @@ static s32 output_repaint_timer_handler(void *data)
 		}
 		primary_empty = true;
 		output_empty = true;
+		cursor_empty = true;
+		/* do renderer's repaint */
+		do_renderer_repaint(o);
 		list_for_each_entry_safe(sot, sot_next, &o->so_tasks, link) {
 			list_del(&sot->link);
 			if (sot->plane == o->primary_plane)
@@ -2408,8 +2676,8 @@ static s32 output_repaint_timer_handler(void *data)
 				cb_cache_put(sot, c->so_task_cache);
 				continue;
 			}
-#ifdef MC_DEBUG
 			if (o->cursor_plane == sot->plane) {
+#ifdef MC_DEBUG
 				printf("Commit MC: %ld, cur %d\n",
 					(s64)(sot->buffer->userdata),
 					c->mc_buf_cur);
@@ -2420,8 +2688,13 @@ static s32 output_repaint_timer_handler(void *data)
 				printf("Commit Dirty: %08X\n",
 					sot->buffer->dirty);
 				*/
-			}
 #endif
+				cursor_empty = false;
+			}
+			printf("commit fb: %d,%d %ux%u\n", sot->src->pos.x,
+					sot->src->pos.y,
+					sot->src->w,
+					sot->src->h);
 			scanout_commit_add_fb_info(commit,
 					   sot->buffer,
 					   o->output,
@@ -2435,11 +2708,24 @@ static s32 output_repaint_timer_handler(void *data)
 		}
 		if (!output_empty) {
 			if (primary_empty) {
+				printf("primary empty\n");
 				scanout_commit_add_fb_info(commit, o->dummy,
 					o->output, o->primary_plane,
 					&o->dummy_src, &o->crtc_view_port,
 					0, true);
 				empty = false;
+			}
+			if (cursor_empty) {
+				if (!c->mc_hide && o->mc_on_screen) {
+					printf("cursor empty\n");
+					scanout_commit_add_fb_info(commit,
+						c->mc_buf[c->mc_buf_cur],
+						o->output,
+						o->cursor_plane,
+						&c->mc_src,
+						&o->mc_view_port,
+						-1, false);
+				}
 			}
 			o->repaint_status = REPAINT_WAIT_COMPLETION;
 		} else {
@@ -2469,6 +2755,113 @@ static void mc_buf_complete_cb(struct cb_listener *listener, void *data)
 	struct cb_compositor *c = container_of(listener, struct cb_compositor,
 					       mc_buf_l[index]);
 	printf("MC CUR: %u, MC BO %ld Complete.\n", c->mc_buf_cur, index);
+}
+#endif
+
+#ifdef TEST_DUMMY_VIEW
+static void init_dummy_buf(struct cb_compositor *c)
+{
+	u32 *pixel;
+
+	comp_debug("init background layer...");
+	memset(&c->dummy_surf, 0, sizeof(c->dummy_surf));
+	c->dummy_surf.is_opaque = true;
+	c->dummy_surf.view = &c->dummy_view;
+	cb_region_init_rect(&c->dummy_surf.damage, 0, 0, 1024, 768);
+	cb_region_init_rect(&c->dummy_surf.opaque, 0, 0, 1024, 768);
+	cb_signal_init(&c->dummy_surf.destroy_signal);
+	c->dummy_surf.width = 1024;
+	c->dummy_surf.height = 768;
+
+	memset(&c->dummy_view, 0, sizeof(c->dummy_view));
+	c->dummy_view.surface = &c->dummy_surf;
+	c->dummy_view.area.pos.x = 0;
+	c->dummy_view.area.pos.y = 0;
+	c->dummy_view.area.w = 1024;
+	c->dummy_view.area.h = 768;
+	c->dummy_view.alpha = 1.0f;
+	c->dummy_view.dirty = true;
+	list_add_tail(&c->dummy_view.link, &c->views);
+
+	memset(&c->dummy_buf, 0, sizeof(c->dummy_buf));
+	c->dummy_buf.base.info.type = CB_BUF_TYPE_SHM;
+	c->dummy_buf.base.info.width = 1024;
+	c->dummy_buf.base.info.height = 768;
+#ifdef TEST_DUMMY_YUV444P
+	c->dummy_buf.base.info.strides[0] = 1024;
+	c->dummy_buf.base.info.offsets[0] = 0;
+	c->dummy_buf.base.info.sizes[0] = c->dummy_buf.base.info.strides[0]
+					* c->dummy_buf.base.info.height;
+	c->dummy_buf.base.info.strides[1] = 1024;
+	c->dummy_buf.base.info.offsets[1] = c->dummy_buf.base.info.sizes[0];
+	c->dummy_buf.base.info.sizes[1] = c->dummy_buf.base.info.strides[1]
+					* c->dummy_buf.base.info.height;
+	c->dummy_buf.base.info.strides[2] = 1024;
+	c->dummy_buf.base.info.offsets[2] = c->dummy_buf.base.info.sizes[0]
+				+ c->dummy_buf.base.info.sizes[1];
+	c->dummy_buf.base.info.sizes[2] = c->dummy_buf.base.info.strides[2]
+					* c->dummy_buf.base.info.height;
+	c->dummy_buf.base.info.pix_fmt = CB_PIX_FMT_YUV444;
+	c->dummy_buf.base.info.planes = 3;
+	strcpy(c->dummy_buf.name, "shm_dummy_buf");
+	unlink(c->dummy_buf.name);
+	cb_shm_init(&c->dummy_buf.shm, c->dummy_buf.name,
+		    c->dummy_buf.base.info.sizes[0] * 3, 1);
+	pixel = (u32 *)c->dummy_buf.shm.map;
+#else
+#ifdef TEST_DUMMY_NV24
+	c->dummy_buf.base.info.strides[0] = 1024;
+	c->dummy_buf.base.info.offsets[0] = 0;
+	c->dummy_buf.base.info.sizes[0] = c->dummy_buf.base.info.strides[0]
+					* c->dummy_buf.base.info.height;
+	c->dummy_buf.base.info.strides[1] = 1024;
+	c->dummy_buf.base.info.offsets[1] = c->dummy_buf.base.info.sizes[0];
+	c->dummy_buf.base.info.sizes[1] = c->dummy_buf.base.info.strides[1]
+					* c->dummy_buf.base.info.height;
+	c->dummy_buf.base.info.pix_fmt = CB_PIX_FMT_NV24;
+	c->dummy_buf.base.info.planes = 2;
+	strcpy(c->dummy_buf.name, "shm_dummy_buf");
+	unlink(c->dummy_buf.name);
+	cb_shm_init(&c->dummy_buf.shm, c->dummy_buf.name,
+		    c->dummy_buf.base.info.sizes[0] * 3, 1);
+	pixel = (u32 *)c->dummy_buf.shm.map;
+#else
+	c->dummy_buf.base.info.strides[0] = 1024 * 4;
+	c->dummy_buf.base.info.sizes[0] = c->dummy_buf.base.info.strides[0]
+						* c->dummy_buf.base.info.height;
+	c->dummy_buf.base.info.pix_fmt = CB_PIX_FMT_ARGB8888;
+	c->dummy_buf.base.info.planes = 1;
+	strcpy(c->dummy_buf.name, "shm_dummy_buf");
+	unlink(c->dummy_buf.name);
+	cb_shm_init(&c->dummy_buf.shm, c->dummy_buf.name,
+		    c->dummy_buf.base.info.sizes[0], 1);
+	pixel = (u32 *)c->dummy_buf.shm.map;
+#endif
+#endif
+	
+#ifdef TEST_DUMMY_YUV444P
+	{
+		s32 fd = open("/tmp/1024x768_yuv444p.yuv", O_RDONLY, 0644);
+		read(fd, (u8 *)c->dummy_buf.shm.map, 
+			c->dummy_buf.base.info.sizes[0] * 3);
+		close(fd);
+	}
+#else
+#ifdef TEST_DUMMY_NV24
+	{
+		s32 fd = open("/tmp/1024x768_nv24.yuv", O_RDONLY, 0644);
+		read(fd, (u8 *)c->dummy_buf.shm.map, 
+			c->dummy_buf.base.info.sizes[0] * 3);
+		close(fd);
+	}
+#else
+	for (s32 i = 0; i < c->dummy_buf.base.info.sizes[0] / 4; i++)
+		pixel[i] = 0xFF404040;
+#endif
+#endif
+
+	c->r->attach_buffer(c->r, &c->dummy_surf, &c->dummy_buf.base);
+	c->r->flush_damage(c->r, &c->dummy_surf);
 }
 #endif
 
@@ -2504,6 +2897,11 @@ struct compositor *compositor_create(char *device_name,
 				&vid);
 	if (!c->r)
 		goto err;
+
+	INIT_LIST_HEAD(&c->views);
+#ifdef TEST_DUMMY_VIEW
+	init_dummy_buf(c);
+#endif
 
 	c->count_outputs = count_outputs;
 	c->outputs = calloc(count_outputs, sizeof(struct cb_output *));

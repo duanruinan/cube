@@ -50,6 +50,12 @@ struct cb_buffer {
 	u32 dirty;
 };
 
+struct shm_buffer {
+	struct cb_buffer base;
+	struct cb_shm shm;
+	char name[128];
+};
+
 struct pipeline {
 	s32 head_index;
 	s32 output_index;
@@ -74,13 +80,13 @@ struct compositor;
 
 struct cb_surface {
 	struct compositor *c;
-	void *renderer_state;
+	void *renderer_state; /* surface state */
 	bool is_opaque;
 	struct cb_signal destroy_signal;
 	struct cb_view *view;
 	struct cb_region damage; /* used for texture upload */
-	u32 width, height; /* surface size */
 	struct cb_region opaque; /* opaque area */
+	u32 width, height; /* surface size */
 	/* output bitmap */
 	/* primary output index */
 	/* client agent */
@@ -88,9 +94,13 @@ struct cb_surface {
 
 struct cb_view {
 	struct cb_surface *surface;
-	struct list_head link;
-	struct cb_rect area; /* in canvas coordinates */
+	struct list_head link; /* link to compositor's views */
+	struct cb_rect area; /* desktop coordinates */
+	s32 zpos; /* zpos */
+	struct plane *plane; /* plane assigned by compositor */
 	float alpha;
+	bool dirty; /* need repaint or not */
+	struct cb_buffer *buf_cur;
 	/* output bitmap */
 };
 

@@ -31,7 +31,7 @@ libcube_gl_renderer.so: gl_renderer.o
 		-lgbm -lGLESv2 -lEGL -o $@
 
 gl_renderer.o: gl_renderer.c cube_renderer.h cube_compositor.h $(CUBE_UTILS_H)
-	$(CC) -c $< $(CFLAGS) -o $@
+	$(CC) -c $< $(CFLAGS) -I${TOOLCHAIN_SYSROOT}/usr/include/libdrm -o $@
 
 libcube_drm_scanout.so: drm_scanout.o
 	$(CC) -shared -rdynamic $^ -L$(RPATH)/utils -lcube_utils \

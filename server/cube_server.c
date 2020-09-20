@@ -463,7 +463,7 @@ static void compositor_ready_cb(struct cb_listener *listener, void *data)
 	server->mc_flipped_listener.notify = mc_flipped_cb;
 	server->c->set_mouse_updated_notify(server->c,
 					    &server->mc_flipped_listener);
-
+/*
 	printf("Set cursor\n");
 	ret =server->c->set_mouse_cursor(server->c, server->mc_bufs[server->mc_cur],
 				    16, 16, 64, 0, 0, false);
@@ -477,7 +477,7 @@ static void compositor_ready_cb(struct cb_listener *listener, void *data)
 		server->mc_cnt++;
 		server->mc_cur = 1 - server->mc_cur;
 	}
-
+*/
 }
 
 static s32 mc_collect_proc(void *data)
@@ -628,7 +628,7 @@ static struct cb_server *cb_server_create(s32 seat, char *dev)
 						server);
 	if (!server->test_hide_mc_timer)
 		goto err;
-	//cb_event_source_timer_update(server->test_hide_mc_timer, 10000, 0);
+	cb_event_source_timer_update(server->test_hide_mc_timer, 10000, 0);
 
 	server->mc_cur = 0;
 	server->mc_bufs[0] = malloc(16*16*4);
