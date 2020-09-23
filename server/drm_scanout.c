@@ -916,7 +916,7 @@ static void drm_fb_ref(struct drm_fb *fb)
 	drm_debug("[REF] +");
 	fb->ref_cnt++;
 	drm_debug("[REF] ID: %u %d", fb->fb_id, fb->ref_cnt);
-	printf("[REF] ID: %u %d\n", fb->fb_id, fb->ref_cnt);
+	/* printf("[REF] ID: %u %d\n", fb->fb_id, fb->ref_cnt); */
 }
 
 static struct drm_plane_state *
@@ -963,9 +963,9 @@ static void drm_fb_release_surface(struct drm_fb *fb)
 	drm_debug("Release Surface-BUF.");
 	if (fb && fb->bo && fb->surface) {
 		drm_debug("release surface buffer");
-		printf("begin release surface buffer ID: %u\n", fb->fb_id);
+		/* printf("begin release surface buffer ID: %u\n", fb->fb_id);*/
 		gbm_surface_release_buffer(fb->surface, fb->bo);
-		printf("end release surface buffer ID: %u\n", fb->fb_id);
+		/* printf("end release surface buffer ID: %u\n", fb->fb_id); */
 	}
 }
 
@@ -1055,7 +1055,7 @@ static void drm_fb_unref(struct drm_fb *fb)
 
 	fb->ref_cnt--;
 	drm_debug("[UNREF] ID: %u %d", fb->fb_id, fb->ref_cnt);
-	printf("[UNREF] ID: %u %d\n", fb->fb_id, fb->ref_cnt);
+	/* printf("[UNREF] ID: %u %d\n", fb->fb_id, fb->ref_cnt); */
 	if (fb->ref_cnt == 0 && fb->type != DRM_FB_TYPE_GBM_SURFACE) {
 		drm_fb_release_buffer(fb);
 	} else if (fb->ref_cnt == 1) { /* do not use any more */
@@ -2627,12 +2627,12 @@ static void drm_fb_destroy_surface_fb(struct gbm_bo *bo, void *data)
 	if (fb) {
 		assert(fb->type == DRM_FB_TYPE_GBM_SURFACE);
 		if (fb->fb_id) {
-			printf("Begin remove surface DRM FB ID: %u\n",
-				fb->fb_id);
+			/* printf("Begin remove surface DRM FB ID: %u\n",
+				fb->fb_id); */
 			drm_debug("Remove surface DRM FB");
 			drmModeRmFB(dev->fd, fb->fb_id);
-			printf("End remove surface DRM FB ID: %u\n",
-				fb->fb_id);
+			/* printf("End remove surface DRM FB ID: %u\n",
+				fb->fb_id); */
 		}
 		cb_cache_put(fb, dev->drm_fb_cache);
 	}
@@ -2646,9 +2646,9 @@ static struct cb_buffer *drm_scanout_get_surface_buf(struct scanout *so,
 	struct gbm_bo *bo;
 	s32 ret;
 
-	printf("begin lock front buffer\n");
+	/* printf("begin lock front buffer\n"); */
 	bo = gbm_surface_lock_front_buffer((struct gbm_surface *)surface);
-	printf("end lock front buffer\n");
+	/* printf("end lock front buffer\n"); */
 	if (!bo) {
 		drm_err("failed to lock front buffer: %s", strerror(errno));
 		goto err;
@@ -2656,8 +2656,8 @@ static struct cb_buffer *drm_scanout_get_surface_buf(struct scanout *so,
 
 	fb = gbm_bo_get_user_data(bo);
 	if (fb) {
-		printf("get bo from userdata fb->id: %u, ref: %d\n",
-			fb->fb_id, fb->ref_cnt);
+		/* printf("get bo from userdata fb->id: %u, ref: %d\n",
+			fb->fb_id, fb->ref_cnt); */
 		return &fb->base;
 	}
 
@@ -2685,9 +2685,9 @@ static struct cb_buffer *drm_scanout_get_surface_buf(struct scanout *so,
 		drm_err("failed to create surface fb: %s", strerror(errno));
 		goto err;
 	}
-	printf("FB info: %ux%u %u ID: %u\n", fb->base.info.width,
+	/* printf("FB info: %ux%u %u ID: %u\n", fb->base.info.width,
 		fb->base.info.height,
-		fb->base.info.strides[0], fb->fb_id);
+		fb->base.info.strides[0], fb->fb_id); */
 
 	gbm_bo_set_user_data(bo, fb, drm_fb_destroy_surface_fb);
 
