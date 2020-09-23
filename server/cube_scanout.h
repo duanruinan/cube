@@ -263,13 +263,11 @@ struct scanout {
 	/* release external DMA-BUF */
 	void (*release_dmabuf)(struct scanout *so, struct cb_buffer *buffer);
 
-	/* retrieve active buffer from surface */
-	struct cb_buffer *(*import_surface_buf)(struct scanout *so,
-						void *surface);
-
-	/* return buffer to surface */
-	void (*release_surface_buf)(struct scanout *so,
-				    struct cb_buffer *buffer);
+	/*
+	 * Get active buffer from surface
+	 * The surface buffer maintained by scanout dev it self.
+	 */
+	struct cb_buffer *(*get_surface_buf)(struct scanout *so, void *surface);
 
 	/* add buffer flip cb */
 	s32 (*add_buffer_flip_notify)(struct scanout *so,

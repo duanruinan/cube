@@ -40,8 +40,8 @@
 #include <cube_compositor.h>
 #include <cube_renderer.h>
 
-static enum cb_log_level gles_dbg = CB_LOG_DEBUG;
-static enum cb_log_level egl_dbg = CB_LOG_DEBUG;
+static enum cb_log_level gles_dbg = CB_LOG_NOTICE;
+static enum cb_log_level egl_dbg = CB_LOG_NOTICE;
 
 #define gles_debug(fmt, ...) do { \
 	if (gles_dbg >= CB_LOG_DEBUG) { \
@@ -312,6 +312,7 @@ struct gl_surface_state {
 
 struct gl_output_state {
 	struct r_output base;
+	s32 pipe;
 	EGLSurface egl_surface;
 	struct gl_renderer *r;
 	struct cb_rect render_area;
@@ -920,6 +921,8 @@ static struct cb_buffer *gl_import_dmabuf(struct renderer *renderer,
 
 	list_add_tail(&dma_buf->link, &r->dmabuf_images);
 
+	dma_buf->base.info.type = CB_BUF_TYPE_DMA;
+
 	return &dma_buf->base;
 }
 
@@ -940,7 +943,7 @@ static void gl_release_dmabuf(struct renderer *renderer,
 		dma_buf->image = EGL_NO_IMAGE_KHR;
 	}
 
-	printf("close fd %d\n", buffer->info.fd[0]);
+	egl_info("close fd %d", buffer->info.fd[0]);
 	// TODO free GEM
 	close(buffer->info.fd[0]);
 	list_del(&dma_buf->link);
@@ -1392,7 +1395,7 @@ static void repaint_region(struct gl_renderer *r,
 	r->vtxcnt.size = 0;
 }
 
-static void draw_view(struct cb_view *v, struct gl_output_state *go,
+static bool draw_view(struct cb_view *v, struct gl_output_state *go,
 		      struct cb_region *damage)
 {
 	struct gl_renderer *r = go->r;
@@ -1402,23 +1405,19 @@ static void draw_view(struct cb_view *v, struct gl_output_state *go,
 	struct cb_box *boxes;
 	GLint filter;
 	s32 i, n;
+	bool repainted = false;
 
 	if (!gs->shader)
-		return;
+		return false;
 
 	gles_debug("damage area left:");
-	printf("damage area left:\n");
 	boxes = cb_region_boxes(damage, &n);
 	for (i = 0; i < n; i++) {
 		gles_debug("(%u, %u) (%u, %u)", boxes[i].p1.x, boxes[i].p1.y,
 			   boxes[i].p2.x, boxes[i].p2.y);
-		printf("(%u, %u) (%u, %u)\n", boxes[i].p1.x, boxes[i].p1.y,
-			   boxes[i].p2.x, boxes[i].p2.y);
 	}
 	
 	gles_debug("view_area %d,%d %ux%u", v->area.pos.x, v->area.pos.y,
-		   v->area.w, v->area.h);
-	printf("view_area %d,%d %ux%u\n", v->area.pos.x, v->area.pos.y,
 		   v->area.w, v->area.h);
 	cb_region_init_rect(&view_area, v->area.pos.x, v->area.pos.y,
 			    v->area.w, v->area.h);
@@ -1427,11 +1426,6 @@ static void draw_view(struct cb_view *v, struct gl_output_state *go,
 			    go->render_area.w,
 			    go->render_area.h);
 	gles_debug("output area: %d,%d %ux%u",
-		   go->render_area.pos.x,
-		   go->render_area.pos.y,
-		   go->render_area.w,
-		   go->render_area.h);
-	printf("output area: %d,%d %ux%u\n",
 		   go->render_area.pos.x,
 		   go->render_area.pos.y,
 		   go->render_area.w,
@@ -1445,23 +1439,17 @@ static void draw_view(struct cb_view *v, struct gl_output_state *go,
 			    -go->render_area.pos.y);
 	cb_region_intersect(&view_area, &view_area, damage);
 	gles_debug("view_area to repaint:");
-	printf("view_area to repaint:\n");
 	boxes = cb_region_boxes(&view_area, &n);
 	for (i = 0; i < n; i++) {
 		gles_debug("(%u, %u) (%u, %u)", boxes[i].p1.x, boxes[i].p1.y,
-			   boxes[i].p2.x, boxes[i].p2.y);
-		printf("(%u, %u) (%u, %u)\n", boxes[i].p1.x, boxes[i].p1.y,
 			   boxes[i].p2.x, boxes[i].p2.y);
 	}
 	cb_region_subtract(damage, damage, &view_area);
 
 	gles_debug("damage area left:");
-	printf("damage area left:\n");
 	boxes = cb_region_boxes(damage, &n);
 	for (i = 0; i < n; i++) {
 		gles_debug("(%u, %u) (%u, %u)", boxes[i].p1.x, boxes[i].p1.y,
-			   boxes[i].p2.x, boxes[i].p2.y);
-		printf("(%u, %u) (%u, %u)\n", boxes[i].p1.x, boxes[i].p1.y,
 			   boxes[i].p2.x, boxes[i].p2.y);
 	}
 
@@ -1496,6 +1484,7 @@ static void draw_view(struct cb_view *v, struct gl_output_state *go,
 			glDisable(GL_BLEND);
 		repaint_region(r, v, &view_area, &surface_opaque,
 			       &go->render_area.pos);
+		repainted = true;
 	}
 
 	if (cb_region_is_not_empty(&surface_blend)) {
@@ -1511,23 +1500,31 @@ static void draw_view(struct cb_view *v, struct gl_output_state *go,
 out:
 	cb_region_fini(&view_area);
 	cb_region_fini(&output_area);
+	return repainted;
 }
 
-static void repaint_views(struct gl_output_state *go, struct cb_region *damage,
+static bool repaint_views(struct gl_output_state *go, struct cb_region *damage,
 			  struct list_head *views)
 {
 	struct cb_view *view;
+	bool repainted = false;
 
 	list_for_each_entry_reverse(view, views, link) {
-		if (!view->dirty)
+		if (!(view->output_mask & (1U << go->pipe)))
+			continue;
+		if (view->direct_show) /* not renderable surface */
 			continue;
 		gles_debug("view %p", view);
-		draw_view(view, go, damage);
-		//view->dirty = false;
+		if (draw_view(view, go, damage)) {
+			repainted = true;
+			view->painted = true;
+		}
 	}
+
+	return repainted;
 }
 
-static void gl_output_repaint(struct r_output *output, struct list_head *views)
+static bool gl_output_repaint(struct r_output *output, struct list_head *views)
 {
 	struct gl_output_state *go = to_glo(output);
 	struct gl_renderer *r = go->r;
@@ -1537,6 +1534,7 @@ static void gl_output_repaint(struct r_output *output, struct list_head *views)
 	static s32 errored = 0;
 	s32 left, top, calc;
 	u32 width, height;
+	bool repainted;
 
 	calc = go->disp_w * area->h / area->w;
 	if (calc <= go->disp_h) {
@@ -1553,7 +1551,7 @@ static void gl_output_repaint(struct r_output *output, struct list_head *views)
 	}
 
 	if (gl_switch_output(go) < 0)
-		return;
+		return false;
 
 	if (go->layout_changed) {
 		if (left) {
@@ -1577,19 +1575,12 @@ static void gl_output_repaint(struct r_output *output, struct list_head *views)
 
 	gles_debug("%d,%d %ux%u %ux%u", left, top, width, height,
 		   go->disp_w, go->disp_h);
-	printf("---XXX View %d,%d %ux%u %ux%u\n", left, top, width, height,
-		   go->disp_w, go->disp_h);
 
 	cb_region_init_rect(&total_damage, 0, 0, area->w, area->h);
-	printf("---XXX--------------%d,%d %ux%u---------------------\n",
-		go->render_area.pos.x,
-		go->render_area.pos.y,
-		go->render_area.w,
-		go->render_area.h);
-	if (go->render_area.w == 1600)
-		return;
-	repaint_views(go, &total_damage, views);
+	repainted = repaint_views(go, &total_damage, views);
 	cb_region_fini(&total_damage);
+	if (!repainted)
+		return false;
 	/* TODO send frame signal */
 	egl_debug("EGL Swap buffer.");
 	ret = eglSwapBuffers(r->egl_display, go->egl_surface);
@@ -1598,6 +1589,7 @@ static void gl_output_repaint(struct r_output *output, struct list_head *views)
 		egl_err("Failed to call eglSwapBuffers.");
 		egl_error_state();
 	}
+	return true;
 }
 
 static void gl_output_destroy(struct r_output *o)
@@ -1660,7 +1652,8 @@ static struct r_output *gl_output_create(struct renderer *renderer,
 					 s32 count_fmts,
 					 s32 *vid,
 					 struct cb_rect *render_area,
-					 u32 disp_w, u32 disp_h)
+					 u32 disp_w, u32 disp_h,
+					 s32 pipe)
 {
 	struct gl_output_state *go;
 	struct gl_renderer *r = to_glr(renderer);
@@ -1679,6 +1672,8 @@ static struct r_output *gl_output_create(struct renderer *renderer,
 		eglDestroySurface(r->egl_display, egl_surface);
 		return NULL;
 	}
+
+	go->pipe = pipe;
 
 	go->egl_surface = egl_surface;
 	go->r = r;
@@ -1780,6 +1775,52 @@ static void gl_attach_shm_buffer(struct gl_renderer *r,
 		gl_format[0] = GL_BGRA_EXT;
 		gl_pixel_type = GL_UNSIGNED_BYTE;
 		surface->is_opaque = false;
+		break;
+	case CB_PIX_FMT_NV12:
+		pitch = buffer->info.strides[0];
+		gl_pixel_type = GL_UNSIGNED_BYTE;
+		count_planes = 2;
+		gs->offset[0] = buffer->info.offsets[0];
+		gs->offset[1] = buffer->info.offsets[1];
+/*
+		gs->offset[1] = gs->offset[0] + (pitch / gs->hsub[0]) *
+				(buffer->info.height / gs->vsub[0]);
+*/
+		gs->hsub[1] = 2;
+		gs->vsub[1] = 2;
+		if (r->support_texture_rg) {
+			gs->shader = &r->texture_shader_y_uv;
+			gl_format[0] = GL_R8_EXT;
+			gl_format[1] = GL_RG8_EXT;
+		} else {
+			gs->shader = &r->texture_shader_y_xuxv;
+			gl_format[0] = GL_LUMINANCE;
+			gl_format[1] = GL_LUMINANCE_ALPHA;
+		}
+		surface->is_opaque = true;
+		break;
+	case CB_PIX_FMT_NV16:
+		pitch = buffer->info.strides[0];
+		gl_pixel_type = GL_UNSIGNED_BYTE;
+		count_planes = 2;
+		gs->offset[0] = buffer->info.offsets[0];
+		gs->offset[1] = buffer->info.offsets[1];
+/*
+		gs->offset[1] = gs->offset[0] + (pitch / gs->hsub[0]) *
+				(buffer->info.height / gs->vsub[0]);
+*/
+		gs->hsub[1] = 2;
+		gs->vsub[1] = 1;
+		if (r->support_texture_rg) {
+			gs->shader = &r->texture_shader_y_uv;
+			gl_format[0] = GL_R8_EXT;
+			gl_format[1] = GL_RG8_EXT;
+		} else {
+			gs->shader = &r->texture_shader_y_xuxv;
+			gl_format[0] = GL_LUMINANCE;
+			gl_format[1] = GL_LUMINANCE_ALPHA;
+		}
+		surface->is_opaque = true;
 		break;
 	case CB_PIX_FMT_NV24:
 		pitch = buffer->info.strides[0];

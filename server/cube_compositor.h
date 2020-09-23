@@ -79,29 +79,83 @@ struct cb_mode_filter {
 struct compositor;
 
 struct cb_surface {
-	struct compositor *c;
-	void *renderer_state; /* surface state */
+	struct cb_compositor *c;
+	/*
+	 * surface state
+	 *
+	 * it is used by renderer.
+	 *     the current attached buffer (shm or DMA-BUF)
+	 *     the shader and textures the renderer used to draw
+	 */
+	void *renderer_state;
+
+	/*
+	 * The buffer should be displayed (attached)
+	 * 
+	 * The repaint task producer set the field.
+	 *     for renderable buffer the compositor attach the buffer this 
+	 *         field indicated to the surface, flush the texture
+	 *         (if the buffer is SHM-BUF), repaint it finally.
+	 *     for DMA-BUF buffer the compositor import the buffer to scanout
+	 *         device, commit it directly to scanout device.
+	 */
+	struct cb_buffer *buffer_cur;
+
+	/*
+	 * The new buffer should be displayed in the repaint loop.
+	 * The protocal engine set the field.
+	 */
+	struct cb_buffer *buffer_pending;
+
+	struct cb_buffer *buffer_last;
+
 	bool is_opaque;
 	struct cb_signal destroy_signal;
+
+	/* where it should to be displayed */
 	struct cb_view *view;
-	struct cb_region damage; /* used for texture upload */
+
+	struct cb_region damage; /* used for texture partial upload */
 	struct cb_region opaque; /* opaque area */
-	u32 width, height; /* surface size */
-	/* output bitmap */
-	/* primary output index */
+
+	/*
+	 * surface size
+	 * it is the size of the buffer be attached currently,
+	 * so it is a dynamically value.
+	 */
+	u32 width, height;
+
+	struct cb_listener flipped_l;
+
+	struct cb_output *output;
 	/* client agent */
 };
 
 struct cb_view {
+	/* link to surface */
 	struct cb_surface *surface;
-	struct list_head link; /* link to compositor's views */
-	struct cb_rect area; /* desktop coordinates */
+
+	bool direct_show;
+
+	/* link to compositor's view list */
+	struct list_head link;
+
+	/* display area in desktop coordinates */
+	struct cb_rect area;
+
 	s32 zpos; /* zpos */
-	struct plane *plane; /* plane assigned by compositor */
+
+	/* use this field to do alpha blending in renderer */
 	float alpha;
-	bool dirty; /* need repaint or not */
-	struct cb_buffer *buf_cur;
-	/* output bitmap */
+
+	/*
+	 * bitmap of outputs where the view should be displayed on
+	 * it is used for judgeing whether this view should be repaint on
+	 * a ro, and it is also used for setting dirty bit for DMA-BUF.
+	 */
+	u32 output_mask;
+
+	bool painted;
 };
 
 struct compositor {

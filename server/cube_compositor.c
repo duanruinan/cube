@@ -67,8 +67,11 @@
 #define CONN_STATUS_DB_TIME 500
 
 #define TEST_DUMMY_VIEW 1
-#define TEST_DUMMY_YUV444P 1
-//#define TEST_DUMMY_NV24 1
+//#define TEST_DUMMY_YUV444P 1
+#define TEST_DUMMY_NV24 1
+
+#define TEST_DUMMY_DMA_BUF 1
+#define TEST_DUMMY_DMA_BUF_NV12 1
 
 static enum cb_log_level comp_dbg = CB_LOG_DEBUG;
 
@@ -218,6 +221,17 @@ struct cb_output {
 	struct cb_event_source *idle_repaint_source;
 
 	struct timespec next_repaint;
+
+	/* used to generate shm buffer flipped message */
+	struct cb_signal surface_flipped_signal;
+
+	bool show_rendered_buffer;
+
+	/* current renderable buffer */
+	struct cb_buffer *rbuf_cur;
+
+	/* renderable buffer changed */
+	bool renderable_buffer_changed;
 };
 
 struct cb_compositor {
@@ -246,7 +260,9 @@ struct cb_compositor {
 #ifdef TEST_DUMMY_VIEW
 	struct cb_surface dummy_surf;
 	struct cb_view dummy_view;
-	struct shm_buffer dummy_buf;
+	struct shm_buffer dummy_buf[2];
+	s32 dummy_index;
+	struct cb_event_source *test_rm_view_timer;
 #endif
 	/* views in z-order from top to bottom */
 	struct list_head views;
@@ -375,6 +391,8 @@ static void cb_output_destroy(struct cb_output *output)
 {
 	if (!output)
 		return;
+
+	cb_signal_fini(&output->surface_flipped_signal);
 
 	if (output->conn_st_chg_db_timer)
 		cb_event_source_remove(output->conn_st_chg_db_timer);
@@ -594,10 +612,31 @@ static void update_crtc_view_port(struct cb_output *output)
 	update_mc_view_port(output, true);
 }
 
+static void cb_compositor_commit_surface(struct compositor *comp,
+					struct cb_surface *surface);
+
+static void cancel_renderer_surface(struct cb_surface *surface)
+{
+	surface->view->painted = false;
+	list_del(&surface->flipped_l.link);
+	
+	/* printf("surface buffer flipped %p\n", surface->buffer_cur); */
+	
+	if (surface->buffer_last) {
+		/*
+		printf("surface buffer %p complete.\n",
+			surface->buffer_last);
+		*/
+	}
+	surface->buffer_last = surface->buffer_cur;
+}
+
 static void cancel_so_tasks(struct cb_output *output)
 {
 	struct scanout_task *sot, *sot_next;
 	struct cb_compositor *c = output->c;
+	struct cb_view *view;
+	struct cb_surface *surface;
 
 	comp_debug("sot remains:");
 	printf("sot remains:\n");
@@ -629,6 +668,22 @@ static void cancel_so_tasks(struct cb_output *output)
 			}
 		}
 		cb_cache_put(sot, c->so_task_cache);
+	}
+
+	list_for_each_entry(view, &c->views, link) {
+		surface = view->surface;
+		if (!surface)
+			continue;
+		if (surface->output == output) {
+			printf("view %p's output is %d\n", view, output->pipe);
+			cancel_renderer_surface(surface);
+#ifdef TEST_DUMMY_VIEW
+			c->dummy_index = 1 - c->dummy_index;
+			c->dummy_surf.buffer_pending =
+				&c->dummy_buf[c->dummy_index].base;
+			cb_compositor_commit_surface(&c->base, surface);
+#endif
+		}
 	}
 }
 
@@ -782,7 +837,8 @@ static s32 cb_compositor_destroy(struct compositor *comp)
 		list_del(&view->link);
 #ifdef TEST_DUMMY_VIEW
 		if (view == &c->dummy_view) {
-			cb_shm_release(&c->dummy_buf.shm);
+			cb_shm_release(&c->dummy_buf[0].shm);
+			cb_shm_release(&c->dummy_buf[1].shm);
 			if (view->surface && view->surface->renderer_state) {
 				free(view->surface->renderer_state);
 				view->surface->renderer_state = NULL;
@@ -923,8 +979,10 @@ static void add_mc_buffer_to_task(struct cb_compositor *c,
 		find = false;
 		list_for_each_entry(sot, &o->so_tasks, link) {
 			if (sot->plane == o->cursor_plane) {
+				// printf("!!!! %p %p\n", sot->buffer, buffer);
 				sot->buffer = buffer;
 				find = true;
+				break;
 			}
 		}
 		if (!find) {
@@ -973,7 +1031,7 @@ static void head_changed_cb(struct cb_listener *listener, void *data)
 		o->ro = c->r->output_create(c->r, NULL, o->native_surface,
 					    (s32 *)(&c->native_fmt), 1, &vid,
 					    &o->desktop_rc,
-					    o->crtc_w, o->crtc_h);
+					    o->crtc_w, o->crtc_h, o->pipe);
 		if (!o->ro) {
 			comp_err("failed to create renderer output");
 			assert(o->ro);
@@ -1100,7 +1158,8 @@ static s32 output_disable_timer_cb(void *data)
 						    (s32 *)(&c->native_fmt),
 						    1, &vid,
 						    &o->desktop_rc,
-						    o->crtc_w, o->crtc_h);
+						    o->crtc_w, o->crtc_h,
+						    o->pipe);
 			if (!o->ro) {
 				comp_err("failed to create renderer output");
 				assert(o->ro);
@@ -1304,6 +1363,11 @@ static void output_flipped_cb(struct cb_listener *listener, void *data)
 					   output_flipped_l);
 	struct output *output = o->output;
 
+	/*
+	printf("--------------- OUTPUT %d flipped ---------------\n", o->pipe);
+	*/
+	cb_signal_emit(&o->surface_flipped_signal, NULL);
+
 	last.tv_sec = output->sec;
 	last.tv_nsec = output->usec * 1000l;
 
@@ -1446,7 +1510,8 @@ static struct cb_output *cb_output_create(struct cb_compositor *c,
 					output->native_surface,
 					(s32 *)(&c->native_fmt), 1, &vid,
 					&output->desktop_rc,
-					output->crtc_w, output->crtc_h);
+					output->crtc_w, output->crtc_h,
+					output->pipe);
 		if (!output->ro) {
 			comp_err("failed to create renderer output");
 			assert(output->ro);
@@ -1463,6 +1528,9 @@ static struct cb_output *cb_output_create(struct cb_compositor *c,
 	/* start to debounce initial head status */
 	cb_event_source_timer_update(output->conn_st_chg_db_timer,
 				     CONN_STATUS_DB_TIME, 0);
+
+	/* init surface buffer flipped signal */
+	cb_signal_init(&output->surface_flipped_signal);
 
 	return output;
 err:
@@ -1530,7 +1598,7 @@ static void cb_compositor_resume(struct compositor *comp)
 						(s32 *)(&c->native_fmt), 1,
 						&vid,
 						&o->desktop_rc,
-						o->crtc_w, o->crtc_h);
+						o->crtc_w, o->crtc_h, o->pipe);
 			if (!o->ro) {
 				comp_err("failed to create renderer output");
 				assert(o->ro);
@@ -1608,7 +1676,7 @@ static s32 cb_compositor_switch_mode(struct compositor *comp, s32 pipe,
 		o->ro = c->r->output_create(c->r, NULL, o->native_surface,
 					    (s32 *)(&c->native_fmt), 1, &vid,
 					    &o->desktop_rc,
-					    o->crtc_w, o->crtc_h);
+					    o->crtc_w, o->crtc_h, o->pipe);
 		if (!o->ro) {
 			comp_err("failed to create renderer output");
 			assert(o->ro);
@@ -1901,7 +1969,9 @@ static void cancel_mc_buffer(struct cb_output *o)
 			if (sot->buffer->dirty & (1U << o->pipe)) {
 				list_del(&sot->link);
 				sot->buffer->dirty &= ~(1U << o->pipe);
-				printf("Cancel a mc buffer\n");
+				printf("Cancel a mc buffer %08X pending %d\n",
+					sot->buffer->dirty,
+					c->mc_update_pending);
 				if (!sot->buffer->dirty) {
 					if (c->mc_update_pending) {
 						c->mc_update_pending = false;
@@ -2597,35 +2667,269 @@ static void add_renderer_buffer_to_task(struct cb_output *o,
 	list_add_tail(&sot->link, &o->so_tasks);
 }
 
+static bool setup_view_output_mask(struct cb_view *view,
+				   struct cb_compositor *c)
+{
+	struct cb_output *o;
+	s32 i;
+	struct cb_region view_area, output_area;
+
+	view->output_mask = 0;
+	for (i = 0; i < c->count_outputs; i++) {
+		o = c->outputs[i];
+		if (!o->enabled)
+			continue;
+		cb_region_init_rect(&view_area,
+				    view->area.pos.x,
+				    view->area.pos.y,
+				    view->area.w,
+				    view->area.h);
+		cb_region_init_rect(&output_area,
+				    o->desktop_rc.pos.x,
+				    o->desktop_rc.pos.y,
+				    o->desktop_rc.w,
+				    o->desktop_rc.h);
+		cb_region_intersect(&view_area, &view_area,
+				    &output_area);
+		if (!cb_region_is_not_empty(&view_area)) {
+			view->output_mask &= (~(1U << o->pipe));
+		} else {
+			view->output_mask |= (1U << o->pipe);
+		}
+		cb_region_fini(&output_area);
+		cb_region_fini(&view_area);
+	}
+
+	return (view->output_mask != 0);
+}
+
+static void cb_compositor_commit_surface(struct compositor *comp,
+					struct cb_surface *surface);
+
+static void surface_flipped_cb(struct cb_listener *listener, void *data)
+{
+	struct cb_surface *surface = container_of(listener, struct cb_surface,
+						  flipped_l);
+	struct cb_view *view = surface->view;
+#ifdef TEST_DUMMY_VIEW
+	struct cb_compositor *c = surface->c;
+#endif
+
+	if (view->painted) {
+		cancel_renderer_surface(surface);
+#if 1
+#ifdef TEST_DUMMY_VIEW
+		c->dummy_index = 1 - c->dummy_index;
+		c->dummy_surf.buffer_pending = &c->dummy_buf[c->dummy_index].base;
+		/* printf("commit dummy surface\n"); */
+		cb_compositor_commit_surface(&c->base, surface);
+#endif
+#endif
+	}
+}
+
+static void cb_compositor_commit_surface(struct compositor *comp,
+					 struct cb_surface *surface)
+{
+	struct cb_compositor *c = to_cb_c(comp);
+	s32 i;
+	struct cb_output *o;
+
+	/* printf("commit surface %p's buffer %p\n", surface->buffer_pending);*/
+	if (!surface->buffer_pending) {
+		/* remove view */
+		printf("remove view link\n");
+		list_del(&surface->view->link);
+		cancel_renderer_surface(surface);
+		cb_compositor_repaint(c);
+	} else if (surface->buffer_pending == surface->buffer_cur) {
+		/* view changed */
+
+		setup_view_output_mask(surface->view, c);
+		
+		cb_compositor_repaint(c);
+	} else {
+		/* buffer changed */
+
+		setup_view_output_mask(surface->view, c);
+		/*
+		printf("bind buffer %p\n", surface->buffer_pending);
+		*/
+		c->r->attach_buffer(c->r, surface, surface->buffer_pending);
+		if (surface->buffer_pending->info.type == CB_BUF_TYPE_SHM)
+			c->r->flush_damage(c->r, surface);
+		surface->width = surface->buffer_pending->info.width;
+		surface->height = surface->buffer_pending->info.height;
+		surface->buffer_cur = surface->buffer_pending;
+
+		for (i = 0; i < c->count_outputs; i++) {
+			o = c->outputs[i];
+			if (surface->view->output_mask &
+			    (1U << o->pipe)) {
+				if (surface->output && (surface->output != o)) {
+					printf("[--- output route %d -> %d ]\n",
+						surface->output->pipe,
+						o->pipe);
+				}
+				surface->output = o;
+				surface->flipped_l.notify = surface_flipped_cb;
+				/*
+				printf("add flipped listener %d\n", o->pipe);
+				*/
+				cb_signal_add(&o->surface_flipped_signal,
+					      &surface->flipped_l);
+				break;
+			}
+		}
+#ifdef TEST_DUMMY_VIEW
+		surface->c = c;
+#endif
+		cb_compositor_repaint(c);
+	}
+
+	for (i = 0; i < c->count_outputs; i++) {
+		o = c->outputs[i];
+		if (o->enabled &&
+		    (surface->view->output_mask & (1U << o->pipe))) {
+			o->renderable_buffer_changed = true;
+		}
+	}
+}
+
+static void *try_to_assign_hwplane(struct cb_output *o,
+				   struct cb_buffer *buffer,
+				   struct cb_rect *src,
+				   struct cb_rect *dst)
+{
+	return NULL;
+}
+
+static void add_dma_buf_to_task(struct cb_compositor *c,
+				struct cb_buffer *buffer,
+				struct cb_rect *src,
+				struct cb_rect *dst,
+				bool alpha_src_pre_mul,
+				u32 mask)
+{
+	s32 i;
+	struct cb_output *o;
+	struct scanout_task *sot;
+	bool find;
+	struct plane *plane;
+
+	for (i = 0; i < c->count_outputs; i++) {
+		o = c->outputs[i];
+		if (!(mask & (1U << o->pipe)))
+			continue;
+		//plane = assign_plane(o, buffer, src, dst);
+		if (plane != o->primary_plane) {
+			o->show_rendered_buffer = true;
+		} else {
+			o->show_rendered_buffer = false;
+			/* TODO hide rendered buffer */
+		}
+		find = false;
+		list_for_each_entry(sot, &o->so_tasks, link) {
+			if (sot->plane == plane) {
+				sot->buffer = buffer;
+				find = true;
+				break;
+			}
+		}
+		if (!find) {
+			sot = cb_cache_get(c->so_task_cache, false);
+			sot->buffer = buffer;
+			sot->plane = plane;
+			sot->zpos = -1;
+			sot->src = src;
+			sot->dst = dst;
+			sot->alpha_src_pre_mul = alpha_src_pre_mul;
+			list_add_tail(&sot->link, &o->so_tasks);
+		}
+	}
+}
+
+static void cb_compositor_commit_dma_buf(struct compositor *comp,
+					 struct cb_surface *surface)
+{
+	struct cb_compositor *c = to_cb_c(comp);
+	struct cb_view *view = surface->view;
+	s32 i;
+	struct cb_output *o;
+
+	view->direct_show = true;
+	if (!surface->buffer_pending) {
+		/* remove view */
+		list_del(&view->link);
+		/* TODO cancel buffer, add NULL task */
+		cb_compositor_repaint(c);
+	} else if (surface->buffer_pending == surface->buffer_cur) {
+		/* view changed */
+		setup_view_output_mask(view, c);
+		cb_compositor_repaint(c);
+	} else {
+		/* buffer changed */
+		setup_view_output_mask(view, c);
+		/*
+		printf("bind buffer %p\n", surface->buffer_pending);
+		*/
+		surface->width = surface->buffer_pending->info.width;
+		surface->height = surface->buffer_pending->info.height;
+		surface->buffer_cur = surface->buffer_pending;
+
+		surface->output = NULL;
+		for (i = 0; i < c->count_outputs; i++) {
+			o = c->outputs[i];
+			if (surface->view->output_mask &
+			    (1U << o->pipe)) {
+				scanout_set_buffer_dirty(surface->buffer_cur,
+					o->output);
+			}
+		}
+/*
+		add_dma_buf_to_task(c, surface->buffer_cur,
+				    surface->view->plane,
+				    NULL,
+				    NULL,
+				bool alpha_src_pre_mul,
+				u32 mask)
+*/
+		cb_compositor_repaint(c);
+	}
+}
+
 static void do_renderer_repaint(struct cb_output *o)
 {
 	struct cb_compositor *c = o->c;
 	struct r_output *ro = o->ro;
 	struct cb_buffer *buffer;
+	bool repainted;
 
-	printf("==================== do renderer repaint=================\n");
-	printf(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>repaint output: %d\n", o->pipe);
-	//getchar();
-	//getchar();
-	ro->repaint(ro, &c->views);
-	printf(">>>>>>>>>>>>>>>>>>>>>>>>>>>>import surface\n");
-	//getchar();
-	//getchar();
-	if (o->pipe == 1)
-		return;
-	buffer = c->so->import_surface_buf(c->so, o->native_surface);
-	if (!buffer) {
-		comp_err("failed to import surface buffer.");
-		printf("failed to import surface buffer.\n");
-		return;
+	if (o->renderable_buffer_changed) {
+		if (list_empty(&c->views)) {
+			printf("set output %d's rbuf_cur NULL\n", o->pipe);
+			o->rbuf_cur = NULL;
+			goto out;
+		}
+
+		repainted = ro->repaint(ro, &c->views);
+		if (!repainted)
+			goto out;
+
+		buffer = c->so->get_surface_buf(c->so, o->native_surface);
+		if (!buffer) {
+			comp_err("failed to get surface buffer.");
+			goto out;
+		}
+		o->rbuf_cur = buffer;
 	}
 
-	printf(">>>>>>>>>>>>>>>>>>>>>>>>>>>>add to task\n");
-	//getchar();
-	//getchar();
-	add_renderer_buffer_to_task(o, buffer);
+out:
+	add_renderer_buffer_to_task(o, o->rbuf_cur);
+	o->renderable_buffer_changed = false;
 }
 
+#if 0
 /* repaint timer proc */
 static s32 output_repaint_timer_handler(void *data)
 {
@@ -2653,23 +2957,27 @@ static s32 output_repaint_timer_handler(void *data)
 		o = c->outputs[i];
 		if (o->repaint_status != REPAINT_SCHEDULED)
 			continue;
+
 		clock_gettime(c->clock_type, &now);
 		msec_to_repaint = timespec_sub_to_msec(&o->next_repaint, &now);
 		if (msec_to_repaint > 1) {
 			/* the timer cb is not alarmed by this output */
 			continue;
 		} else if (msec_to_repaint < -1) {
-			comp_warn("output %d msec_to_repaint (%ld) < -1",
+			comp_warn("output %d msec_to_repaint (%ld) < -1 recalc",
 				  o->pipe, msec_to_repaint);
 		}
 		primary_empty = true;
 		output_empty = true;
 		cursor_empty = true;
+
 		/* do renderer's repaint */
 		do_renderer_repaint(o);
+
 		list_for_each_entry_safe(sot, sot_next, &o->so_tasks, link) {
 			list_del(&sot->link);
-			if (sot->plane == o->primary_plane)
+			if (sot->plane == o->primary_plane &&
+			    sot->buffer != NULL)
 				primary_empty = false;
 			output_empty = false;
 			if (sot->buffer == NULL) {
@@ -2691,10 +2999,12 @@ static s32 output_repaint_timer_handler(void *data)
 #endif
 				cursor_empty = false;
 			}
+			/*
 			printf("commit fb: %d,%d %ux%u\n", sot->src->pos.x,
 					sot->src->pos.y,
 					sot->src->w,
 					sot->src->h);
+			*/
 			scanout_commit_add_fb_info(commit,
 					   sot->buffer,
 					   o->output,
@@ -2706,9 +3016,10 @@ static s32 output_repaint_timer_handler(void *data)
 			cb_cache_put(sot, c->so_task_cache);
 			empty = false;
 		}
+
 		if (!output_empty) {
 			if (primary_empty) {
-				printf("primary empty\n");
+				/* printf("primary empty %d\n", o->pipe); */
 				scanout_commit_add_fb_info(commit, o->dummy,
 					o->output, o->primary_plane,
 					&o->dummy_src, &o->crtc_view_port,
@@ -2717,7 +3028,7 @@ static s32 output_repaint_timer_handler(void *data)
 			}
 			if (cursor_empty) {
 				if (!c->mc_hide && o->mc_on_screen) {
-					printf("cursor empty\n");
+					/* printf("cursor empty\n"); */
 					scanout_commit_add_fb_info(commit,
 						c->mc_buf[c->mc_buf_cur],
 						o->output,
@@ -2727,6 +3038,7 @@ static s32 output_repaint_timer_handler(void *data)
 						-1, false);
 				}
 			}
+			printf("commit output %d\n", o->pipe);
 			o->repaint_status = REPAINT_WAIT_COMPLETION;
 		} else {
 			o->repaint_status = REPAINT_NOT_SCHEDULED;
@@ -2745,6 +3057,132 @@ out:
 	update_repaint_timer(c);
 	return 0;
 }
+#else
+/* repaint timer proc */
+static s32 output_repaint_timer_handler(void *data)
+{
+	struct cb_compositor *c = data;
+	struct cb_output *o;
+	struct scanout_task *sot, *sot_next;
+	s32 i;
+	struct scanout_commit_info *commit;
+	void *sd;
+	s64 msec_to_repaint;
+	struct timespec now;
+	bool output_empty, empty = true;
+
+	commit = scanout_commit_info_alloc();
+
+	/*
+	 * deal with the output that has been scheduled repainting.
+	 * if the output has nothing to be repainted,
+	 *     reset repaint_status as REPAINT_NOT_SCHEDULED
+	 * else
+	 *     set repaint_status as REPAINT_WAIT_COMPLETION
+	 *         (waiting for page flip)
+	 */
+	for (i = 0; i < c->count_outputs; i++) {
+		o = c->outputs[i];
+		if (o->repaint_status != REPAINT_SCHEDULED) {
+			continue;
+		}
+
+		clock_gettime(c->clock_type, &now);
+		msec_to_repaint = timespec_sub_to_msec(&o->next_repaint, &now);
+		if (msec_to_repaint > 1) {
+			/* the timer cb is not alarmed by this output */
+			continue;
+		} else if (msec_to_repaint < -1) {
+			comp_warn("output %d msec_to_repaint (%ld) < -1 recalc",
+				  o->pipe, msec_to_repaint);
+		}
+		output_empty = true;
+
+		/* do renderer's repaint */
+		do_renderer_repaint(o);
+
+		list_for_each_entry_safe(sot, sot_next, &o->so_tasks, link) {
+			list_del(&sot->link);
+			if (sot->buffer == NULL) {
+				cb_cache_put(sot, c->so_task_cache);
+				continue;
+			}
+			output_empty = false;
+#ifdef MC_DEBUG
+			if (o->cursor_plane == sot->plane) {
+				printf("Commit MC: %ld, cur %d\n",
+					(s64)(sot->buffer->userdata),
+					c->mc_buf_cur);
+				comp_debug("Commit MC: %ld, cur %d",
+					(s64)(sot->buffer->userdata),
+					c->mc_buf_cur);
+				/*
+				printf("Commit Dirty: %08X\n",
+					sot->buffer->dirty);
+				*/
+			}
+#endif
+			/*
+			printf("commit fb: %d,%d %ux%u\n", sot->src->pos.x,
+					sot->src->pos.y,
+					sot->src->w,
+					sot->src->h);
+			*/
+			scanout_commit_add_fb_info(commit,
+					   sot->buffer,
+					   o->output,
+					   sot->plane,
+					   sot->src,
+					   sot->dst,
+					   -1,
+					   sot->alpha_src_pre_mul);
+			cb_cache_put(sot, c->so_task_cache);
+			empty = false;
+		}
+
+		if (output_empty) {
+			if (!c->mc_hide && o->mc_on_screen) {
+				/* printf("cursor empty\n"); */
+				scanout_commit_add_fb_info(commit,
+					c->mc_buf[c->mc_buf_cur],
+					o->output,
+					o->cursor_plane,
+					&c->mc_src,
+					&o->mc_view_port,
+					-1, false);
+				output_empty = false;
+				empty = false;
+			}
+		}
+
+		if (output_empty) {
+			/* printf("primary empty %d\n", o->pipe); */
+			scanout_commit_add_fb_info(commit, o->dummy,
+				o->output, o->primary_plane,
+				&o->dummy_src, &o->crtc_view_port,
+				0, true);
+			output_empty = false;
+			empty = false;
+		}
+
+		o->repaint_status = REPAINT_WAIT_COMPLETION;
+	}
+
+	if (empty) {
+		printf("empty\n");
+		goto out;
+	}
+
+	sd = c->so->scanout_data_alloc(c->so);
+	c->so->fill_scanout_data(c->so, sd, commit);
+	c->so->do_scanout(c->so, sd);
+out:
+	scanout_commit_info_free(commit);
+
+	update_repaint_timer(c);
+	return 0;
+}
+#endif
 
 #ifdef MC_DEBUG_BO_COMPLETE
 static void mc_buf_complete_cb(struct cb_listener *listener, void *data)
@@ -2770,98 +3208,177 @@ static void init_dummy_buf(struct cb_compositor *c)
 	cb_region_init_rect(&c->dummy_surf.damage, 0, 0, 1024, 768);
 	cb_region_init_rect(&c->dummy_surf.opaque, 0, 0, 1024, 768);
 	cb_signal_init(&c->dummy_surf.destroy_signal);
-	c->dummy_surf.width = 1024;
-	c->dummy_surf.height = 768;
 
 	memset(&c->dummy_view, 0, sizeof(c->dummy_view));
 	c->dummy_view.surface = &c->dummy_surf;
-	c->dummy_view.area.pos.x = 0;
+	c->dummy_view.area.pos.x = 2000;
 	c->dummy_view.area.pos.y = 0;
 	c->dummy_view.area.w = 1024;
 	c->dummy_view.area.h = 768;
 	c->dummy_view.alpha = 1.0f;
-	c->dummy_view.dirty = true;
+	/* c->dummy_view.output_mask = 0x01; */
 	list_add_tail(&c->dummy_view.link, &c->views);
 
-	memset(&c->dummy_buf, 0, sizeof(c->dummy_buf));
-	c->dummy_buf.base.info.type = CB_BUF_TYPE_SHM;
-	c->dummy_buf.base.info.width = 1024;
-	c->dummy_buf.base.info.height = 768;
+	memset(&c->dummy_buf[0], 0, sizeof(c->dummy_buf[0]));
+	c->dummy_buf[0].base.info.type = CB_BUF_TYPE_SHM;
+	c->dummy_buf[0].base.info.width = 1024;
+	c->dummy_buf[0].base.info.height = 768;
+	memset(&c->dummy_buf[1], 0, sizeof(c->dummy_buf[1]));
+	c->dummy_buf[1].base.info.type = CB_BUF_TYPE_SHM;
+	c->dummy_buf[1].base.info.width = 1024;
+	c->dummy_buf[1].base.info.height = 768;
 #ifdef TEST_DUMMY_YUV444P
-	c->dummy_buf.base.info.strides[0] = 1024;
-	c->dummy_buf.base.info.offsets[0] = 0;
-	c->dummy_buf.base.info.sizes[0] = c->dummy_buf.base.info.strides[0]
-					* c->dummy_buf.base.info.height;
-	c->dummy_buf.base.info.strides[1] = 1024;
-	c->dummy_buf.base.info.offsets[1] = c->dummy_buf.base.info.sizes[0];
-	c->dummy_buf.base.info.sizes[1] = c->dummy_buf.base.info.strides[1]
-					* c->dummy_buf.base.info.height;
-	c->dummy_buf.base.info.strides[2] = 1024;
-	c->dummy_buf.base.info.offsets[2] = c->dummy_buf.base.info.sizes[0]
-				+ c->dummy_buf.base.info.sizes[1];
-	c->dummy_buf.base.info.sizes[2] = c->dummy_buf.base.info.strides[2]
-					* c->dummy_buf.base.info.height;
-	c->dummy_buf.base.info.pix_fmt = CB_PIX_FMT_YUV444;
-	c->dummy_buf.base.info.planes = 3;
-	strcpy(c->dummy_buf.name, "shm_dummy_buf");
-	unlink(c->dummy_buf.name);
-	cb_shm_init(&c->dummy_buf.shm, c->dummy_buf.name,
-		    c->dummy_buf.base.info.sizes[0] * 3, 1);
-	pixel = (u32 *)c->dummy_buf.shm.map;
+	c->dummy_buf[0].base.info.strides[0] = 1024;
+	c->dummy_buf[0].base.info.offsets[0] = 0;
+	c->dummy_buf[0].base.info.sizes[0] = c->dummy_buf[0].base.info.strides[0]
+					* c->dummy_buf[0].base.info.height;
+	c->dummy_buf[0].base.info.strides[1] = 1024;
+	c->dummy_buf[0].base.info.offsets[1] = c->dummy_buf[0].base.info.sizes[0];
+	c->dummy_buf[0].base.info.sizes[1] = c->dummy_buf[0].base.info.strides[1]
+					* c->dummy_buf[0].base.info.height;
+	c->dummy_buf[0].base.info.strides[2] = 1024;
+	c->dummy_buf[0].base.info.offsets[2] = c->dummy_buf[0].base.info.sizes[0]
+				+ c->dummy_buf[0].base.info.sizes[1];
+	c->dummy_buf[0].base.info.sizes[2] = c->dummy_buf[0].base.info.strides[2]
+					* c->dummy_buf[0].base.info.height;
+	c->dummy_buf[0].base.info.pix_fmt = CB_PIX_FMT_YUV444;
+	c->dummy_buf[0].base.info.planes = 3;
+	strcpy(c->dummy_buf[0].name, "shm_dummy_buf");
+	unlink(c->dummy_buf[0].name);
+	cb_shm_init(&c->dummy_buf[0].shm, c->dummy_buf[0].name,
+		    c->dummy_buf[0].base.info.sizes[0] * 3, 1);
+	pixel = (u32 *)c->dummy_buf[0].shm.map;
+
+	c->dummy_buf[1].base.info.strides[0] = 1024;
+	c->dummy_buf[1].base.info.offsets[0] = 0;
+	c->dummy_buf[1].base.info.sizes[0] = c->dummy_buf[1].base.info.strides[0]
+					* c->dummy_buf[1].base.info.height;
+	c->dummy_buf[1].base.info.strides[1] = 1024;
+	c->dummy_buf[1].base.info.offsets[1] = c->dummy_buf[1].base.info.sizes[0];
+	c->dummy_buf[1].base.info.sizes[1] = c->dummy_buf[1].base.info.strides[1]
+					* c->dummy_buf[1].base.info.height;
+	c->dummy_buf[1].base.info.strides[2] = 1024;
+	c->dummy_buf[1].base.info.offsets[2] = c->dummy_buf[1].base.info.sizes[0]
+				+ c->dummy_buf[1].base.info.sizes[1];
+	c->dummy_buf[1].base.info.sizes[2] = c->dummy_buf[1].base.info.strides[2]
+					* c->dummy_buf[1].base.info.height;
+	c->dummy_buf[1].base.info.pix_fmt = CB_PIX_FMT_YUV444;
+	c->dummy_buf[1].base.info.planes = 3;
+	strcpy(c->dummy_buf[1].name, "shm_dummy_buf");
+	unlink(c->dummy_buf[1].name);
+	cb_shm_init(&c->dummy_buf[1].shm, c->dummy_buf[1].name,
+		    c->dummy_buf[1].base.info.sizes[0] * 3, 1);
 #else
 #ifdef TEST_DUMMY_NV24
-	c->dummy_buf.base.info.strides[0] = 1024;
-	c->dummy_buf.base.info.offsets[0] = 0;
-	c->dummy_buf.base.info.sizes[0] = c->dummy_buf.base.info.strides[0]
-					* c->dummy_buf.base.info.height;
-	c->dummy_buf.base.info.strides[1] = 1024;
-	c->dummy_buf.base.info.offsets[1] = c->dummy_buf.base.info.sizes[0];
-	c->dummy_buf.base.info.sizes[1] = c->dummy_buf.base.info.strides[1]
-					* c->dummy_buf.base.info.height;
-	c->dummy_buf.base.info.pix_fmt = CB_PIX_FMT_NV24;
-	c->dummy_buf.base.info.planes = 2;
-	strcpy(c->dummy_buf.name, "shm_dummy_buf");
-	unlink(c->dummy_buf.name);
-	cb_shm_init(&c->dummy_buf.shm, c->dummy_buf.name,
-		    c->dummy_buf.base.info.sizes[0] * 3, 1);
-	pixel = (u32 *)c->dummy_buf.shm.map;
+	c->dummy_buf[0].base.info.strides[0] = 1024;
+	c->dummy_buf[0].base.info.offsets[0] = 0;
+	c->dummy_buf[0].base.info.sizes[0] = c->dummy_buf[0].base.info.strides[0]
+					* c->dummy_buf[0].base.info.height;
+	c->dummy_buf[0].base.info.strides[1] = 1024;
+	c->dummy_buf[0].base.info.offsets[1] = c->dummy_buf[0].base.info.sizes[0];
+	c->dummy_buf[0].base.info.sizes[1] = c->dummy_buf[0].base.info.strides[1]
+					* c->dummy_buf[0].base.info.height;
+	c->dummy_buf[0].base.info.pix_fmt = CB_PIX_FMT_NV24;
+	c->dummy_buf[0].base.info.planes = 2;
+	strcpy(c->dummy_buf[0].name, "shm_dummy_buf[0]");
+	unlink(c->dummy_buf[0].name);
+	cb_shm_init(&c->dummy_buf[0].shm, c->dummy_buf[0].name,
+		    c->dummy_buf[0].base.info.sizes[0] * 3, 1);
+	pixel = (u32 *)c->dummy_buf[0].shm.map;
+
+	c->dummy_buf[1].base.info.strides[0] = 1024;
+	c->dummy_buf[1].base.info.offsets[0] = 0;
+	c->dummy_buf[1].base.info.sizes[0] = c->dummy_buf[1].base.info.strides[0]
+					* c->dummy_buf[1].base.info.height;
+	c->dummy_buf[1].base.info.strides[1] = 1024;
+	c->dummy_buf[1].base.info.offsets[1] = c->dummy_buf[1].base.info.sizes[0];
+	c->dummy_buf[1].base.info.sizes[1] = c->dummy_buf[1].base.info.strides[1]
+					* c->dummy_buf[1].base.info.height;
+	c->dummy_buf[1].base.info.pix_fmt = CB_PIX_FMT_NV24;
+	c->dummy_buf[1].base.info.planes = 2;
+	strcpy(c->dummy_buf[1].name, "shm_dummy_buf[1]");
+	unlink(c->dummy_buf[1].name);
+	cb_shm_init(&c->dummy_buf[1].shm, c->dummy_buf[1].name,
+		    c->dummy_buf[1].base.info.sizes[0] * 3, 1);
 #else
-	c->dummy_buf.base.info.strides[0] = 1024 * 4;
-	c->dummy_buf.base.info.sizes[0] = c->dummy_buf.base.info.strides[0]
-						* c->dummy_buf.base.info.height;
-	c->dummy_buf.base.info.pix_fmt = CB_PIX_FMT_ARGB8888;
-	c->dummy_buf.base.info.planes = 1;
-	strcpy(c->dummy_buf.name, "shm_dummy_buf");
-	unlink(c->dummy_buf.name);
-	cb_shm_init(&c->dummy_buf.shm, c->dummy_buf.name,
-		    c->dummy_buf.base.info.sizes[0], 1);
-	pixel = (u32 *)c->dummy_buf.shm.map;
+	c->dummy_buf[0].base.info.strides[0] = 1024 * 4;
+	c->dummy_buf[0].base.info.sizes[0] = c->dummy_buf[0].base.info.strides[0]
+						* c->dummy_buf[0].base.info.height;
+	c->dummy_buf[0].base.info.pix_fmt = CB_PIX_FMT_ARGB8888;
+	c->dummy_buf[0].base.info.planes = 1;
+	strcpy(c->dummy_buf[0].name, "shm_dummy_buf[0]");
+	unlink(c->dummy_buf[0].name);
+	cb_shm_init(&c->dummy_buf[0].shm, c->dummy_buf[0].name,
+		    c->dummy_buf[0].base.info.sizes[0], 1);
+	pixel = (u32 *)c->dummy_buf[0].shm.map;
+
+	c->dummy_buf[1].base.info.strides[0] = 1024 * 4;
+	c->dummy_buf[1].base.info.sizes[0] = c->dummy_buf[1].base.info.strides[0]
+						* c->dummy_buf[1].base.info.height;
+	c->dummy_buf[1].base.info.pix_fmt = CB_PIX_FMT_ARGB8888;
+	c->dummy_buf[1].base.info.planes = 1;
+	strcpy(c->dummy_buf[1].name, "shm_dummy_buf[1]");
+	unlink(c->dummy_buf[1].name);
+	cb_shm_init(&c->dummy_buf[1].shm, c->dummy_buf[1].name,
+		    c->dummy_buf[1].base.info.sizes[0], 1);
 #endif
 #endif
 	
 #ifdef TEST_DUMMY_YUV444P
 	{
 		s32 fd = open("/tmp/1024x768_yuv444p.yuv", O_RDONLY, 0644);
-		read(fd, (u8 *)c->dummy_buf.shm.map, 
-			c->dummy_buf.base.info.sizes[0] * 3);
+		read(fd, (u8 *)c->dummy_buf[0].shm.map, 
+			c->dummy_buf[0].base.info.sizes[0] * 3);
 		close(fd);
 	}
 #else
 #ifdef TEST_DUMMY_NV24
 	{
 		s32 fd = open("/tmp/1024x768_nv24.yuv", O_RDONLY, 0644);
-		read(fd, (u8 *)c->dummy_buf.shm.map, 
-			c->dummy_buf.base.info.sizes[0] * 3);
+		read(fd, (u8 *)c->dummy_buf[0].shm.map, 
+			c->dummy_buf[0].base.info.sizes[0] * 3);
 		close(fd);
 	}
 #else
-	for (s32 i = 0; i < c->dummy_buf.base.info.sizes[0] / 4; i++)
+	for (s32 i = 0; i < c->dummy_buf[0].base.info.sizes[0] / 4; i++)
 		pixel[i] = 0xFF404040;
 #endif
 #endif
 
-	c->r->attach_buffer(c->r, &c->dummy_surf, &c->dummy_buf.base);
+	c->dummy_surf.buffer_pending = &c->dummy_buf[0].base;
+	c->dummy_index = 0;
+/*
+	c->r->attach_buffer(c->r, &c->dummy_surf,
+			    c->dummy_surf.buffer_pending);
+	c->dummy_surf.width = c->dummy_surf.buffer_pending->info.width;
+	c->dummy_surf.height = c->dummy_surf.buffer_pending->info.height;
 	c->r->flush_damage(c->r, &c->dummy_surf);
+*/
+}
+#endif
+
+#ifdef TEST_DUMMY_VIEW
+static s32 test_rm_view_timer_cb(void *data)
+{
+	struct cb_compositor *c = data;
+	struct cb_surface *surface = &c->dummy_surf;
+
+	if (surface->buffer_pending) {
+		surface->buffer_pending = NULL;
+		printf("remove dummy view!!!!\n");
+		cb_event_source_timer_update(c->test_rm_view_timer,
+				     15000, 0);
+	} else {
+		printf("reshow dummy view!!!!\n");
+		list_add_tail(&c->dummy_view.link, &c->views);
+		c->dummy_index = 1 - c->dummy_index;
+		surface->buffer_pending = &c->dummy_buf[c->dummy_index].base;
+		cb_event_source_timer_update(c->test_rm_view_timer, 10000, 0);
+	}
+	/* printf("commit dummy surface in timer\n"); */
+	cb_compositor_commit_surface(&c->base, surface);
+
+	return 0;
 }
 #endif
 
@@ -2901,6 +3418,11 @@ struct compositor *compositor_create(char *device_name,
 	INIT_LIST_HEAD(&c->views);
 #ifdef TEST_DUMMY_VIEW
 	init_dummy_buf(c);
+	c->test_rm_view_timer = cb_event_loop_add_timer(c->loop,
+							test_rm_view_timer_cb,
+							c);
+	//cb_event_source_timer_update(c->test_rm_view_timer,
+	//			     5000, 0);
 #endif
 
 	c->count_outputs = count_outputs;
@@ -2987,6 +3509,10 @@ struct compositor *compositor_create(char *device_name,
 	/* prepare input devices */
 	if (cb_compositor_input_init(c) < 0)
 		goto err;
+
+#ifdef TEST_DUMMY_VIEW
+	cb_compositor_commit_surface(&c->base, &c->dummy_surf);
+#endif
 
 	c->base.register_ready_cb = cb_compositor_register_ready_cb;
 	c->base.suspend = cb_compositor_suspend;

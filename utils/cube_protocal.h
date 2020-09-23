@@ -227,6 +227,7 @@ enum cb_buffer_type {
 	CB_BUF_TYPE_UNKNOWN = 0,
 	CB_BUF_TYPE_SHM,
 	CB_BUF_TYPE_DMA,
+	CB_BUF_TYPE_SURFACE,
 };
 
 struct cb_buffer_info {

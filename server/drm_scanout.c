@@ -594,6 +594,7 @@ static void drm_scanout_set_dbg_level(struct scanout *so,
 		drm_dbg = level;
 }
 
+/*
 static enum cb_pix_fmt fourcc_to_cb_pix_fmt(u32 fourcc)
 {
 	switch (fourcc) {
@@ -623,6 +624,7 @@ static enum cb_pix_fmt fourcc_to_cb_pix_fmt(u32 fourcc)
 		return CB_PIX_FMT_UNKNOWN;
 	}
 }
+*/
 
 static u32 cb_pix_fmt_to_fourcc(enum cb_pix_fmt fmt)
 {
@@ -697,6 +699,7 @@ static u64 drm_get_prop_value(struct drm_prop *prop_info,
 	return (u64)(-1);
 }
 
+/*
 static u64 *drm_get_range_prop_value(struct drm_prop *prop_info)
 {
 	if ((prop_info->type != DRM_PROP_TYPE_RANGE) &&
@@ -708,6 +711,7 @@ static u64 *drm_get_range_prop_value(struct drm_prop *prop_info)
 
 	return prop_info->c.rv.values;
 }
+*/
 
 static void drm_prop_prepare(struct drm_scanout *dev,
 			     const struct drm_prop *template,
@@ -959,8 +963,9 @@ static void drm_fb_release_surface(struct drm_fb *fb)
 	drm_debug("Release Surface-BUF.");
 	if (fb && fb->bo && fb->surface) {
 		drm_debug("release surface buffer");
-		printf("release surface buffer\n");
+		printf("begin release surface buffer ID: %u\n", fb->fb_id);
 		gbm_surface_release_buffer(fb->surface, fb->bo);
+		printf("end release surface buffer ID: %u\n", fb->fb_id);
 	}
 }
 
@@ -1051,9 +1056,12 @@ static void drm_fb_unref(struct drm_fb *fb)
 	fb->ref_cnt--;
 	drm_debug("[UNREF] ID: %u %d", fb->fb_id, fb->ref_cnt);
 	printf("[UNREF] ID: %u %d\n", fb->fb_id, fb->ref_cnt);
-	if (fb->ref_cnt == 0) {
+	if (fb->ref_cnt == 0 && fb->type != DRM_FB_TYPE_GBM_SURFACE) {
 		drm_fb_release_buffer(fb);
 	} else if (fb->ref_cnt == 1) { /* do not use any more */
+		if (fb->type == DRM_FB_TYPE_GBM_SURFACE) {
+			drm_fb_release_buffer(fb);
+		}
 		buffer = &fb->base;
 		/* printf("[UNREF] bo complete. %p\n", buffer); */
 		cb_signal_emit(&buffer->complete_signal, buffer);
@@ -1282,7 +1290,7 @@ static s32 drm_output_commit(drmModeAtomicReq *req,
 		plane = pls->plane;
 		ret |= set_plane_prop(req, plane, PLANE_PROP_FB_ID,
 				      pls->fb ? pls->fb->fb_id : 0);
-		printf("Commit FB: %u\n", pls->fb->fb_id);
+		/* printf("Commit FB: %u\n", pls->fb->fb_id); */
 		ret |= set_plane_prop(req, plane, PLANE_PROP_CRTC_ID,
 				      pls->fb ? output->crtc_id : 0);
 		ret |= set_plane_prop(req, plane, PLANE_PROP_SRC_X,
@@ -2375,6 +2383,8 @@ static struct cb_buffer *drm_scanout_cursor_bo_create(
 
 	fb->ref_cnt = 1;
 
+	fb->base.info.type = CB_BUF_TYPE_DMA;
+
 	return &fb->base;
 
 err:
@@ -2479,6 +2489,8 @@ static struct cb_buffer *drm_scanout_dumb_create(struct scanout *so,
 	fb->dev = dev;
 
 	fb->ref_cnt = 1;
+
+	fb->base.info.type = CB_BUF_TYPE_DMA;
 
 	return &fb->base;
 
@@ -2591,6 +2603,8 @@ static struct cb_buffer *drm_scanout_import_dmabuf(struct scanout *so,
 
 	fb->ref_cnt = 1;
 
+	fb->base.info.type = CB_BUF_TYPE_DMA;
+
 	return &fb->base;
 
 err:
@@ -2605,15 +2619,6 @@ err:
 	return NULL;
 }
 
-static void drm_scanout_release_surface_buf(struct scanout *so,
-					    struct cb_buffer *buffer)
-{
-	struct drm_fb *fb = to_drm_fb(buffer);
-
-	drm_debug("Request to release Surface-BUF");
-	drm_fb_unref(fb);
-}
-
 static void drm_fb_destroy_surface_fb(struct gbm_bo *bo, void *data)
 {
 	struct drm_fb *fb = data;
@@ -2622,24 +2627,28 @@ static void drm_fb_destroy_surface_fb(struct gbm_bo *bo, void *data)
 	if (fb) {
 		assert(fb->type == DRM_FB_TYPE_GBM_SURFACE);
 		if (fb->fb_id) {
-			printf("%s(): Remove DRM FB\n", __func__);
-			drm_debug("Remove DRM FB");
+			printf("Begin remove surface DRM FB ID: %u\n",
+				fb->fb_id);
+			drm_debug("Remove surface DRM FB");
 			drmModeRmFB(dev->fd, fb->fb_id);
+			printf("End remove surface DRM FB ID: %u\n",
+				fb->fb_id);
 		}
 		cb_cache_put(fb, dev->drm_fb_cache);
 	}
 }
 
-static struct cb_buffer *drm_scanout_import_surface_buf(struct scanout *so,
-							void *surface)
+static struct cb_buffer *drm_scanout_get_surface_buf(struct scanout *so,
+						     void *surface)
 {
 	struct drm_fb *fb = NULL;
 	struct drm_scanout *dev = to_dev(so);
 	struct gbm_bo *bo;
 	s32 ret;
 
-	printf("lock front buffer\n");
+	printf("begin lock front buffer\n");
 	bo = gbm_surface_lock_front_buffer((struct gbm_surface *)surface);
+	printf("end lock front buffer\n");
 	if (!bo) {
 		drm_err("failed to lock front buffer: %s", strerror(errno));
 		goto err;
@@ -2647,7 +2656,8 @@ static struct cb_buffer *drm_scanout_import_surface_buf(struct scanout *so,
 
 	fb = gbm_bo_get_user_data(bo);
 	if (fb) {
-		printf("get bo from userdata fb->id: %u\n", fb->fb_id);
+		printf("get bo from userdata fb->id: %u, ref: %d\n",
+			fb->fb_id, fb->ref_cnt);
 		return &fb->base;
 	}
 
@@ -2686,8 +2696,10 @@ static struct cb_buffer *drm_scanout_import_surface_buf(struct scanout *so,
 	cb_signal_init(&fb->base.complete_signal);
 
 	fb->dev = dev;
-	fb->ref_cnt = 0;
+	fb->ref_cnt = 1;
 	fb->surface = (struct gbm_surface *)surface;
+
+	fb->base.info.type = CB_BUF_TYPE_SURFACE;
 
 	return &fb->base;
 
@@ -3309,8 +3321,7 @@ struct scanout *scanout_create(const char *dev_path, struct cb_event_loop *loop)
 
 	dev->base.pipeline_create = drm_scanout_pipeline_create;
 	dev->base.pipeline_destroy = drm_scanout_pipeline_destroy;
-	dev->base.import_surface_buf = drm_scanout_import_surface_buf;
-	dev->base.release_surface_buf = drm_scanout_release_surface_buf;
+	dev->base.get_surface_buf = drm_scanout_get_surface_buf;
 	dev->base.import_dmabuf = drm_scanout_import_dmabuf;
 	dev->base.release_dmabuf = drm_scanout_release_dmabuf;
 	dev->base.dumb_buffer_create = drm_scanout_dumb_create;

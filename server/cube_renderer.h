@@ -35,7 +35,7 @@ struct renderer;
 struct r_output {
 	void (*destroy)(struct r_output *o);
 
-	void (*repaint)(struct r_output *o, struct list_head *views);
+	bool (*repaint)(struct r_output *o, struct list_head *views);
 
 	void (*layout_changed)(struct r_output *o,
 			       struct cb_rect *render_area,
@@ -52,7 +52,8 @@ struct renderer {
 					 s32 count_fmts,
 					 s32 *vid,
 					 struct cb_rect *render_area,
-					 u32 disp_w, u32 disp_h);
+					 u32 disp_w, u32 disp_h,
+					 s32 pipe);
 
 	struct cb_buffer *(*import_dmabuf)(struct renderer *r,
 					   struct cb_buffer_info *info);
@@ -60,10 +61,12 @@ struct renderer {
 	void (*release_dmabuf)(struct renderer *r,
 			       struct cb_buffer *buffer);
 
+	/* change the surface's current buffer */
 	void (*attach_buffer)(struct renderer *r,
 			      struct cb_surface *surface,
 			      struct cb_buffer *buffer);
 
+	/* it is used for shm buffer's partial update */
 	void (*flush_damage)(struct renderer *r, struct cb_surface *surface);
 };
 
