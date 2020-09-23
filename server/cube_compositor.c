@@ -687,6 +687,19 @@ static void cancel_so_tasks(struct cb_output *output)
 	}
 }
 
+static void disable_output_render(struct cb_output *o)
+{
+	if (o->ro) {
+		o->ro->destroy(o->ro);
+		o->rbuf_cur = NULL;
+		o->ro = NULL;
+	}
+	if (o->native_surface) {
+		o->output->native_surface_destroy(o->output, o->native_surface);
+		o->native_surface = NULL;
+	}
+}
+
 static s32 suspend(struct cb_compositor *c)
 {
 	struct cb_output *o;
@@ -729,16 +742,7 @@ static s32 suspend(struct cb_compositor *c)
 						     OUTPUT_DISABLE_DELAYED_US);
 				c->disable_all_pending++;
 			} else {
-				if (o->ro) {
-					o->ro->destroy(o->ro);
-					o->ro = NULL;
-				}
-				if (o->native_surface) {
-					o->output->native_surface_destroy(
-							o->output,
-							o->native_surface);
-					o->native_surface = NULL;
-				}
+				disable_output_render(o);
 				/* update view port when output is disabled. */
 				update_crtc_view_port(o);
 				o->disable_pending = false;
@@ -1050,16 +1054,7 @@ static void head_changed_cb(struct cb_listener *listener, void *data)
 						     OUTPUT_DISABLE_DELAYED_MS,
 						     OUTPUT_DISABLE_DELAYED_US);
 		} else {
-			if (o->ro) {
-				o->ro->destroy(o->ro);
-				o->ro = NULL;
-			}
-			if (o->native_surface) {
-				o->output->native_surface_destroy(
-						output,
-						o->native_surface);
-				o->native_surface = NULL;
-			}
+			disable_output_render(o);
 			o->disable_pending = false;
 			printf("output %d is disabled. repaint_status: %d\n",
 				o->pipe, o->repaint_status);
@@ -1129,16 +1124,7 @@ static s32 output_disable_timer_cb(void *data)
 					     OUTPUT_DISABLE_DELAYED_US);
 	} else {
 		if (o->switch_mode_pending && o->pending_mode) {
-			if (o->ro) {
-				o->ro->destroy(o->ro);
-				o->ro = NULL;
-			}
-			if (o->native_surface) {
-				o->output->native_surface_destroy(
-					output,
-					o->native_surface);
-				o->native_surface = NULL;
-			}
+			disable_output_render(o);
 			output->switch_mode(output, o->pending_mode);
 			output->enable(output, o->pending_mode);
 			o->repaint_status = REPAINT_NOT_SCHEDULED;
@@ -1168,16 +1154,7 @@ static s32 output_disable_timer_cb(void *data)
 			o->pending_mode = NULL;
 			cb_signal_emit(&o->switch_mode_signal, NULL);
 		} else {
-			if (o->ro) {
-				o->ro->destroy(o->ro);
-				o->ro = NULL;
-			}
-			if (o->native_surface) {
-				o->output->native_surface_destroy(
-						output,
-						o->native_surface);
-				o->native_surface = NULL;
-			}
+			disable_output_render(o);
 			printf("output %d is disabled. repaint_status: %d\n",
 				o->pipe, o->repaint_status);
 			o->repaint_status = REPAINT_NOT_SCHEDULED;
@@ -1650,16 +1627,7 @@ static s32 cb_compositor_switch_mode(struct compositor *comp, s32 pipe,
 					     OUTPUT_DISABLE_DELAYED_MS,
 					     OUTPUT_DISABLE_DELAYED_US);
 	} else {
-		if (o->ro) {
-			o->ro->destroy(o->ro);
-			o->ro = NULL;
-		}
-		if (o->native_surface) {
-			o->output->native_surface_destroy(
-					o->output,
-					o->native_surface);
-			o->native_surface = NULL;
-		}
+		disable_output_render(o);
 		o->output->switch_mode(o->output, mode);
 		o->output->enable(o->output, mode);
 		o->repaint_status = REPAINT_NOT_SCHEDULED;
