@@ -70,7 +70,7 @@
 //#define TEST_DUMMY_VIEW_MOVE 1
 //#define TEST_DUMMY_YUV444P 1
 #define TEST_DUMMY_NV24 1
-#define TEST_DMA_BUF_DUMMY_VIEW_MOVE 1
+//#define TEST_DMA_BUF_DUMMY_VIEW_MOVE 1
 #define TEST_DMA_BUF_DUMMY_VIEW 1
 
 #define TEST_DUMMY_DMA_BUF 1
@@ -3346,11 +3346,6 @@ static bool prepare_dma_buf_planes(struct cb_surface *surface,
 	return true;
 }
 
-static void cancel_dma_buf_surface(struct cb_surface *surface)
-{
-	
-}
-
 static void cancel_dma_buf_by_output(struct cb_view *view, struct cb_output *o)
 {
 	struct cb_surface *surface = view->surface;
@@ -3434,7 +3429,6 @@ static void cb_compositor_commit_dma_buf(struct compositor *comp,
 		/* remove view */
 		comp_notice("remove DMA-BUF direct show view link");
 		list_del(&view->link);
-		cancel_dma_buf_surface(surface);
 		cb_compositor_repaint(c);
 	} else {
 		surface->width = surface->buffer_pending->info.width;
@@ -3787,7 +3781,7 @@ static void dummy_buf_flipped_cb(struct cb_listener *listener, void *data)
 	struct cb_compositor *c = container_of(listener, struct cb_compositor,
 						dummy_buf_flipped_l[index]);
 
-	comp_debug("dma-buf index:%ld (%p) flipped.", index, buffer);
+	comp_notice("dma-buf index:%ld (%p) flipped.", index, buffer);
 
 #ifdef TEST_DMA_BUF_DUMMY_VIEW_MOVE
 	static s32 dx = 5;
@@ -3811,11 +3805,13 @@ static void dummy_buf_flipped_cb(struct cb_listener *listener, void *data)
 		dy = -dy;
 		c->dummy_view.area.pos.y += dy;
 	}
-	c->dummy_surf.buffer_pending = c->dummy_buf[c->dummy_index];
+	if (c->dummy_surf.buffer_pending)
+		c->dummy_surf.buffer_pending = c->dummy_buf[c->dummy_index];
 	cb_compositor_commit_dma_buf(&c->base, &c->dummy_surf);
 #else
-	//c->dummy_index = 1 - c->dummy_index;
-	c->dummy_surf.buffer_pending = c->dummy_buf[c->dummy_index];
+	c->dummy_index = 1 - c->dummy_index;
+	if (c->dummy_surf.buffer_pending)
+		c->dummy_surf.buffer_pending = c->dummy_buf[c->dummy_index];
 	cb_compositor_commit_dma_buf(&c->base, &c->dummy_surf);
 #endif
 
@@ -3826,7 +3822,7 @@ static void dummy_buf_complete_cb(struct cb_listener *listener, void *data)
 	struct cb_buffer *buffer = data;
 	s64 index = (s64)(buffer->userdata);
 
-	/* printf("dma-buf index:%ld (%p) complete.\n", index, buffer); */
+	comp_notice("dma-buf index:%ld (%p) complete.", index, buffer);
 }
 
 static void init_dma_buf_dummy_buf(struct cb_compositor *c)
@@ -3867,7 +3863,7 @@ static void init_dma_buf_dummy_buf(struct cb_compositor *c)
 
 	memset(&c->dummy_view, 0, sizeof(c->dummy_view));
 	c->dummy_view.surface = &c->dummy_surf;
-	c->dummy_view.area.pos.x = 0;
+	c->dummy_view.area.pos.x = 1500;
 	c->dummy_view.area.pos.y = 0;
 	c->dummy_view.area.w = 1024;
 	c->dummy_view.area.h = 768;
@@ -4057,6 +4053,7 @@ static s32 test_rm_view_timer_cb(void *data)
 	struct cb_compositor *c = data;
 	struct cb_surface *surface = &c->dummy_surf;
 
+	printf("buffer_pending: %p\n", surface->buffer_pending);
 	if (surface->buffer_pending) {
 		surface->buffer_pending = NULL;
 		printf("remove dma-buf dummy view!!!!\n");
@@ -4149,8 +4146,8 @@ struct compositor *compositor_create(char *device_name,
 	c->test_rm_view_timer = cb_event_loop_add_timer(c->loop,
 							test_rm_view_timer_cb,
 							c);
-	//cb_event_source_timer_update(c->test_rm_view_timer,
-	//
+	cb_event_source_timer_update(c->test_rm_view_timer,
+					10000, 0);
 #endif
 
 	c->count_outputs = count_outputs;
