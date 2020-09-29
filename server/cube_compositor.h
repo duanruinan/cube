@@ -29,6 +29,8 @@
 #include <cube_protocal.h>
 #include <cube_client_agent.h>
 
+#define MAX_NR_OUTPUTS 32
+
 struct cb_buffer {
 	struct cb_buffer_info info;
 	struct cb_signal destroy_signal;
@@ -80,6 +82,47 @@ struct compositor;
 
 struct cb_surface {
 	struct cb_compositor *c;
+
+	/*
+	 * The new buffer should be rendered into renderer's surface.
+	 * The protocal engine set the field.
+	 */
+	struct cb_buffer *buffer_pending;
+	/*
+	 * The buffer should be displayed (attached)
+	 * 
+	 * The commiter set the field.
+	 *     for renderable buffer the compositor attach the buffer this 
+	 *         field indicated to the surface, flush the texture
+	 *         (if the buffer is SHM-BUF), repaint it finally.
+	 *     for DMA-BUF buffer the compositor import the buffer to scanout
+	 *         device, commit it directly to scanout device.
+	 */
+	struct cb_buffer *buffer_cur;
+	/*
+	 * last buffer attached to renderer's surface
+	 * when a new pending buffer is commited, the buffer before is set as
+	 * buffer_last.
+	 */
+	struct cb_buffer *buffer_last;
+
+	bool is_opaque;
+	struct cb_signal destroy_signal;
+
+	/* where it should to be displayed */
+	struct cb_view *view;
+
+	/*
+	 * surface size
+	 * it is the size of the buffer be attached currently,
+	 * so it is a dynamically value.
+	 */
+	u32 width, height;
+
+	/********************** FOR Renderer ************************/
+	/* used for buffer rendered in surface */
+	struct cb_listener flipped_l;
+
 	/*
 	 * surface state
 	 *
@@ -89,45 +132,12 @@ struct cb_surface {
 	 */
 	void *renderer_state;
 
-	/*
-	 * The buffer should be displayed (attached)
-	 * 
-	 * The repaint task producer set the field.
-	 *     for renderable buffer the compositor attach the buffer this 
-	 *         field indicated to the surface, flush the texture
-	 *         (if the buffer is SHM-BUF), repaint it finally.
-	 *     for DMA-BUF buffer the compositor import the buffer to scanout
-	 *         device, commit it directly to scanout device.
-	 */
-	struct cb_buffer *buffer_cur;
-
-	/*
-	 * The new buffer should be displayed in the repaint loop.
-	 * The protocal engine set the field.
-	 */
-	struct cb_buffer *buffer_pending;
-
-	struct cb_buffer *buffer_last;
-
-	bool is_opaque;
-	struct cb_signal destroy_signal;
-
-	/* where it should to be displayed */
-	struct cb_view *view;
-
 	struct cb_region damage; /* used for texture partial upload */
 	struct cb_region opaque; /* opaque area */
 
-	/*
-	 * surface size
-	 * it is the size of the buffer be attached currently,
-	 * so it is a dynamically value.
-	 */
-	u32 width, height;
+	struct cb_output *output; /* the output generate vblank signal */
+	/************************************************************/
 
-	struct cb_listener flipped_l;
-
-	struct cb_output *output;
 	/* client agent */
 };
 
@@ -154,6 +164,16 @@ struct cb_view {
 	 * a ro, and it is also used for setting dirty bit for DMA-BUF.
 	 */
 	u32 output_mask;
+
+	/*
+	 * used for DMA-BUF direct show surface
+	 * in pipe order
+	 */
+	struct plane *planes[MAX_NR_OUTPUTS];
+
+	/* used for DMA-BUF direct show (in pipe order ) */
+	struct cb_rect dst_areas[MAX_NR_OUTPUTS];
+	struct cb_rect src_areas[MAX_NR_OUTPUTS];
 
 	bool painted;
 };

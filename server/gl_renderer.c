@@ -43,6 +43,8 @@
 static enum cb_log_level gles_dbg = CB_LOG_NOTICE;
 static enum cb_log_level egl_dbg = CB_LOG_NOTICE;
 
+#define LAYOUT_CHG_CNT 4
+
 #define gles_debug(fmt, ...) do { \
 	if (gles_dbg >= CB_LOG_DEBUG) { \
 		cb_tlog("[GLES][DEBUG ] " fmt, ##__VA_ARGS__); \
@@ -317,7 +319,8 @@ struct gl_output_state {
 	struct gl_renderer *r;
 	struct cb_rect render_area;
 	u32 disp_w, disp_h;
-	bool layout_changed;
+	/* a count to set all surface buffer with new view port */
+	s32 layout_changed;
 };
 
 static inline struct gl_renderer *to_glr(struct renderer *renderer)
@@ -956,7 +959,7 @@ static void gl_output_layout_changed(struct r_output *output,
 {
 	struct gl_output_state *go = to_glo(output);
 
-	go->layout_changed = true;
+	go->layout_changed = LAYOUT_CHG_CNT;
 	go->disp_w = disp_w;
 	go->disp_h = disp_h;
 	memcpy(&go->render_area, render_area, sizeof(*render_area));
@@ -1402,20 +1405,27 @@ static bool draw_view(struct cb_view *v, struct gl_output_state *go,
 	struct gl_surface_state *gs = get_surface_state(r, v->surface);
 	struct cb_region surface_opaque, surface_blend;
 	struct cb_region view_area, output_area;
+	/*
 	struct cb_box *boxes;
+	*/
 	GLint filter;
-	s32 i, n;
+	s32 i;
+	/*
+	s32 n;
+	*/
 	bool repainted = false;
 
 	if (!gs->shader)
 		return false;
 
+	/*
 	gles_debug("damage area left:");
 	boxes = cb_region_boxes(damage, &n);
 	for (i = 0; i < n; i++) {
 		gles_debug("(%u, %u) (%u, %u)", boxes[i].p1.x, boxes[i].p1.y,
 			   boxes[i].p2.x, boxes[i].p2.y);
 	}
+	*/
 	
 	gles_debug("view_area %d,%d %ux%u", v->area.pos.x, v->area.pos.y,
 		   v->area.w, v->area.h);
@@ -1438,20 +1448,24 @@ static bool draw_view(struct cb_view *v, struct gl_output_state *go,
 	cb_region_translate(&view_area, -go->render_area.pos.x,
 			    -go->render_area.pos.y);
 	cb_region_intersect(&view_area, &view_area, damage);
+	/*
 	gles_debug("view_area to repaint:");
 	boxes = cb_region_boxes(&view_area, &n);
 	for (i = 0; i < n; i++) {
 		gles_debug("(%u, %u) (%u, %u)", boxes[i].p1.x, boxes[i].p1.y,
 			   boxes[i].p2.x, boxes[i].p2.y);
 	}
+	*/
 	cb_region_subtract(damage, damage, &view_area);
 
+	/*
 	gles_debug("damage area left:");
 	boxes = cb_region_boxes(damage, &n);
 	for (i = 0; i < n; i++) {
 		gles_debug("(%u, %u) (%u, %u)", boxes[i].p1.x, boxes[i].p1.y,
 			   boxes[i].p2.x, boxes[i].p2.y);
 	}
+	*/
 
 	glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
@@ -1556,24 +1570,25 @@ static bool gl_output_repaint(struct r_output *output, struct list_head *views)
 	if (go->layout_changed) {
 		if (left) {
 			/* draw left and right black bar */
-			glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
+			glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 			glClear(GL_COLOR_BUFFER_BIT);
 			glViewport(0, 0, left - 1, height);
 			glViewport(left + width, 0, left - 1, height);
 		}
 		if (top) {
 			/* draw top and bottom black bar */
-			glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
+			glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 			glClear(GL_COLOR_BUFFER_BIT);
 			glViewport(left, 0, width, top - 1);
 			glViewport(left, top + height, width, top - 1);
 		}
-		go->layout_changed = false;
+		go->layout_changed--;
 	}
 
 	glViewport(left, top, width, height);
 
-	gles_debug("%d,%d %ux%u %ux%u", left, top, width, height,
+	gles_debug("Output[%d] View %d,%d %ux%u %ux%u", go->pipe,
+		   left, top, width, height,
 		   go->disp_w, go->disp_h);
 
 	cb_region_init_rect(&total_damage, 0, 0, area->w, area->h);
@@ -1677,7 +1692,7 @@ static struct r_output *gl_output_create(struct renderer *renderer,
 
 	go->egl_surface = egl_surface;
 	go->r = r;
-	go->layout_changed = true;
+	go->layout_changed = LAYOUT_CHG_CNT;
 	go->disp_w = disp_w;
 	go->disp_h = disp_h;
 	memcpy(&go->render_area, render_area, sizeof(*render_area));

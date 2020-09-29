@@ -119,6 +119,7 @@ struct cb_server {
 	struct cb_event_source *mc_collect_timer;
 	struct cb_event_source *comp_destroy_timer;
 	struct cb_event_source *test_hide_mc_timer;
+	struct cb_event_source *set_cursor_idle_source;
 	u32 mc_cnt;
 	bool mc_pending;
 	u8 *mc_bufs[2];
@@ -146,6 +147,35 @@ static void usage(void)
 	printf("\t\t-h, --help, show this message.\n");
 	printf("\t\t-s, --seat=ID, cube server's instance ID.\n");
 	printf("\t\t-d, --device=/dev/dri/cardX, device name.\n");
+}
+
+static void set_cursor_idle_proc(void *data)
+{
+	struct cb_server *server = data;
+	s32 ret;
+
+	if (server->mc_chg_timer)
+		cb_event_source_timer_update(server->mc_chg_timer, 0, 0);
+	ret = server->c->set_mouse_cursor(server->c,
+					  server->mc_bufs[server->mc_cur],
+					  16, 16, 64, 0, 0, false);
+	if (ret) {
+		printf("ret = %d\n", ret);
+		if (server->mc_chg_timer)
+			cb_event_source_timer_update(server->mc_chg_timer,
+				     8, 0);
+	} else {
+		server->mc_cnt++;
+		server->mc_cur = 1 - server->mc_cur;
+	}
+	server->set_cursor_idle_source = NULL;
+}
+
+static void start_set_cursor_idle_task(struct cb_server *server)
+{
+	server->set_cursor_idle_source = cb_event_loop_add_idle(server->loop,
+					set_cursor_idle_proc,
+					server);
 }
 
 static void run_background(void)
@@ -363,23 +393,9 @@ static s32 server_sock_cb(s32 fd, u32 mask, void *data)
 
 static void mc_flipped_cb(struct cb_listener *listener, void *data)
 {
-	s32 ret;
 	struct cb_server *server = container_of(listener, struct cb_server,
 						mc_flipped_listener);
-	if (server->mc_chg_timer)
-		cb_event_source_timer_update(server->mc_chg_timer, 0, 0);
-	ret = server->c->set_mouse_cursor(server->c,
-					  server->mc_bufs[server->mc_cur],
-					  16, 16, 64, 0, 0, false);
-	if (ret) {
-		printf("ret = %d\n", ret);
-		if (server->mc_chg_timer)
-			cb_event_source_timer_update(server->mc_chg_timer,
-				     8, 0);
-	} else {
-		server->mc_cnt++;
-		server->mc_cur = 1 - server->mc_cur;
-	}
+	start_set_cursor_idle_task(server);
 }
 
 static void head_changed_cb(struct cb_listener *listener, void *data)
@@ -396,18 +412,7 @@ static void head_changed_cb(struct cb_listener *listener, void *data)
 			c->get_monitor_name(c, disp->pipe));
 	if (disp->connected) {
 		printf("head change Set cursor\n");
-		cb_event_source_timer_update(disp->server->mc_chg_timer, 0, 0);
-		ret = c->set_mouse_cursor(c,
-			disp->server->mc_bufs[disp->server->mc_cur],
-				    16, 16, 64, 0, 0, false);
-		if (ret) {
-			printf("ret = %d\n", ret);
-			cb_event_source_timer_update(disp->server->mc_chg_timer,
-						     8, 0);
-		} else {
-			disp->server->mc_cnt++;
-			disp->server->mc_cur = 1 - disp->server->mc_cur;
-		}
+		start_set_cursor_idle_task(disp->server);
 	} else {
 //		cb_event_source_timer_update(disp->server->mc_chg_timer,
 //					     0, 0);
@@ -465,19 +470,7 @@ static void compositor_ready_cb(struct cb_listener *listener, void *data)
 					    &server->mc_flipped_listener);
 
 	printf("Set cursor\n");
-	ret =server->c->set_mouse_cursor(server->c, server->mc_bufs[server->mc_cur],
-				    16, 16, 64, 0, 0, false);
-	printf("ret = %d\n", ret);
-	if (ret) {
-		if (server->mc_chg_timer) {
-			cb_event_source_timer_update(server->mc_chg_timer,
-					     8, 0);
-		}
-	} else {
-		server->mc_cnt++;
-		server->mc_cur = 1 - server->mc_cur;
-	}
-
+//	start_set_cursor_idle_task(server);
 }
 
 static s32 mc_collect_proc(void *data)
@@ -533,17 +526,8 @@ static s32 change_mc_delay_proc(void *data)
 	struct compositor *c = server->c;
 	s32 ret;
 
-	ret = c->set_mouse_cursor(c,server->mc_bufs[server->mc_cur],
-				    16, 16, 64, 0, 0, false);
-	if (ret) {
-		if (server->mc_chg_timer) {
-			cb_event_source_timer_update(server->mc_chg_timer,
-					     8, 0);
-		}
-	} else {
-		server->mc_cnt++;
-		server->mc_cur = 1 - server->mc_cur;
-	}
+	start_set_cursor_idle_task(server);
+
 	return 0;
 }
 

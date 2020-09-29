@@ -43,6 +43,8 @@
 #include <cube_compositor.h>
 #include <cube_scanout.h>
 
+#define USE_DRM_PRIME 1
+
 /* static enum cb_log_level drm_dbg = CB_LOG_DEBUG; */
 static enum cb_log_level drm_dbg = CB_LOG_NOTICE;
 
@@ -79,6 +81,7 @@ enum drm_prop_type {
 	DRM_PROP_TYPE_RANGE,
 	DRM_PROP_TYPE_SIGNED_RANGE,
 	DRM_PROP_TYPE_OBJECT,
+	DRM_PROP_TYPE_BITMASK,
 };
 
 struct enum_value {
@@ -204,6 +207,7 @@ static const struct drm_prop connector_props[] = {
 
 enum {
 	PLANE_PROP_TYPE = 0,
+	PLANE_PROP_FEATURE,
 	PLANE_PROP_FB_ID,
 	PLANE_PROP_IN_FENCE_FD,
 	PLANE_PROP_CRTC_ID,
@@ -221,6 +225,33 @@ enum {
 	PLANE_PROP_BLEND_MODE,
 	PLANE_PROP_ALPHA_SRC_PRE_MUL,
 	PLANE_PROP_NR,
+};
+
+enum {
+	PLANE_FEATURE_IDX_SCALE = 0,
+	PLANE_FEATURE_IDX_ALPHA,
+	PLANE_FEATURE_IDX_HDR2SDR,
+	PLANE_FEATURE_IDX_SDR2HDR,
+	PLANE_FEATURE_IDX_AFBDC,
+	PLANE_FEATURE_IDX_NR,
+};
+
+static struct enum_value plane_feature_enum[] = {
+	[PLANE_FEATURE_IDX_SCALE] = {
+		.name = "scale",
+	},
+	[PLANE_FEATURE_IDX_ALPHA] = {
+		.name = "alpha",
+	},
+	[PLANE_FEATURE_IDX_HDR2SDR] = {
+		.name = "hdr2sdr",
+	},
+	[PLANE_FEATURE_IDX_SDR2HDR] = {
+		.name = "sdr2hdr",
+	},
+	[PLANE_FEATURE_IDX_AFBDC] = {
+		.name = "afbdc",
+	},
 };
 
 enum {
@@ -265,6 +296,16 @@ static const struct drm_prop plane_props[] = {
 			.ev = {
 				.count_values = PLANE_TYPE_IDX_NR,
 				.values = plane_type_enum,
+			},
+		},
+	},
+	[PLANE_PROP_FEATURE] = {
+		.name = "FEATURE",
+		.type = DRM_PROP_TYPE_BITMASK,
+		.c = {
+			.ev = {
+				.count_values = PLANE_FEATURE_IDX_NR,
+				.values = plane_feature_enum,
 			},
 		},
 	},
@@ -728,7 +769,8 @@ static void drm_prop_prepare(struct drm_scanout *dev,
 	for (j = 0; j < count_props; j++) {
 		dst[j].valid = false;
 		dst[j].type = template[j].type;
-		if (template[j].type == DRM_PROP_TYPE_ENUM) {
+		if (template[j].type == DRM_PROP_TYPE_ENUM ||
+		    template[j].type == DRM_PROP_TYPE_BITMASK) {
 			dst[j].c.ev.count_values
 				= template[j].c.ev.count_values;
 			dst[j].c.ev.values = calloc(dst[j].c.ev.count_values,
@@ -754,6 +796,8 @@ static void drm_prop_prepare(struct drm_scanout *dev,
 				type = DRM_PROP_TYPE_RANGE;
 			if (prop->flags & DRM_MODE_PROP_ENUM)
 				type = DRM_PROP_TYPE_ENUM;
+			if (prop->flags & DRM_MODE_PROP_BITMASK)
+				type = DRM_PROP_TYPE_BITMASK;
 			if (prop->flags & DRM_MODE_PROP_BLOB)
 				type = DRM_PROP_TYPE_BLOB;
 			if (prop->flags & DRM_MODE_PROP_OBJECT)
@@ -789,12 +833,35 @@ static void drm_prop_prepare(struct drm_scanout *dev,
 
 		dst[j].valid = true;
 		switch (type) {
+		case DRM_PROP_TYPE_BITMASK:
+			drm_info("Find bitmask%s property: %s",
+				 dst[j].atomic ? " atomic" : "", dst[j].name);
+			printf("Find bitmask%s property: %s\n",
+				 dst[j].atomic ? " atomic" : "", dst[j].name);
+			for (k = 0; k < dst[j].c.ev.count_values; k++) {
+				for (m = 0; m < prop->count_enums; m++) {
+					if (!strcmp(prop->enums[m].name,
+						    dst[j].c.ev.values[k].name))
+						break;
+				}
+
+				if (m == prop->count_enums)
+					continue;
+
+				dst[j].c.ev.values[k].valid = true;
+				dst[j].c.ev.values[k].value
+					= (1LL << prop->enums[m].value);
+				
+				drm_info("\t%s - %llu",
+					 dst[j].c.ev.values[k].name,
+					 dst[j].c.ev.values[k].value);
+			}
+			break;
 		case DRM_PROP_TYPE_ENUM:
 			drm_info("Find enum%s property: %s",
 				 dst[j].atomic ? " atomic" : "", dst[j].name);
 			for (k = 0; k < dst[j].c.ev.count_values; k++) {
 				for (m = 0; m < prop->count_enums; m++) {
-					drm_info("%s", prop->enums[m].name);
 					if (!strcmp(prop->enums[m].name,
 						    dst[j].c.ev.values[k].name))
 						break;
@@ -917,6 +984,10 @@ static void drm_fb_ref(struct drm_fb *fb)
 	fb->ref_cnt++;
 	drm_debug("[REF] ID: %u %d", fb->fb_id, fb->ref_cnt);
 	/* printf("[REF] ID: %u %d\n", fb->fb_id, fb->ref_cnt); */
+	/*
+	if (fb->base.info.width != 64)
+		printf("[REF] ID: %u %d\n", fb->fb_id, fb->ref_cnt);
+	*/
 }
 
 static struct drm_plane_state *
@@ -939,6 +1010,28 @@ drm_plane_state_create(struct drm_output_state *os, struct drm_plane *plane,
 	return ps;
 }
 
+#ifdef USE_DRM_PRIME
+static void drm_fb_release_dmabuf(struct drm_fb *fb)
+{
+	struct drm_gem_close req;
+	struct drm_scanout *dev;
+
+	if (fb && fb->handles[0]) {
+		dev = fb->dev;
+		drm_debug("close GEM");
+		memset(&req, 0, sizeof(req));
+		req.handle = fb->handles[0];
+		drmIoctl(dev->fd, DRM_IOCTL_GEM_CLOSE, &req);
+
+		if (fb->fb_id) {
+			drm_debug("Remove DRM FB");
+			drmModeRmFB(dev->fd, fb->fb_id);
+		}
+
+		cb_cache_put(fb, dev->drm_fb_cache);
+	}
+}
+#else
 static void drm_fb_release_dmabuf(struct drm_fb *fb)
 {
 	struct drm_scanout *dev = fb->dev;
@@ -957,6 +1050,7 @@ static void drm_fb_release_dmabuf(struct drm_fb *fb)
 		cb_cache_put(fb, dev->drm_fb_cache);
 	}
 }
+#endif
 
 static void drm_fb_release_surface(struct drm_fb *fb)
 {
@@ -1056,6 +1150,10 @@ static void drm_fb_unref(struct drm_fb *fb)
 	fb->ref_cnt--;
 	drm_debug("[UNREF] ID: %u %d", fb->fb_id, fb->ref_cnt);
 	/* printf("[UNREF] ID: %u %d\n", fb->fb_id, fb->ref_cnt); */
+	/*
+	if (fb->base.info.width != 64)
+		printf("[UNREF] ID: %u %d\n", fb->fb_id, fb->ref_cnt);
+	*/
 	if (fb->ref_cnt == 0 && fb->type != DRM_FB_TYPE_GBM_SURFACE) {
 		drm_fb_release_buffer(fb);
 	} else if (fb->ref_cnt == 1) { /* do not use any more */
@@ -1290,7 +1388,12 @@ static s32 drm_output_commit(drmModeAtomicReq *req,
 		plane = pls->plane;
 		ret |= set_plane_prop(req, plane, PLANE_PROP_FB_ID,
 				      pls->fb ? pls->fb->fb_id : 0);
-		/* printf("Commit FB: %u\n", pls->fb->fb_id); */
+		/*
+		printf("Commit FB for o %d: %u %ux%u %d,%d\n",
+				output->index, pls->fb->fb_id,
+				pls->src_w, pls->src_h,
+				pls->crtc_x, pls->crtc_y);
+		*/
 		ret |= set_plane_prop(req, plane, PLANE_PROP_CRTC_ID,
 				      pls->fb ? output->crtc_id : 0);
 		ret |= set_plane_prop(req, plane, PLANE_PROP_SRC_X,
@@ -1708,6 +1811,8 @@ static struct plane *drm_plane_create(struct drm_scanout *dev,
 	drmModePlane *p;
 	s32 i;
 	u32 type, alpha_src;
+	u64 value;
+	struct drm_prop *prop;
 
 	drm_info("Create plane ...");
 	plane = calloc(1, sizeof(*plane));
@@ -1737,6 +1842,7 @@ static struct plane *drm_plane_create(struct drm_scanout *dev,
 		return NULL;
 	}
 
+	INIT_LIST_HEAD(&plane->base.link);
 	plane->base.count_formats = p->count_formats;
 	plane->base.formats = calloc(plane->base.count_formats, sizeof(u32));
 	memcpy(plane->base.formats, p->formats,
@@ -1758,12 +1864,43 @@ static struct plane *drm_plane_create(struct drm_scanout *dev,
 					      props);
 	type = drm_get_prop_value(&plane->props[PLANE_PROP_TYPE], props);
 	if (type != (u32)(-1)) {
-		if (!strcmp(plane_type_enum[type].name, "Primary"))
+		prop = &plane->props[PLANE_PROP_TYPE];
+		if (!strcmp(prop->c.ev.values[type].name, "Primary"))
 			plane->base.type = PLANE_TYPE_PRIMARY;
-		else if (!strcmp(plane_type_enum[type].name, "Overlay"))
+		else if (!strcmp(prop->c.ev.values[type].name, "Overlay"))
 			plane->base.type = PLANE_TYPE_OVERLAY;
-		else if (!strcmp(plane_type_enum[type].name, "Cursor"))
+		else if (!strcmp(prop->c.ev.values[type].name, "Cursor"))
 			plane->base.type = PLANE_TYPE_CURSOR;
+	}
+
+	value = drm_get_prop_value(&plane->props[PLANE_PROP_FEATURE], props);
+	if (value != (u64)(-1)) {
+		prop = &plane->props[PLANE_PROP_FEATURE];
+		if (value & prop->c.ev.values[PLANE_FEATURE_IDX_SCALE].value)
+			plane->base.scale_support = true;
+		else
+			plane->base.scale_support = false;
+		if (value & prop->c.ev.values[PLANE_FEATURE_IDX_ALPHA].value)
+			plane->base.alpha_support = true;
+		else
+			plane->base.alpha_support = false;
+		if (value & prop->c.ev.values[PLANE_FEATURE_IDX_HDR2SDR].value)
+			plane->base.hdr2sdr_support = true;
+		else
+			plane->base.hdr2sdr_support = false;
+		if (value & prop->c.ev.values[PLANE_FEATURE_IDX_SDR2HDR].value)
+			plane->base.sdr2hdr_support = true;
+		else
+			plane->base.sdr2hdr_support = false;
+		if (value & prop->c.ev.values[PLANE_FEATURE_IDX_AFBDC].value)
+			plane->base.afbdc_support = true;
+		else
+			plane->base.afbdc_support = false;
+		drm_debug("scale support: %d", plane->base.scale_support);
+		drm_debug("alpha support: %d", plane->base.alpha_support);
+		drm_debug("hdr2sdr support: %d", plane->base.hdr2sdr_support);
+		drm_debug("sdr2hdr support: %d", plane->base.sdr2hdr_support);
+		drm_debug("afbdc support: %d", plane->base.afbdc_support);
 	}
 
 	alpha_src = drm_get_prop_value(
@@ -2416,24 +2553,49 @@ static struct cb_buffer *drm_scanout_dumb_create(struct scanout *so,
 	cb_signal_init(&fb->base.flip_signal);
 	cb_signal_init(&fb->base.complete_signal);
 
+	memset(&create_arg, 0, sizeof(create_arg));
+
 	switch (info->pix_fmt) {
 	case CB_PIX_FMT_XRGB8888:
 		fb->fourcc = DRM_FORMAT_XRGB8888;
+		create_arg.bpp = 32;
+		create_arg.width = (info->width + 16 - 1) & ~(16 - 1);
+		create_arg.height = (info->height + 16 - 1) & ~(16 - 1);
 		drm_debug("create xrgb8888 dumb buffer");
 		break;
 	case CB_PIX_FMT_ARGB8888:
 		fb->fourcc = DRM_FORMAT_ARGB8888;
+		create_arg.bpp = 32;
+		create_arg.width = (info->width + 16 - 1) & ~(16 - 1);
+		create_arg.height = (info->height + 16 - 1) & ~(16 - 1);
 		drm_debug("create argb8888 dumb buffer");
+		break;
+	case CB_PIX_FMT_NV12:
+		fb->fourcc = DRM_FORMAT_NV12;
+		create_arg.bpp = 8;
+		create_arg.width = (info->width + 16 - 1) & ~(16 - 1);
+		create_arg.height = ((info->height + 16 - 1) & ~(16 - 1))*3/2;
+		drm_debug("create nv12 dumb buffer");
+		break;
+	case CB_PIX_FMT_NV16:
+		fb->fourcc = DRM_FORMAT_NV16;
+		create_arg.bpp = 8;
+		create_arg.width = (info->width + 16 - 1) & ~(16 - 1);
+		create_arg.height = ((info->height + 16 - 1) & ~(16 - 1))*2;
+		drm_debug("create nv16 dumb buffer");
+		break;
+	case CB_PIX_FMT_NV24:
+		fb->fourcc = DRM_FORMAT_NV24;
+		create_arg.bpp = 8;
+		create_arg.width = (info->width + 16 - 1) & ~(16 - 1);
+		create_arg.height = ((info->height + 16 - 1) & ~(16 - 1))*3;
+		drm_debug("create nv24 dumb buffer");
 		break;
 	default:
 		drm_err("unsupported format.");
 		goto err;
 	}
-
-	memset(&create_arg, 0, sizeof(create_arg));
-	create_arg.bpp = 32;
-	create_arg.width = (info->width + 16 - 1) & ~(16 - 1);
-	create_arg.height = (info->height + 16 - 1) & ~(16 - 1);
+	
 	ret = drmIoctl(dev->fd, DRM_IOCTL_MODE_CREATE_DUMB, &create_arg);
 
 	if (ret) {
@@ -2441,9 +2603,44 @@ static struct cb_buffer *drm_scanout_dumb_create(struct scanout *so,
 		goto err;
 	}
 
-	info->sizes[0] = create_arg.size;
-	info->strides[0] = create_arg.pitch;
-	info->offsets[0] = 0;
+	if (info->pix_fmt == CB_PIX_FMT_NV12) {
+		fb->handles[0] = create_arg.handle;
+		info->sizes[0] = create_arg.size;
+		info->strides[0] = create_arg.pitch;
+		info->offsets[0] = 0;
+		fb->handles[1] = create_arg.handle;
+		info->strides[1] = create_arg.pitch;
+		info->offsets[1] = ((info->height + 16 - 1) & ~(16 - 1))
+					* info->strides[0];
+	} else if (info->pix_fmt == CB_PIX_FMT_NV16) {
+		fb->handles[0] = create_arg.handle;
+		info->sizes[0] = create_arg.size;
+		info->strides[0] = create_arg.pitch;
+		info->offsets[0] = 0;
+		fb->handles[1] = create_arg.handle;
+		info->strides[1] = create_arg.pitch * 2;
+		info->offsets[1] = ((info->height + 16 - 1) & ~(16 - 1))
+					* info->strides[0];
+	} else if (info->pix_fmt == CB_PIX_FMT_NV24) {
+		fb->handles[0] = create_arg.handle;
+		info->sizes[0] = create_arg.size;
+		info->strides[0] = create_arg.pitch;
+		info->offsets[0] = 0;
+		fb->handles[1] = create_arg.handle;
+		info->strides[1] = create_arg.pitch * 2;
+		info->offsets[1] = ((info->height + 16 - 1) & ~(16 - 1))
+					* info->strides[0];
+	} else if (info->pix_fmt == CB_PIX_FMT_ARGB8888) {
+		fb->handles[0] = create_arg.handle;
+		info->sizes[0] = create_arg.size;
+		info->strides[0] = create_arg.pitch;
+		info->offsets[0] = 0;
+	} else if (info->pix_fmt == CB_PIX_FMT_XRGB8888) {
+		fb->handles[0] = create_arg.handle;
+		info->sizes[0] = create_arg.size;
+		info->strides[0] = create_arg.pitch;
+		info->offsets[0] = 0;
+	}
 	info->planes = 1;
 	drm_debug("pitch: %u", info->strides[0]);
 
@@ -2454,7 +2651,6 @@ static struct cb_buffer *drm_scanout_dumb_create(struct scanout *so,
 		goto err;
 	}
 
-	fb->handles[0] = create_arg.handle;
 	fb->base.info = *info;
 
 	memset(&map_arg, 0, sizeof(map_arg));
@@ -2476,6 +2672,16 @@ static struct cb_buffer *drm_scanout_dumb_create(struct scanout *so,
 
 	fb->base.info = *info;
 
+	drm_debug("width: %u height: %u strides: %u,%u,%u,%u, "
+		"offsets: %u,%u,%u,%u", info->width, info->height,
+		info->strides[0],
+		info->strides[1],
+		info->strides[2],
+		info->strides[3],
+		info->offsets[0],
+		info->offsets[1],
+		info->offsets[2],
+		info->offsets[3]);
 	ret = drmModeAddFB2(dev->fd, info->width, info->height, fb->fourcc,
 			    fb->handles, fb->base.info.strides,
 			    fb->base.info.offsets, &fb->fb_id, 0);
@@ -2522,6 +2728,106 @@ static void drm_scanout_release_dmabuf(struct scanout *so,
 	drm_fb_unref(fb);
 }
 
+#ifdef USE_DRM_PRIME
+static struct cb_buffer *drm_scanout_import_dmabuf(struct scanout *so,
+						   struct cb_buffer_info *info)
+{
+	struct drm_fb *fb = NULL;
+	struct drm_scanout *dev = to_dev(so);
+	s32 ret;
+	u32 handle = 0;
+
+	fb = cb_cache_get(dev->drm_fb_cache, true);
+	if (!fb)
+		goto err;
+
+	fb->dev = dev;
+
+	fb->type = DRM_FB_TYPE_DMABUF;
+
+	fb->base.info = *info;
+	cb_signal_init(&fb->base.destroy_signal);
+	cb_signal_init(&fb->base.flip_signal);
+	cb_signal_init(&fb->base.complete_signal);
+
+	switch (info->pix_fmt) {
+	case CB_PIX_FMT_XRGB8888:
+		fb->fourcc = DRM_FORMAT_XRGB8888;
+		break;
+	case CB_PIX_FMT_ARGB8888:
+		fb->fourcc = DRM_FORMAT_ARGB8888;
+		break;
+	case CB_PIX_FMT_NV12:
+		fb->fourcc = DRM_FORMAT_NV12;
+		break;
+	case CB_PIX_FMT_NV16:
+		fb->fourcc = DRM_FORMAT_NV16;
+		break;
+	case CB_PIX_FMT_NV24:
+		fb->fourcc = DRM_FORMAT_NV24;
+		break;
+	default:
+		drm_err("unsupported format.");
+		goto err;
+	}
+
+	ret = drmPrimeFDToHandle(dev->fd, fb->base.info.fd[0], &handle);
+	if (ret) {
+		drm_err("Failed to get handle from fd. (%s)",
+			strerror(errno));
+		goto err;
+	}
+	fb->handles[0] = handle;
+	if (info->pix_fmt == CB_PIX_FMT_ARGB8888 ||
+	    info->pix_fmt == CB_PIX_FMT_XRGB8888)
+		fb->handles[1] = fb->handles[2] = fb->handles[3] = 0;
+	else if (info->pix_fmt == CB_PIX_FMT_NV12 ||
+		 info->pix_fmt == CB_PIX_FMT_NV16 ||
+		 info->pix_fmt == CB_PIX_FMT_NV24) {
+		fb->handles[1] = fb->handles[0];
+		fb->handles[2] = fb->handles[3] = 0;
+	}
+
+	drm_debug("width: %u, height: %u, fourcc: %4.4s, handles: %u,%u,%u,%u "
+		"strides: %u,%u,%u,%u, offsets: %u,%u,%u,%u",
+		info->width, info->height, (char *)(&fb->fourcc),
+		fb->handles[0], fb->handles[1], fb->handles[2], fb->handles[3],
+		fb->base.info.strides[0],
+		fb->base.info.strides[1],
+		fb->base.info.strides[2],
+		fb->base.info.strides[3],
+		fb->base.info.offsets[0],
+		fb->base.info.offsets[1],
+		fb->base.info.offsets[2],
+		fb->base.info.offsets[3]);
+	ret = drmModeAddFB2(dev->fd, info->width, info->height, fb->fourcc,
+			    fb->handles, fb->base.info.strides,
+			    fb->base.info.offsets, &fb->fb_id, 0);
+	if (ret) {
+		drm_err("failed to create drm FB2. (%s)", strerror(errno));
+		goto err;
+	}
+	printf("FB info: %ux%u %u ID: %u\n", info->width, info->height,
+		fb->base.info.strides[0], fb->fb_id);
+
+	fb->ref_cnt = 1;
+
+	fb->base.info.type = CB_BUF_TYPE_DMA;
+
+	return &fb->base;
+
+err:
+	if (fb && handle && fb->base.info.fd[0]) {
+		drm_debug("close handle");
+		close(fb->base.info.fd[0]);
+		fb->base.info.fd[0] = 0;
+	}
+
+	if (fb)
+		cb_cache_put(fb, dev->drm_fb_cache);
+	return NULL;
+}
+#else
 static struct cb_buffer *drm_scanout_import_dmabuf(struct scanout *so,
 						   struct cb_buffer_info *info)
 {
@@ -2618,6 +2924,7 @@ err:
 		cb_cache_put(fb, dev->drm_fb_cache);
 	return NULL;
 }
+#endif
 
 static void drm_fb_destroy_surface_fb(struct gbm_bo *bo, void *data)
 {
@@ -2636,6 +2943,16 @@ static void drm_fb_destroy_surface_fb(struct gbm_bo *bo, void *data)
 		}
 		cb_cache_put(fb, dev->drm_fb_cache);
 	}
+}
+
+static void drm_scanout_put_surface_buf(struct scanout *so,
+					struct cb_buffer *buffer)
+{
+	struct drm_fb *fb = to_drm_fb(buffer);
+
+	drm_debug("release surface buffer manually.");
+	/* printf("release surface buffer manually.\n"); */
+	drm_fb_release_buffer(fb);
 }
 
 static struct cb_buffer *drm_scanout_get_surface_buf(struct scanout *so,
@@ -3108,7 +3425,8 @@ static void drm_output_complete(struct drm_output *output,
 	output->base.sec = sec;
 	output->base.usec = usec;
 
-	drm_debug("drm_output_complete, state_last: %p", output->state_last);
+	drm_debug("drm_output_complete, [%d] state_last: %p",
+		  output->index, output->state_last);
 	/* emit buffer flipped signal */
 	drm_output_emit_bo_flipped(output->state_cur);
 
@@ -3322,6 +3640,7 @@ struct scanout *scanout_create(const char *dev_path, struct cb_event_loop *loop)
 	dev->base.pipeline_create = drm_scanout_pipeline_create;
 	dev->base.pipeline_destroy = drm_scanout_pipeline_destroy;
 	dev->base.get_surface_buf = drm_scanout_get_surface_buf;
+	dev->base.put_surface_buf = drm_scanout_put_surface_buf;
 	dev->base.import_dmabuf = drm_scanout_import_dmabuf;
 	dev->base.release_dmabuf = drm_scanout_release_dmabuf;
 	dev->base.dumb_buffer_create = drm_scanout_dumb_create;

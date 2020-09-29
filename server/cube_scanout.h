@@ -215,6 +215,12 @@ struct plane {
 	/* plane type: primary / cursor / overlay */
 	enum plane_type type;
 
+	bool scale_support;
+	bool alpha_support;
+	bool hdr2sdr_support;
+	bool sdr2hdr_support;
+	bool afbdc_support;
+
 	/* the sink of this plane */
 	struct output *output;
 
@@ -226,6 +232,9 @@ struct plane {
 
 	/* source has been alpha blended or not */
 	bool alpha_src_pre_mul;
+
+	/* link to compositor's free_planes list */
+	struct list_head link;
 };
 
 struct scanout {
@@ -265,9 +274,16 @@ struct scanout {
 
 	/*
 	 * Get active buffer from surface
-	 * The surface buffer maintained by scanout dev it self.
+	 * The surface buffer's life cycle is maintained by scanout.
 	 */
 	struct cb_buffer *(*get_surface_buf)(struct scanout *so, void *surface);
+
+	/*
+	 * release surface buffer.
+	 * it is used when the surface buffer is not displayed, so it is need
+	 * to release manually.
+	 */
+	void (*put_surface_buf)(struct scanout *so, struct cb_buffer *buffer);
 
 	/* add buffer flip cb */
 	s32 (*add_buffer_flip_notify)(struct scanout *so,

@@ -139,7 +139,7 @@ bool scanout_clr_buffer_dirty(struct cb_buffer *buffer, struct output *output)
 		return false;
 
 	buffer->dirty &= (~(1U << output->index));
-	//printf("Clear %u: %08X\n", output->index, buffer->dirty);
+	/* printf("Clear %p: %08X\n", buffer, buffer->dirty); */
 
 	if (!buffer->dirty)
 		return true;
