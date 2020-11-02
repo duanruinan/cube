@@ -930,7 +930,8 @@ static void drm_prop_finish(struct drm_prop *props, u32 count_props)
 	s32 i;
 
 	for (i = 0; i < count_props; i++) {
-		if (props[i].type == DRM_PROP_TYPE_ENUM)
+		if (props[i].type == DRM_PROP_TYPE_ENUM ||
+		    props[i].type == DRM_PROP_TYPE_BITMASK)
 			free(props[i].c.ev.values);
 	}
 
@@ -983,8 +984,9 @@ static void drm_fb_ref(struct drm_fb *fb)
 	drm_debug("[REF] +");
 	fb->ref_cnt++;
 	drm_debug("[REF] ID: %u %d", fb->fb_id, fb->ref_cnt);
-	/* printf("[REF] ID: %u %d\n", fb->fb_id, fb->ref_cnt); */
 	/*
+	if (fb->base.info.width != 64 && fb->base.info.width != 1920)
+	printf("[REF] ID: %u %d\n", fb->fb_id, fb->ref_cnt);
 	if (fb->base.info.width != 64)
 		printf("[REF] ID: %u %d\n", fb->fb_id, fb->ref_cnt);
 	*/
@@ -1028,6 +1030,11 @@ static void drm_fb_release_dmabuf(struct drm_fb *fb)
 			drmModeRmFB(dev->fd, fb->fb_id);
 		}
 
+		if (fb->base.info.fd[0]) {
+			drm_debug("close %d", fb->base.info.fd[0]);
+			close(fb->base.info.fd[0]);
+		}
+
 		cb_cache_put(fb, dev->drm_fb_cache);
 	}
 }
@@ -1057,9 +1064,8 @@ static void drm_fb_release_surface(struct drm_fb *fb)
 	drm_debug("Release Surface-BUF.");
 	if (fb && fb->bo && fb->surface) {
 		drm_debug("release surface buffer");
-		/* printf("begin release surface buffer ID: %u\n", fb->fb_id);*/
+		/* printf("Release surface buffer ID: %u\n", fb->fb_id); */
 		gbm_surface_release_buffer(fb->surface, fb->bo);
-		/* printf("end release surface buffer ID: %u\n", fb->fb_id); */
 	}
 }
 
@@ -1068,11 +1074,9 @@ static void drm_fb_release_cursor_bo(struct drm_fb *fb)
 	struct drm_scanout *dev = fb->dev;
 
 	drm_debug("Release GBM-CURSOR-BO.");
-	printf("Release GBM-CURSOR-BO.\n");
 
 	if (fb && fb->bo) {
 		drm_debug("Destroy gbm bo.");
-		printf("Destroy gbm bo.\n");
 		gbm_bo_destroy(fb->bo);
 	}
 
@@ -1149,8 +1153,9 @@ static void drm_fb_unref(struct drm_fb *fb)
 
 	fb->ref_cnt--;
 	drm_debug("[UNREF] ID: %u %d", fb->fb_id, fb->ref_cnt);
-	/* printf("[UNREF] ID: %u %d\n", fb->fb_id, fb->ref_cnt); */
 	/*
+	if (fb->base.info.width != 64 && fb->base.info.width != 1920)
+	printf("[UNREF] ID: %u %d\n", fb->fb_id, fb->ref_cnt);
 	if (fb->base.info.width != 64)
 		printf("[UNREF] ID: %u %d\n", fb->fb_id, fb->ref_cnt);
 	*/
@@ -1389,10 +1394,14 @@ static s32 drm_output_commit(drmModeAtomicReq *req,
 		ret |= set_plane_prop(req, plane, PLANE_PROP_FB_ID,
 				      pls->fb ? pls->fb->fb_id : 0);
 		/*
-		printf("Commit FB for o %d: %u %ux%u %d,%d\n",
-				output->index, pls->fb->fb_id,
+		printf("Commit FB for o %d: p %u: "
+		       "%u %d,%d %ux%u -> %d,%d %ux%u\n",
+				output->index, plane->plane_id,
+				pls->fb->fb_id,
+				pls->src_x, pls->src_x,
 				pls->src_w, pls->src_h,
-				pls->crtc_x, pls->crtc_y);
+				pls->crtc_x, pls->crtc_y,
+				pls->crtc_w, pls->crtc_h);
 		*/
 		ret |= set_plane_prop(req, plane, PLANE_PROP_CRTC_ID,
 				      pls->fb ? output->crtc_id : 0);
@@ -1496,7 +1505,6 @@ static s32 drm_commit(struct drm_pending_state *ps, bool async)
 
 	if (empty) {
 		drm_warn("empty commit, do nothing.");
-		printf("empty commit, do nothing.\n");
 		goto out1;
 	}
 
@@ -1589,8 +1597,10 @@ static s32 drm_scanout_data_fill(struct scanout *so,
 
 static void drm_output_native_surface_destroy(struct output *o, void *surface)
 {
-	if (surface)
+	if (surface) {
+		drm_notice("destroy gbm surface %p", surface);
 		gbm_surface_destroy((struct gbm_surface *)surface);
+	}
 }
 
 static void *drm_output_native_surface_create(struct output *o)
@@ -1605,16 +1615,15 @@ static void *drm_output_native_surface_create(struct output *o)
 
 	assert(output->current_mode);
 	mode = output->current_mode;
-	printf("create surface %ux%u, %u, %p\n",
-		mode->internal.hdisplay, mode->internal.vdisplay,
-		dev->gbm_format, dev->gbm);
 	surface = gbm_surface_create(dev->gbm,
 				mode->internal.hdisplay,
 				mode->internal.vdisplay,
 				dev->gbm_format,
 				GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
+	drm_debug("create surface %ux%u, %u, %p %p",
+		mode->internal.hdisplay, mode->internal.vdisplay,
+		dev->gbm_format, dev->gbm, surface);
 	if (!surface) {
-		printf("failed to create gbm surface (%s)\n", strerror(errno));
 		drm_err("failed to create gbm surface (%s)", strerror(errno));
 	} else {
 		drm_notice("create gbm surface complete for output %d, %p",
@@ -1650,6 +1659,30 @@ static struct cb_mode *drm_output_get_custom_mode(struct output *o)
 		return &output->custom_mode->base;
 	else
 		return NULL;
+}
+
+static struct cb_mode *drm_output_get_preferred_mode(struct output *o)
+{
+	struct drm_output *output = to_drm_output(o);
+	struct drm_mode *mode;
+
+	if (!o)
+		return NULL;
+
+	if (!output->base.head->connected)
+		return NULL;
+
+	list_for_each_entry(mode, &output->modes, link) {
+		if (mode->base.preferred) {
+			return &mode->base;
+		}
+	}
+
+	list_for_each_entry(mode, &output->modes, link) {
+		return &mode->base;
+	}
+
+	return NULL;
 }
 
 static struct cb_mode *drm_output_get_current_mode(struct output *o)
@@ -2513,7 +2546,7 @@ static struct cb_buffer *drm_scanout_cursor_bo_create(
 		drm_err("failed to create drm FB2. (%s)", strerror(errno));
 		goto err;
 	}
-	printf("FB info: %ux%u %u ID: %u\n", info->width, info->height,
+	drm_notice("FB info: %ux%u %u ID: %u", info->width, info->height,
 		fb->base.info.strides[0], fb->fb_id);
 
 	fb->dev = dev;
@@ -2689,7 +2722,7 @@ static struct cb_buffer *drm_scanout_dumb_create(struct scanout *so,
 		drm_err("failed to create drm FB2. (%s)", strerror(errno));
 		goto err;
 	}
-	printf("FB info: %ux%u %u ID: %u\n", info->width, info->height,
+	drm_notice("FB info: %ux%u %u ID: %u", info->width, info->height,
 		fb->base.info.strides[0], fb->fb_id);
 
 	fb->dev = dev;
@@ -2724,6 +2757,9 @@ static void drm_scanout_release_dmabuf(struct scanout *so,
 {
 	struct drm_fb *fb = to_drm_fb(buffer);
 
+	cb_signal_fini(&fb->base.destroy_signal);
+	cb_signal_fini(&fb->base.flip_signal);
+	cb_signal_fini(&fb->base.complete_signal);
 	drm_debug("Request to release DMA-BUF");
 	drm_fb_unref(fb);
 }
@@ -2750,6 +2786,10 @@ static struct cb_buffer *drm_scanout_import_dmabuf(struct scanout *so,
 	cb_signal_init(&fb->base.flip_signal);
 	cb_signal_init(&fb->base.complete_signal);
 
+	/* init list head to prevent del crash */
+	INIT_LIST_HEAD(&fb->base.dma_buf_flipped_l.link);
+	INIT_LIST_HEAD(&fb->base.dma_buf_completed_l.link);
+
 	switch (info->pix_fmt) {
 	case CB_PIX_FMT_XRGB8888:
 		fb->fourcc = DRM_FORMAT_XRGB8888;
@@ -2773,8 +2813,9 @@ static struct cb_buffer *drm_scanout_import_dmabuf(struct scanout *so,
 
 	ret = drmPrimeFDToHandle(dev->fd, fb->base.info.fd[0], &handle);
 	if (ret) {
-		drm_err("Failed to get handle from fd. (%s)",
-			strerror(errno));
+		drm_err("Failed to get handle from fd. (%s), drmfd (%d), "
+			"fd (%d)",
+			strerror(errno), dev->fd, fb->base.info.fd[0]);
 		goto err;
 	}
 	fb->handles[0] = handle;
@@ -2788,7 +2829,7 @@ static struct cb_buffer *drm_scanout_import_dmabuf(struct scanout *so,
 		fb->handles[2] = fb->handles[3] = 0;
 	}
 
-	drm_debug("width: %u, height: %u, fourcc: %4.4s, handles: %u,%u,%u,%u "
+	drm_notice("width: %u, height: %u, fourcc: %4.4s, handles: %u,%u,%u,%u "
 		"strides: %u,%u,%u,%u, offsets: %u,%u,%u,%u",
 		info->width, info->height, (char *)(&fb->fourcc),
 		fb->handles[0], fb->handles[1], fb->handles[2], fb->handles[3],
@@ -2800,6 +2841,7 @@ static struct cb_buffer *drm_scanout_import_dmabuf(struct scanout *so,
 		fb->base.info.offsets[1],
 		fb->base.info.offsets[2],
 		fb->base.info.offsets[3]);
+	/* printf("fourcc: %4.4s\n", (char *)&fb->fourcc); */
 	ret = drmModeAddFB2(dev->fd, info->width, info->height, fb->fourcc,
 			    fb->handles, fb->base.info.strides,
 			    fb->base.info.offsets, &fb->fb_id, 0);
@@ -2807,8 +2849,10 @@ static struct cb_buffer *drm_scanout_import_dmabuf(struct scanout *so,
 		drm_err("failed to create drm FB2. (%s)", strerror(errno));
 		goto err;
 	}
+	/*
 	printf("FB info: %ux%u %u ID: %u\n", info->width, info->height,
 		fb->base.info.strides[0], fb->fb_id);
+	*/
 
 	fb->ref_cnt = 1;
 
@@ -2902,7 +2946,7 @@ static struct cb_buffer *drm_scanout_import_dmabuf(struct scanout *so,
 		drm_err("failed to create drm FB2. (%s)", strerror(errno));
 		goto err;
 	}
-	printf("FB info: %ux%u %u ID: %u\n", info->width, info->height,
+	drm_notice("FB info: %ux%u %u ID: %u", info->width, info->height,
 		fb->base.info.strides[0], fb->fb_id);
 
 	fb->dev = dev;
@@ -2934,12 +2978,8 @@ static void drm_fb_destroy_surface_fb(struct gbm_bo *bo, void *data)
 	if (fb) {
 		assert(fb->type == DRM_FB_TYPE_GBM_SURFACE);
 		if (fb->fb_id) {
-			/* printf("Begin remove surface DRM FB ID: %u\n",
-				fb->fb_id); */
 			drm_debug("Remove surface DRM FB");
 			drmModeRmFB(dev->fd, fb->fb_id);
-			/* printf("End remove surface DRM FB ID: %u\n",
-				fb->fb_id); */
 		}
 		cb_cache_put(fb, dev->drm_fb_cache);
 	}
@@ -3002,9 +3042,9 @@ static struct cb_buffer *drm_scanout_get_surface_buf(struct scanout *so,
 		drm_err("failed to create surface fb: %s", strerror(errno));
 		goto err;
 	}
-	/* printf("FB info: %ux%u %u ID: %u\n", fb->base.info.width,
+	drm_notice("GBM Surface FB info: %ux%u %u ID: %u", fb->base.info.width,
 		fb->base.info.height,
-		fb->base.info.strides[0], fb->fb_id); */
+		fb->base.info.strides[0], fb->fb_id);
 
 	gbm_bo_set_user_data(bo, fb, drm_fb_destroy_surface_fb);
 
@@ -3022,8 +3062,10 @@ static struct cb_buffer *drm_scanout_get_surface_buf(struct scanout *so,
 
 err:
 	if (fb && fb->bo) {
+		/* printf("begin release surface buffer ID: %u\n", fb->fb_id);*/
 		gbm_surface_release_buffer((struct gbm_surface *)surface,
 					   fb->bo);
+		/* printf("end release surface buffer ID: %u\n", fb->fb_id);*/
 		fb->bo = NULL;
 	}
 
@@ -3108,7 +3150,6 @@ static void drm_head_update_modes(struct drm_head *head)
 	}
 
 	new_mode = NULL;
-
 	list_for_each_entry(mode, &output->modes, link) {
 		if (mode->base.preferred) {
 			new_mode = mode;
@@ -3179,6 +3220,7 @@ drm_scanout_pipeline_create(struct scanout *so, struct pipeline *pipeline_cfg)
 
 	output->enable = drm_output_enable;
 	output->disable = drm_output_disable;
+	output->get_preferred_mode = drm_output_get_preferred_mode;
 	output->get_current_mode = drm_output_get_current_mode;
 	output->enumerate_mode = drm_output_enumerate_mode;
 	output->get_custom_mode = drm_output_get_custom_mode;
@@ -3569,7 +3611,7 @@ struct scanout *scanout_create(const char *dev_path, struct cb_event_loop *loop)
 
 	dev->gbm = gbm_create_device(dev->fd);
 	dev->gbm_format = GBM_FORMAT_XRGB8888;
-	printf("gbm = %p, gbm_format = %u\n", dev->gbm, dev->gbm_format);
+	drm_notice("gbm = %p, gbm_format = %u", dev->gbm, dev->gbm_format);
 
 	drmSetMaster(dev->fd);
 

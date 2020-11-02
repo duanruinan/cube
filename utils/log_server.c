@@ -29,10 +29,12 @@
 #include <unistd.h>
 #include <errno.h>
 #include <getopt.h>
+#include <assert.h>
 #include <cube_utils.h>
 #include <cube_ipc.h>
 #include <cube_log.h>
 #include <cube_event.h>
+#include <cube_protocal.h>
 
 static char short_options[] = "bhs:";
 
@@ -140,6 +142,7 @@ static s32 client_sock_cb(s32 fd, u32 mask, void *data)
 			if ((byts_rd - sizeof(size_t)) > client->log_sz) {
 				/* received more than one log */
 				client->byts_to_rd = 0;
+				assert(0);
 			} else {
 				client->byts_to_rd -= (byts_rd -sizeof(size_t));
 			}

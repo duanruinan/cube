@@ -29,9 +29,6 @@
 extern "C" {
 #endif
 
-#define LOG_SERVER_NAME_PREFIX "/tmp"
-#define LOG_SERVER_SOCK_NAME "cube_log_server"
-
 enum cb_log_level {
 	CB_LOG_ERR = 0,
 	CB_LOG_NOTICE,

@@ -164,13 +164,15 @@ s32 cb_recvmsg(s32 sock, u8 *buf, size_t sz, struct cb_fds *fds)
 		return -errno;
 	}
 
+	if (fds)
+		fds->count = 0;
+
 	if (!msg.msg_control || msg.msg_controllen == 0)
 		return ret;
 
 	if (!fds)
 		return ret;
 
-	fds->count = 0;
 	i = 0;
 
 	for (p_cmsg = CMSG_FIRSTHDR(&msg); p_cmsg != NULL;

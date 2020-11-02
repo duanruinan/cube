@@ -19,52 +19,30 @@
  * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
  * OTHER DEALINGS IN THE SOFTWARE.
  */
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <unistd.h>
 #include <cube_utils.h>
-#include <cube_log.h>
-#include <cube_signal.h>
+#include "stat_tips.h"
 
-void cb_signal_init(struct cb_signal *signal)
+s32 main(s32 argc, char **argv)
 {
-	INIT_LIST_HEAD(&signal->listener_list);
-}
+	struct dashboard_info dash;
+	u16 i = 0;
 
-void cb_signal_fini(struct cb_signal *signal)
-{
-	struct cb_listener *l, *next_l;
-
-	list_for_each_entry_safe(l, next_l, &signal->listener_list, link) {
-		list_del(&l->link);
-	}
-}
-
-void cb_signal_add(struct cb_signal *signal, struct cb_listener *listener)
-{
-	list_add_tail(&listener->link, &signal->listener_list);
-}
-
-void cb_signal_rm(struct cb_listener *listener)
-{
-	list_del(&listener->link);
-}
-
-struct cb_listener * cb_signal_get(struct cb_signal *signal,
-				   cb_notify_cb_t notify)
-{
-	struct cb_listener *l;
-
-	list_for_each_entry(l, &signal->listener_list, link)
-		if (l->notify == notify)
-			return l;
-
-	return NULL;
-}
-
-void cb_signal_emit(struct cb_signal *signal, void *data)
-{
-	struct cb_listener *l, *next;
-
-	list_for_each_entry_safe(l, next, &signal->listener_list, link) {
-		l->notify(l, data);
-	}
+	dashboard_connect();
+	do {
+		i++;
+		sprintf(dash.ip, "%015u", i);
+		strcpy(dash.deployment_site, "abc");
+		strcpy(dash.rate, "11111111");
+		strcpy(dash.latency, "33");
+		set_dashboard(&dash);
+		usleep(16667);
+	} while (1);
+	dashboard_disconnect();
+	return 0;
 }
 

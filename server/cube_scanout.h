@@ -109,6 +109,9 @@ struct output {
 						struct plane *last,
 						enum cb_pix_fmt fmt);
 
+	/* get preferred video mode */
+	struct cb_mode *(*get_preferred_mode)(struct output *o);
+
 	/* get current video mode */
 	struct cb_mode *(*get_current_mode)(struct output *o);
 

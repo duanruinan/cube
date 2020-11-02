@@ -131,7 +131,8 @@ u8 *cb_client_create_surface_cmd(struct cb_surface_info *s, u32 *n)
 		= (u8 *)tlv_surface_create - p;
 	tlv_surface_create->tag = CB_TAG_CREATE_SURFACE;
 	tlv_surface_create->length = sizeof(*s);
-	memcpy(&tlv_surface_create->payload[0], s, sizeof(*s));
+	if (s)
+		memcpy(&tlv_surface_create->payload[0], s, sizeof(*s));
 	*n = size;
 
 	return p;
@@ -283,7 +284,8 @@ u8 *cb_client_create_view_cmd(struct cb_view_info *v, u32 *n)
 		= (u8 *)tlv_view_create - p;
 	tlv_view_create->tag = CB_TAG_CREATE_VIEW;
 	tlv_view_create->length = sizeof(*v);
-	memcpy(&tlv_view_create->payload[0], v, sizeof(*v));
+	if (v)
+		memcpy(&tlv_view_create->payload[0], v, sizeof(*v));
 	*n = size;
 
 	return p;
@@ -433,7 +435,8 @@ u8 *cb_client_create_bo_cmd(struct cb_buffer_info *b, u32 *n)
 	map[CB_CMD_CREATE_BO_SHIFT - CB_CMD_OFFSET] = (u8 *)tlv_bo_create - p;
 	tlv_bo_create->tag = CB_TAG_CREATE_BO;
 	tlv_bo_create->length = sizeof(*b);
-	memcpy(&tlv_bo_create->payload[0], b, sizeof(*b));
+	if (b)
+		memcpy(&tlv_bo_create->payload[0], b, sizeof(*b));
 	*n = size;
 
 	return p;
@@ -660,7 +663,8 @@ u8 *cb_client_create_commit_req_cmd(struct cb_commit_info *c, u32 *n)
 	map[CB_CMD_COMMIT_SHIFT - CB_CMD_OFFSET] = (u8 *)tlv_commit - p;
 	tlv_commit->tag = CB_TAG_COMMIT_INFO;
 	tlv_commit->length = sizeof(*c);
-	memcpy(&tlv_commit->payload[0], c, sizeof(*c));
+	if (c)
+		memcpy(&tlv_commit->payload[0], c, sizeof(*c));
 	*n = size;
 
 	return p;
@@ -957,7 +961,8 @@ u8 *cb_create_shell_cmd(struct cb_shell_info *s, u32 *n)
 	map[CB_CMD_SHELL_SHIFT - CB_CMD_OFFSET] = (u8 *)tlv_shell - p;
 	tlv_shell->tag = CB_TAG_SHELL;
 	tlv_shell->length = sizeof(*s);
-	memcpy(&tlv_shell->payload[0], s, sizeof(*s));
+	if (s)
+		memcpy(&tlv_shell->payload[0], s, sizeof(*s));
 	*n = size;
 
 	return p;
@@ -1153,72 +1158,203 @@ u64 cb_client_parse_destroy_ack_cmd(u8 *data)
 	return *((u64 *)(&tlv_result->payload[0]));
 }
 
-u8 *cb_server_create_raw_input_evt_cmd(struct cb_raw_input_event *evts,
-				       u32 count_evts, u32 *n)
-{
-	struct cb_tlv *tlv;
-	u32 size, *head;
-	u8 *p;
-
-	size = sizeof(*tlv) + sizeof(u32)
-		+ count_evts * sizeof(struct cb_raw_input_event);
-	p = calloc(1, size);
-	if (!p)
-		return NULL;
-
-	head = (u32 *)p;
-	*head = (1 << CB_CMD_RAW_INPUT_EVT_SHIFT);
-
-	tlv = (struct cb_tlv *)(p+sizeof(u32));
-	tlv->tag = CB_TAG_RAW_INPUT;
-	tlv->length = count_evts * sizeof(struct cb_raw_input_event);
-	if (evts)
-		memcpy(&tlv->payload[0], evts, tlv->length);
-	*n = size;
-
-	return p;
-}
-
-u8 *cb_server_fill_raw_input_evt_cmd(u8 *dst, struct cb_raw_input_event *evts,
-				     u32 count_evts, u32 *n, u32 max_size)
-{
-	struct cb_tlv *tlv;
-
-	tlv = (struct cb_tlv *)(dst+sizeof(u32));
-	if ((count_evts * sizeof(struct cb_raw_input_event)) > max_size)
-		return NULL;
-	if (!evts)
-		return NULL;
-	tlv->length = count_evts * sizeof(struct cb_raw_input_event);
-	memcpy(&tlv->payload[0], evts, tlv->length);
-	return dst;
-}
-
 struct cb_raw_input_event *cb_client_parse_raw_input_evt_cmd(u8 *data,
 							     u32 *count_evts)
 {
 	struct cb_tlv *tlv;
-	u32 *head;
-
-	head = (u32 *)data;
-	if (!((*head) & (1 << CB_CMD_RAW_INPUT_EVT_SHIFT)))
-		return NULL;
 
 	tlv = (struct cb_tlv *)(data+sizeof(u32));
-	assert(tlv->tag == CB_TAG_RAW_INPUT);
+	if (tlv->tag != CB_TAG_RAW_INPUT)
+		return NULL;
 	assert(!(tlv->length % sizeof(struct cb_raw_input_event)));
 	*count_evts = tlv->length / sizeof(struct cb_raw_input_event);
 	return (struct cb_raw_input_event *)(&tlv->payload[0]);
 }
 
-u8 *cb_server_create_hpd_cmd(u64 hpd_info, u32 *n)
+u8 *cb_client_create_get_kbd_led_st_cmd(u32 *n)
+{
+	struct cb_tlv *tlv;
+	u32 size, *head;
+	u8 *p;
+
+	size = sizeof(*tlv) + sizeof(u32);
+	p = calloc(1, size);
+	if (!p)
+		return NULL;
+
+	head = (u32 *)p;
+	*head = 0xFE; /* magic or else */
+
+	tlv = (struct cb_tlv *)(p+sizeof(u32));
+	tlv->tag = CB_TAG_GET_KBD_LED_STATUS;
+	tlv->length = 0;
+	*n = size;
+
+	return p;
+}
+
+u8 *cb_server_create_get_kbd_led_st_ack_cmd(u32 led_status, u32 *n)
+{
+	struct cb_tlv *tlv;
+	u32 size, *head;
+	u8 *p;
+
+	size = sizeof(*tlv) + sizeof(u32) + sizeof(led_status);
+	p = calloc(1, size);
+	if (!p)
+		return NULL;
+
+	head = (u32 *)p;
+	*head = 0xFE; /* magic or else */
+
+	tlv = (struct cb_tlv *)(p+sizeof(u32));
+	tlv->tag = CB_TAG_GET_KBD_LED_STATUS_ACK;
+	tlv->length = sizeof(led_status);
+	*((u32 *)(&tlv->payload[0])) = led_status;
+	*n = size;
+
+	return p;
+}
+
+u8 *cb_dup_get_kbd_led_st_ack_cmd(u8 *dst, u8 *src, u32 n, u32 led_status)
+{
+	struct cb_tlv *tlv;
+
+	memcpy(dst, src, n);
+
+	tlv = (struct cb_tlv *)(dst+sizeof(u32));
+	*((u32 *)(&tlv->payload[0])) = led_status;
+	return dst;
+}
+
+s32 cb_client_parse_get_kbd_led_st_ack_cmd(u8 *data, u32 *led_status)
+{
+	struct cb_tlv *tlv;
+
+	if (!led_status)
+		return -EINVAL;
+
+	tlv = (struct cb_tlv *)(data+sizeof(u32));
+	if (tlv->tag != CB_TAG_GET_KBD_LED_STATUS_ACK)
+		return -EINVAL;
+
+	*led_status = *((u32 *)(&tlv->payload[0]));
+	return 0;
+}
+
+u8 *cb_client_create_set_kbd_led_st_cmd(u32 led_status, u32 *n)
+{
+	struct cb_tlv *tlv;
+	u32 size, *head;
+	u8 *p;
+
+	size = sizeof(*tlv) + sizeof(u32) + sizeof(led_status);
+	p = calloc(1, size);
+	if (!p)
+		return NULL;
+
+	head = (u32 *)p;
+	*head = 0xFE; /* magic or else */
+
+	tlv = (struct cb_tlv *)(p+sizeof(u32));
+	tlv->tag = CB_TAG_SET_KBD_LED;
+	tlv->length = sizeof(led_status);
+	*((u32 *)(&tlv->payload[0])) = led_status;
+	*n = size;
+
+	return p;
+}
+
+u8 *cb_dup_set_kbd_led_st_cmd(u8 *dst, u8 *src, u32 n, u32 led_status)
+{
+	struct cb_tlv *tlv;
+
+	memcpy(dst, src, n);
+
+	tlv = (struct cb_tlv *)(dst+sizeof(u32));
+	*((u32 *)(&tlv->payload[0])) = led_status;
+	return dst;
+}
+
+s32 cb_server_parse_set_kbd_led_st_cmd(u8 *data, u32 *led_status)
+{
+	struct cb_tlv *tlv;
+
+	if (!led_status || !data)
+		return -EINVAL;
+
+	tlv = (struct cb_tlv *)(data+sizeof(u32));
+	if (tlv->tag != CB_TAG_SET_KBD_LED)
+		return -EINVAL;
+
+	*led_status = *((u32 *)(&tlv->payload[0]));
+
+	return 0;
+}
+
+u8 *cb_client_create_raw_input_en_cmd(u64 en, u32 *n)
+{
+	struct cb_tlv *tlv;
+	u32 size, *head;
+	u8 *p;
+
+	size = sizeof(*tlv) + sizeof(u32) + sizeof(u64);
+	p = calloc(1, size);
+	if (!p)
+		return NULL;
+
+	head = (u32 *)p;
+	*head = 0xFE; /* magic or else */
+
+	tlv = (struct cb_tlv *)(p+sizeof(u32));
+	tlv->tag = CB_TAG_RAW_INPUT_EN;
+	tlv->length = sizeof(u64);
+	memcpy(&tlv->payload[0], &en, tlv->length);
+	*n = size;
+
+	return p;
+}
+
+u8 *cb_dup_raw_input_en_cmd(u8 *dst, u8 *src, u32 n, u64 en)
+{
+	struct cb_tlv *tlv;
+	u64 *p;
+
+	if (!dst || !src)
+		return NULL;
+
+	memcpy(dst, src, n);
+
+	tlv = (struct cb_tlv *)(dst+sizeof(u32));
+	p = (u64 *)(&tlv->payload[0]);
+	*p = en;
+
+	return dst;
+}
+
+s32 cb_server_parse_raw_input_en_cmd(u8 *data, u64 *en)
+{
+	struct cb_tlv *tlv;
+
+	if (!en)
+		return -EINVAL;
+
+	tlv = (struct cb_tlv *)(data+sizeof(u32));
+	if (tlv->tag != CB_TAG_RAW_INPUT_EN)
+		return -EINVAL;
+
+	*en = *((u64 *)(&tlv->payload[0]));
+	return 0;
+}
+
+u8 *cb_server_create_hpd_cmd(struct cb_connector_info *conn_info, u32 *n)
 {
 	struct cb_tlv *tlv, *tlv_map, *tlv_hpd;
 	u32 size, size_hpd, size_map, *map, *head;
 	u8 *p;
 
 	size_map = CB_CMD_MAP_SIZE;
-	size_hpd = sizeof(*tlv) + sizeof(u64);
+	size_hpd = sizeof(*tlv) + sizeof(*conn_info);
 	size = sizeof(*tlv) + size_map + size_hpd + sizeof(u32);
 	p = calloc(1, size);
 	if (!p)
@@ -1238,13 +1374,14 @@ u8 *cb_server_create_hpd_cmd(u64 hpd_info, u32 *n)
 	map[CB_CMD_HPD_SHIFT - CB_CMD_OFFSET] = (u8 *)tlv_hpd - p;
 	tlv_hpd->tag = CB_TAG_RESULT;
 	tlv_hpd->length = sizeof(u64);
-	*((u64 *)(&tlv_hpd->payload[0])) = hpd_info;
+	if (conn_info)
+		memcpy(&tlv_hpd->payload[0], conn_info, sizeof(*conn_info));
 	*n = size;
 
 	return p;
 }
 
-u8 *cb_dup_hpd_cmd(u8 *dst, u8 *src, u32 n, u64 hpd_info)
+u8 *cb_dup_hpd_cmd(u8 *dst, u8 *src, u32 n, struct cb_connector_info *conn_info)
 {
 	struct cb_tlv *tlv, *tlv_map, *tlv_hpd;
 	u32 *map;
@@ -1256,14 +1393,17 @@ u8 *cb_dup_hpd_cmd(u8 *dst, u8 *src, u32 n, u64 hpd_info)
 	map = (u32 *)(&tlv_map->payload[0]);
 	tlv_hpd = (struct cb_tlv *)(dst
 			+ map[CB_CMD_HPD_SHIFT-CB_CMD_OFFSET]);
-	*((u32 *)(&tlv_hpd->payload[0])) = hpd_info;
+	memcpy(&tlv_hpd->payload[0], conn_info, sizeof(*conn_info));
 	return dst;
 }
 
-u64 cb_client_parse_hpd_cmd(u8 *data)
+u64 cb_client_parse_hpd_cmd(u8 *data, struct cb_connector_info *conn_info)
 {
 	struct cb_tlv *tlv, *tlv_map, *tlv_result;
 	u32 size, *head, *map;
+
+	if (!conn_info)
+		return -EINVAL;
 
 	head = (u32 *)data;
 	if (!((*head) & (1 << CB_CMD_HPD_SHIFT)))
@@ -1282,7 +1422,10 @@ u64 cb_client_parse_hpd_cmd(u8 *data)
 		return 0;
 	if (tlv_result->length != sizeof(u64))
 		return 0;
-	return *((u64 *)(&tlv_result->payload[0]));
+
+	memcpy(conn_info, &tlv_result->payload[0], sizeof(*conn_info));
+
+	return 0;
 }
 
 void cb_cmd_dump(u8 *data)
@@ -1308,6 +1451,8 @@ void cb_cmd_dump(u8 *data)
 		printf("CREATE_BO_CMD\n");
 	} else if (head & (1 << CB_CMD_CREATE_BO_ACK_SHIFT)) {
 		printf("CREATE_BO_ACK_CMD\n");
+	} else if (head & (1 << CB_CMD_DESTROY_BO_SHIFT)) {
+		printf("DESTROY_BO_CMD\n");
 	} else if (head & (1 << CB_CMD_COMMIT_SHIFT)) {
 		printf("COMMIT_CMD\n");
 	} else if (head & (1 << CB_CMD_COMMIT_ACK_SHIFT)) {
@@ -1316,14 +1461,20 @@ void cb_cmd_dump(u8 *data)
 		printf("BO_FLIPPED_CMD\n");
 	} else if (head & (1 << CB_CMD_BO_COMPLETE_SHIFT)) {
 		printf("BO_COMPLETE_CMD\n");
-	} else if (head & (1 << CB_CMD_RAW_INPUT_EVT_SHIFT)) {
-		printf("INPUT_EVT_CMD\n");
 	} else if (head & (1 << CB_CMD_DESTROY_SHIFT)) {
 		printf("DESTROY_CMD\n");
 	} else if (head & (1 << CB_CMD_DESTROY_ACK_SHIFT)) {
 		printf("DESTROY_ACK_CMD\n");
 	} else if (head & (1 << CB_CMD_SHELL_SHIFT)) {
 		printf("SHELL_CMD\n");
+	} else if (head & (1 << CB_CMD_HPD_SHIFT)) {
+		printf("HPD_CMD\n");
+	} else if (head & (1 << CB_CMD_MC_COMMIT_SHIFT)) {
+		printf("MC_COMMIT_CMD\n");
+	} else if (head & (1 << CB_CMD_MC_COMMIT_ACK_SHIFT)) {
+		printf("MC_COMMIT_ACK_CMD\n");
+	} else if (head & (1 << CB_CMD_MC_FLIPPED_SHIFT)) {
+		printf("MC_FLIPPED_CMD\n");
 	} else {
 		printf("unknown command 0x%08X\n", head);
 	}
@@ -1336,3 +1487,284 @@ void cb_cmd_dump(u8 *data)
 			printf("\n");
 	}
 }
+
+u8 *cb_client_create_mc_commit_cmd(struct cb_mc_info *info, u32 *n)
+{
+	struct cb_tlv *tlv, *tlv_map, *tlv_commit;
+	u32 size, size_commit, size_map, *map, *head;
+	u8 *p;
+
+	size_map = CB_CMD_MAP_SIZE;
+	size_commit = sizeof(*tlv) + sizeof(*info);
+	size = sizeof(*tlv) + size_map + size_commit + sizeof(u32);
+	p = calloc(1, size);
+	if (!p)
+		return NULL;
+
+	head = (u32 *)p;
+	*head = (1 << CB_CMD_MC_COMMIT_SHIFT);
+
+	tlv = (struct cb_tlv *)(p+sizeof(u32));
+	tlv->tag = CB_TAG_WIN;
+	tlv->length = size_commit + size_map;
+	tlv_map = (struct cb_tlv *)(&tlv->payload[0]);
+	tlv_commit = (struct cb_tlv *)(&tlv->payload[0] + size_map);
+	tlv_map->tag = CB_TAG_MAP;
+	tlv_map->length = CB_CMD_MAP_SIZE - sizeof(struct cb_tlv);
+	map = (u32 *)(&tlv_map->payload[0]);
+	map[CB_CMD_MC_COMMIT_SHIFT - CB_CMD_OFFSET] = (u8 *)tlv_commit - p;
+	tlv_commit->tag = CB_TAG_MC_COMMIT_INFO;
+	tlv_commit->length = sizeof(*info);
+	if (info)
+		memcpy(&tlv_commit->payload[0], info, sizeof(*info));
+	*n = size;
+
+	return p;
+}
+
+u8 *cb_dup_mc_commit_cmd(u8 *dst, u8 *src, u32 n, struct cb_mc_info *info)
+{
+	struct cb_tlv *tlv, *tlv_map, *tlv_commit;
+	u32 *map;
+
+	memcpy(dst, src, n);
+
+	tlv = (struct cb_tlv *)(dst+sizeof(u32));
+	tlv_map = (struct cb_tlv *)(&tlv->payload[0]);
+	map = (u32 *)(&tlv_map->payload[0]);
+	tlv_commit = (struct cb_tlv *)(dst
+			+ map[CB_CMD_MC_COMMIT_SHIFT-CB_CMD_OFFSET]);
+	memcpy(&tlv_commit->payload[0], info, sizeof(*info));
+	return dst;
+}
+
+s32 cb_server_parse_mc_commit_cmd(u8 *data, struct cb_mc_info *info)
+{
+	struct cb_tlv *tlv, *tlv_map, *tlv_commit;
+	u32 size, *head, *map;
+
+	head = (u32 *)data;
+	if (!((*head) & (1 << CB_CMD_MC_COMMIT_SHIFT)))
+		return -1;
+
+	tlv = (struct cb_tlv *)(data+sizeof(u32));
+	assert(tlv->tag == CB_TAG_WIN);
+	size = sizeof(*tlv) + sizeof(u32) + tlv->length;
+	tlv_map = (struct cb_tlv *)(&tlv->payload[0]);
+	map = (u32 *)(&tlv_map->payload[0]);
+	if (map[CB_CMD_MC_COMMIT_SHIFT - CB_CMD_OFFSET] >= size)
+		return -1;
+	tlv_commit = (struct cb_tlv *)(data
+			+ map[CB_CMD_MC_COMMIT_SHIFT-CB_CMD_OFFSET]);
+	if (tlv_commit->tag != CB_TAG_MC_COMMIT_INFO)
+		return -1;
+	if (tlv_commit->length != sizeof(*info))
+		return -1;
+	memcpy(info, &tlv_commit->payload[0], sizeof(*info));
+	return 0;
+}
+
+u8 *cb_server_create_mc_commit_ack_cmd(u64 ret, u32 *n)
+{
+	struct cb_tlv *tlv, *tlv_map, *tlv_result;
+	u32 size, size_result, size_map, *map, *head;
+	u8 *p;
+
+	size_map = CB_CMD_MAP_SIZE;
+	size_result = sizeof(*tlv) + sizeof(u64);
+	size = sizeof(*tlv) + size_map + size_result + sizeof(u32);
+	p = calloc(1, size);
+	if (!p)
+		return NULL;
+
+	head = (u32 *)p;
+	*head = (1 << CB_CMD_MC_COMMIT_ACK_SHIFT);
+
+	tlv = (struct cb_tlv *)(p+sizeof(u32));
+	tlv->tag = CB_TAG_WIN;
+	tlv->length = size_result + size_map;
+	tlv_map = (struct cb_tlv *)(&tlv->payload[0]);
+	tlv_result = (struct cb_tlv *)(&tlv->payload[0] + size_map);
+	tlv_map->tag = CB_TAG_MAP;
+	tlv_map->length = CB_CMD_MAP_SIZE - sizeof(struct cb_tlv);
+	map = (u32 *)(&tlv_map->payload[0]);
+	map[CB_CMD_MC_COMMIT_ACK_SHIFT - CB_CMD_OFFSET] = (u8 *)tlv_result - p;
+	tlv_result->tag = CB_TAG_RESULT;
+	tlv_result->length = sizeof(u64);
+	*((u64 *)(&tlv_result->payload[0])) = ret;
+	*n = size;
+
+	return p;
+}
+
+u8 *cb_dup_mc_commit_ack_cmd(u8 *dst, u8 *src, u32 n, u64 ret)
+{
+	struct cb_tlv *tlv, *tlv_map, *tlv_result;
+	u32 *map;
+
+	memcpy(dst, src, n);
+
+	tlv = (struct cb_tlv *)(dst+sizeof(u32));
+	tlv_map = (struct cb_tlv *)(&tlv->payload[0]);
+	map = (u32 *)(&tlv_map->payload[0]);
+	tlv_result = (struct cb_tlv *)(dst
+			+ map[CB_CMD_MC_COMMIT_ACK_SHIFT-CB_CMD_OFFSET]);
+	*((u64 *)(&tlv_result->payload[0])) = ret;
+	return dst;
+}
+
+u64 cb_client_parse_mc_commit_ack_cmd(u8 *data)
+{
+	struct cb_tlv *tlv, *tlv_map, *tlv_result;
+	u32 size, *head, *map;
+
+	head = (u32 *)data;
+	if (!((*head) & (1 << CB_CMD_MC_COMMIT_ACK_SHIFT)))
+		return 0;
+
+	tlv = (struct cb_tlv *)(data+sizeof(u32));
+	assert(tlv->tag == CB_TAG_WIN);
+	size = sizeof(*tlv) + sizeof(u32) + tlv->length;
+	tlv_map = (struct cb_tlv *)(&tlv->payload[0]);
+	map = (u32 *)(&tlv_map->payload[0]);
+	if (map[CB_CMD_MC_COMMIT_ACK_SHIFT - CB_CMD_OFFSET] >= size)
+		return 0;
+	tlv_result = (struct cb_tlv *)(data
+			+ map[CB_CMD_MC_COMMIT_ACK_SHIFT-CB_CMD_OFFSET]);
+	if (tlv_result->tag != CB_TAG_RESULT)
+		return 0;
+	if (tlv_result->length != sizeof(u64))
+		return 0;
+	return *((u64 *)(&tlv_result->payload[0]));
+}
+
+u8 *cb_server_create_mc_flipped_cmd(u64 ret, u32 *n)
+{
+	struct cb_tlv *tlv, *tlv_map, *tlv_result;
+	u32 size, size_result, size_map, *map, *head;
+	u8 *p;
+
+	size_map = CB_CMD_MAP_SIZE;
+	size_result = sizeof(*tlv) + sizeof(u64);
+	size = sizeof(*tlv) + size_map + size_result + sizeof(u32);
+	p = calloc(1, size);
+	if (!p)
+		return NULL;
+
+	head = (u32 *)p;
+	*head = (1 << CB_CMD_MC_FLIPPED_SHIFT);
+
+	tlv = (struct cb_tlv *)(p+sizeof(u32));
+	tlv->tag = CB_TAG_WIN;
+	tlv->length = size_result + size_map;
+	tlv_map = (struct cb_tlv *)(&tlv->payload[0]);
+	tlv_result = (struct cb_tlv *)(&tlv->payload[0] + size_map);
+	tlv_map->tag = CB_TAG_MAP;
+	tlv_map->length = CB_CMD_MAP_SIZE - sizeof(struct cb_tlv);
+	map = (u32 *)(&tlv_map->payload[0]);
+	map[CB_CMD_MC_FLIPPED_SHIFT - CB_CMD_OFFSET] = (u8 *)tlv_result - p;
+	tlv_result->tag = CB_TAG_RESULT;
+	tlv_result->length = sizeof(u64);
+	*((u64 *)(&tlv_result->payload[0])) = ret;
+	*n = size;
+
+	return p;
+}
+
+u8 *cb_dup_mc_flipped_cmd(u8 *dst, u8 *src, u32 n, u64 ret)
+{
+	struct cb_tlv *tlv, *tlv_map, *tlv_result;
+	u32 *map;
+
+	memcpy(dst, src, n);
+
+	tlv = (struct cb_tlv *)(dst+sizeof(u32));
+	tlv_map = (struct cb_tlv *)(&tlv->payload[0]);
+	map = (u32 *)(&tlv_map->payload[0]);
+	tlv_result = (struct cb_tlv *)(dst
+			+ map[CB_CMD_MC_FLIPPED_SHIFT-CB_CMD_OFFSET]);
+	*((u32 *)(&tlv_result->payload[0])) = ret;
+	return dst;
+}
+
+u64 cb_client_parse_mc_flipped_cmd(u8 *data)
+{
+	struct cb_tlv *tlv, *tlv_map, *tlv_result;
+	u32 size, *head, *map;
+
+	head = (u32 *)data;
+	if (!((*head) & (1 << CB_CMD_MC_FLIPPED_SHIFT)))
+		return 0;
+
+	tlv = (struct cb_tlv *)(data+sizeof(u32));
+	assert(tlv->tag == CB_TAG_WIN);
+	size = sizeof(*tlv) + sizeof(u32) + tlv->length;
+	tlv_map = (struct cb_tlv *)(&tlv->payload[0]);
+	map = (u32 *)(&tlv_map->payload[0]);
+	if (map[CB_CMD_MC_FLIPPED_SHIFT- CB_CMD_OFFSET] >= size)
+		return 0;
+	tlv_result = (struct cb_tlv *)(data
+			+ map[CB_CMD_MC_FLIPPED_SHIFT-CB_CMD_OFFSET]);
+	if (tlv_result->tag != CB_TAG_RESULT)
+		return 0;
+	if (tlv_result->length != sizeof(u64))
+		return 0;
+	return *((u64 *)(&tlv_result->payload[0]));
+}
+
+u8 *cb_client_create_set_cap_cmd(u64 cap, u32 *n)
+{
+	struct cb_tlv *tlv;
+	u32 size, *head;
+	u8 *p;
+
+	size = sizeof(*tlv) + sizeof(u32) + sizeof(u64);
+	p = calloc(1, size);
+	if (!p)
+		return NULL;
+
+	head = (u32 *)p;
+	*head = 0xFE; /* magic or else */
+
+	tlv = (struct cb_tlv *)(p+sizeof(u32));
+	tlv->tag = CB_TAG_SET_CAPABILITY;
+	tlv->length = sizeof(u64);
+	memcpy(&tlv->payload[0], &cap, tlv->length);
+	*n = size;
+
+	return p;
+}
+
+u8 *cb_dup_set_cap_cmd(u8 *dst, u8 *src, u32 n, u64 cap)
+{
+	struct cb_tlv *tlv;
+	u64 *p;
+
+	if (!dst || !src)
+		return NULL;
+
+	memcpy(dst, src, n);
+
+	tlv = (struct cb_tlv *)(dst+sizeof(u32));
+	p = (u64 *)(&tlv->payload[0]);
+	*p = cap;
+
+	return dst;
+}
+
+s32 cb_server_parse_set_cap_cmd(u8 *data, u64 *cap)
+{
+	struct cb_tlv *tlv;
+
+	if (!cap)
+		return -EINVAL;
+
+	tlv = (struct cb_tlv *)(data+sizeof(u32));
+	if (tlv->tag != CB_TAG_SET_CAPABILITY)
+		return -EINVAL;
+
+	*cap = *((u64 *)(&tlv->payload[0]));
+
+	return 0;
+}
+

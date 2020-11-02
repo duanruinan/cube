@@ -32,6 +32,10 @@ struct cb_fds {
 	u32 count;
 };
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 s32 cb_socket_cloexec(void);
 s32 cb_socket_nonblock(s32 sock);
 s32 cb_sendmsg(s32 sock, u8 *buf, size_t sz, struct cb_fds *fds);
@@ -39,6 +43,10 @@ s32 cb_recvmsg(s32 sock, u8 *buf, size_t sz, struct cb_fds *fds);
 s32 cb_socket_bind_listen(const s32 sock, const char *name);
 s32 cb_socket_accept(const s32 sock);
 s32 cb_socket_connect(const s32 sock, const char *remote);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
 

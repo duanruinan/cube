@@ -18,7 +18,12 @@ all:
 	-@cp $(RPATH)/utils/cube_log $(RPATH)/out/usr/bin
 	# -@cp $(RPATH)/server/cube $(RPATH)/out/usr/bin
 	-@cp $(RPATH)/client/cube_manager $(RPATH)/out/usr/bin
+	-@cp $(RPATH)/client/libcube_client.so $(RPATH)/out/usr/lib
 	-@cp $(RPATH)/client/test_client $(RPATH)/out/usr/bin
+	-@cp $(RPATH)/client/test_mc $(RPATH)/out/usr/bin
+	-@cp $(RPATH)/client/stat_tips $(RPATH)/out/usr/bin
+	-@cp $(RPATH)/client/test_stat_tips $(RPATH)/out/usr/bin
+	-@cp $(RPATH)/client/libstat_tips.so $(RPATH)/out/usr/lib
 	-@cp $(RPATH)/tools/detect_drm $(RPATH)/out/usr/bin
 	-@cp $(RPATH)/build/env.sh $(RPATH)/out
 

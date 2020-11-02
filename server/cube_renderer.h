@@ -68,6 +68,9 @@ struct renderer {
 
 	/* it is used for shm buffer's partial update */
 	void (*flush_damage)(struct renderer *r, struct cb_surface *surface);
+
+	/* set debug level */
+	void (*set_dbg_level)(struct renderer *r, enum cb_log_level level);
 };
 
 struct renderer *renderer_create(struct compositor *c,

@@ -44,7 +44,7 @@ struct cb_signal {
 void cb_signal_init(struct cb_signal *signal);
 void cb_signal_fini(struct cb_signal *signal);
 void cb_signal_add(struct cb_signal *signal, struct cb_listener *listener);
-void cb_signal_rm(struct cb_signal *signal, struct cb_listener *listener);
+void cb_signal_rm(struct cb_listener *listener);
 struct cb_listener * cb_signal_get(struct cb_signal *signal,
 				   cb_notify_cb_t notify);
 void cb_signal_emit(struct cb_signal *signal, void *data);

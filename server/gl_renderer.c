@@ -1604,6 +1604,7 @@ static bool gl_output_repaint(struct r_output *output, struct list_head *views)
 		egl_err("Failed to call eglSwapBuffers.");
 		egl_error_state();
 	}
+
 	return true;
 }
 
@@ -1780,6 +1781,8 @@ static void gl_attach_shm_buffer(struct gl_renderer *r,
 	case CB_PIX_FMT_XRGB8888:
 		gs->shader = &r->texture_shader_rgbx;
 		pitch = buffer->info.strides[0] / 4;
+		gles_debug("strides[0]: %u, pitch: %u",
+			   buffer->info.strides[0], pitch);
 		gl_format[0] = GL_BGRA_EXT;
 		gl_pixel_type = GL_UNSIGNED_BYTE;
 		surface->is_opaque = true;
@@ -1787,6 +1790,8 @@ static void gl_attach_shm_buffer(struct gl_renderer *r,
 	case CB_PIX_FMT_ARGB8888:
 		gs->shader = &r->texture_shader_rgba;
 		pitch = buffer->info.strides[0] / 4;
+		gles_debug("strides[0]: %u, pitch: %u",
+			   buffer->info.strides[0], pitch);
 		gl_format[0] = GL_BGRA_EXT;
 		gl_pixel_type = GL_UNSIGNED_BYTE;
 		surface->is_opaque = false;
@@ -2003,7 +2008,7 @@ static void gl_flush_damage(struct renderer *renderer,
 	struct cb_box *boxes, *box;
 	struct shm_buffer *shm_buffer;
 	u8 *data;
-	s32 i, j, count_boxes;
+	s32 i, j, count_boxes, ret;
 
 	cb_region_union(&gs->texture_damage, &gs->texture_damage,
 			&surface->damage);
@@ -2050,7 +2055,6 @@ static void gl_flush_damage(struct renderer *renderer,
 				   buffer->info.height / gs->vsub[j],
 				   0,
 				   data, gs->offset[j]);
-
 			glTexImage2D(GL_TEXTURE_2D, 0,
 				     gs->gl_format[j],
 				     gs->pitch / gs->hsub[j],
@@ -2059,6 +2063,8 @@ static void gl_flush_damage(struct renderer *renderer,
 				     gl_format_from_internal(gs->gl_format[j]),
 				     gs->gl_pixel_type,
 				     data + gs->offset[j]);
+			ret = glGetError();
+			assert(ret == GL_NO_ERROR);
 		}
 		/* end access buffer */
 		goto done;
@@ -2069,7 +2075,7 @@ static void gl_flush_damage(struct renderer *renderer,
 	for (i = 0; i < count_boxes; i++) {
 		box = &boxes[i];
 		gles_debug("data[0]: 0x%02X data[1]: 0x%02X "
-		       "data[2]: 0x%02X data[3]: 0x%02X\n",
+		       "data[2]: 0x%02X data[3]: 0x%02X",
 		       data[0], data[1],
 		       data[2], data[3]);
 		gles_debug("count_textures = %d", gs->count_textures);
@@ -2090,7 +2096,6 @@ static void gl_flush_damage(struct renderer *renderer,
 				   (box->p2.x - box->p1.x) / gs->hsub[j],
 				   (box->p2.y - box->p1.y) / gs->vsub[j],
 				   data, gs->offset[j]);
-
 			glTexSubImage2D(GL_TEXTURE_2D, 0,
 					box->p1.x / gs->hsub[j],
 					box->p1.y / gs->vsub[j],
@@ -2100,6 +2105,26 @@ static void gl_flush_damage(struct renderer *renderer,
 						gs->gl_format[j]),
 					gs->gl_pixel_type,
 					data + gs->offset[j]);
+			ret = glGetError();
+			if (ret != GL_NO_ERROR) {
+				gles_err("glTexSubImage2DglGetError(): %08X",
+					 ret);
+				glPixelStorei(
+					GL_UNPACK_SKIP_PIXELS_EXT, 0);
+				glPixelStorei(
+					GL_UNPACK_SKIP_ROWS_EXT, 0);
+				glTexImage2D(GL_TEXTURE_2D, 0,
+					     gs->gl_format[j],
+					     gs->pitch / gs->hsub[j],
+					     buffer->info.height / gs->vsub[j],
+					     0,
+					     gl_format_from_internal(
+						gs->gl_format[j]),
+					     gs->gl_pixel_type,
+					     data + gs->offset[j]);
+				ret = glGetError();
+				assert(ret == GL_NO_ERROR);
+			}
 		}
 	}
 	/* end access buffer */
@@ -2108,6 +2133,12 @@ done:
 	cb_region_fini(&gs->texture_damage);
 	cb_region_init(&gs->texture_damage);
 	gs->needs_full_upload = false;
+}
+
+static void gl_set_dbg_level(struct renderer *renderer, enum cb_log_level level)
+{
+	gles_dbg = level;
+	egl_dbg = level;
 }
 
 struct renderer *renderer_create(struct compositor *c,
@@ -2187,6 +2218,7 @@ struct renderer *renderer_create(struct compositor *c,
 	r->base.release_dmabuf = gl_release_dmabuf;
 	r->base.flush_damage = gl_flush_damage;
 	r->base.attach_buffer = gl_attach_buffer;
+	r->base.set_dbg_level = gl_set_dbg_level;
 
 	return &r->base;
 

@@ -26,6 +26,11 @@
 #include <cube_utils.h>
 #include <cube_shm.h>
 
+#define CB_SERVER_NAME_PREFIX "/tmp"
+#define LOG_SERVER_NAME_PREFIX "/tmp"
+#define LOG_SERVER_SOCK_NAME "cube_log_server"
+#define SERVER_NAME "cube_server"
+
 #pragma pack(push)
 #pragma pack(8)
 
@@ -51,15 +56,25 @@ enum cb_cmd_shift {
 	CB_CMD_CREATE_BO_ACK_SHIFT,
 	/* 7: destroy buffer */
 	CB_CMD_DESTROY_BO_SHIFT,
-	/* 8: destroy buffer ack */
-	CB_CMD_DESTROY_BO_ACK_SHIFT,
 
 	/*
-	 * 9: Client commit the new state of surface to server.
+	 * 8: Client commit the new state of surface to server.
 	 * Commit: Changes of buffer object/view/surface
 	 *
-	 * Client should not render into the BO which has been commited to
-	 * server, until received CB_CMD_BO_COMPLETE from server.
+	 * For DMA-BUF direct show surface:
+	 *     Client should not change the BO's content which has been commited
+	 *     to server, until received CB_CMD_BO_COMPLETE from server.
+	 * For renderable surface: (include DMA-BUF as external texture)
+	 *     Client should not render into the BO's content which has been
+	 *     commited to server, until received CB_CMD_BO_FLIPPED from server.
+	 * All commit operations must be syncronized with vblank signal. It
+	 *     means that the later commit must not be made until the
+	 *     CB_CMD_BO_FLIPPED message of the former commit is received.
+	 * If program commit two bos to server regardless of vblank, the later
+	 *     one is enqueued into kernel buffer.
+	 * If program change DMA-BUF bo's content regardless of bo complete
+	 *     message, a video tearing must occured when the former bo is
+	 *     used as DMA transfer's source data.
 	 *
 	 * Notice: Client should invoke glFinish before commit
 	 *         to ensure the completion of the previouse rendering work.
@@ -67,36 +82,49 @@ enum cb_cmd_shift {
 	 *         Server should schedule a new repaint request.
 	 */
 	CB_CMD_COMMIT_SHIFT,
-	/* 10: server feeds back the result of BO's attaching operation */
+	/* 9: server feeds back the result of BO's attaching operation */
 	CB_CMD_COMMIT_ACK_SHIFT,
-	/* 11: server notify client the BO flipped event (commited to kernel).*/
+	/* 10: server notify client the BO flipped event (commited to kernel).*/
 	CB_CMD_BO_FLIPPED_SHIFT,
-	/* 12: server notify client the BO is no longer in use */
+	/* 11: server notify client the BO is no longer in use */
 	CB_CMD_BO_COMPLETE_SHIFT,
-
-	/* 13: raw mouse & kbd event report */
-	CB_CMD_RAW_INPUT_EVT_SHIFT,
 
 	/* <----------------- DESTROYING STAGE ------------------> */
 	/*
-	 * 14: Client requests to destroy surface
+	 * 15: Client requests to destroy surface
 	 * Server will destroy all resources of the given surface.
 	 */
 	CB_CMD_DESTROY_SHIFT,
-	/* 15: server feeds back the result of the surface's destruction */
+	/* 16: server feeds back the result of the surface's destruction */
 	CB_CMD_DESTROY_ACK_SHIFT,
 
 	/* <---------------- cube setting utils ---------------> */
-	/* 16: shell */
+	/* 17: shell */
 	CB_CMD_SHELL_SHIFT,
-	/* 17: plug in/out */
+	/* 18: plug in/out */
 	CB_CMD_HPD_SHIFT,
-	/* 18: */
+
+	/* 19: MC cmd */
+	CB_CMD_MC_COMMIT_SHIFT,
+
+	/* 20: server feeds back the result of mc command */
+	CB_CMD_MC_COMMIT_ACK_SHIFT,
+
+	/* 21: server notify client the mc bo flipped event.*/
+	CB_CMD_MC_FLIPPED_SHIFT,
+
+	/* 22: */
 	CB_CMD_LAST_SHIFT,
 };
 
 enum cb_tag {
-	CB_TAG_RAW_INPUT = 0,
+	CB_TAG_UNKNOWN = 0,
+	CB_TAG_RAW_INPUT,
+	CB_TAG_RAW_INPUT_EN,
+	CB_TAG_SET_KBD_LED,
+	CB_TAG_GET_KBD_LED_STATUS,
+	CB_TAG_GET_KBD_LED_STATUS_ACK,
+	CB_TAG_SET_CAPABILITY,
 	CB_TAG_WIN,
 	CB_TAG_MAP, /* array of u32 */
 	CB_TAG_RESULT, /* for all ACK CMDs. u64 */
@@ -105,7 +133,8 @@ enum cb_tag {
 	CB_TAG_CREATE_BO, /* cb_buf_info */
 	CB_TAG_COMMIT_INFO, /* cb_commit_info */
 	CB_TAG_SHELL, /* cb_shell_info */
-	CB_TAG_DESTROY,
+	CB_TAG_DESTROY, /* destroy all */
+	CB_TAG_MC_COMMIT_INFO, /* mouse cursor */
 };
 
 struct cb_tlv {
@@ -144,7 +173,7 @@ struct cb_tlv {
 
 struct cb_surface_info {
 	u64 surface_id;
-	s32 is_opaque;
+	bool is_opaque;
 	struct cb_rect damage;
 	u32 width, height;
 	struct cb_rect opaque;
@@ -157,10 +186,13 @@ struct cb_view_info {
 	 */
 	bool full_screen;
 	bool top_level;
-	struct cb_rect area;
-	float alpha;
 	u32 output_mask;
 	u32 primary_output;
+
+	u64 surface_id;
+	struct cb_rect area;
+	float alpha;
+	s32 zpos;
 };
 
 enum cb_pix_fmt {
@@ -241,17 +273,18 @@ struct cb_buffer_info {
 	size_t sizes[4];
 	void *maps[4];
 	s32 planes;
-	u64 surface_id;
+	char shm_name[CB_SHM_NM_MAX_LEN];
+	u32 shm_size;
 };
 
 struct cb_commit_info {
 	u64 bo_id;
+	u64 surface_id;
 	struct cb_rect bo_damage;
 
 	s32 shown; /* 0: hide / 1: show */
 
 	s32 view_x, view_y;
-	s32 view_hot_x, view_hot_y;
 	u32 view_width, view_height;
 
 	/* 0: z order no change / 1: bring to top / -1: falling down */
@@ -262,32 +295,106 @@ enum cb_shell_cmd {
 	CB_SHELL_DEBUG_SETTING,
 	CB_SHELL_CANVAS_LAYOUT_SETTING,
 	CB_SHELL_CANVAS_LAYOUT_QUERY,
+	CB_SHELL_CANVAS_LAYOUT_CHANGED_NOTIFY,
+	CB_SHELL_OUTPUT_VIDEO_TIMING_ENUMERATE,
+	CB_SHELL_OUTPUT_VIDEO_TIMING_CREAT,
+};
+
+#define CB_CONNECTOR_NAME_MAX_LEN 31
+#define CB_MONITOR_NAME_MAX_LEN 31
+
+struct output_config {
+	s32 pipe;
+	struct cb_rect desktop_rc;
+	struct cb_rect input_rc;
+	void *mode_handle;
+	void *custom_mode_handle;
+	char monitor_name[CB_MONITOR_NAME_MAX_LEN];
+	char connector_name[CB_CONNECTOR_NAME_MAX_LEN];
+	u16 width_preferred, height_preferred;
+	u32 vrefresh_preferred, pixel_freq_preferred;
 };
 
 struct cb_canvas_layout {
 	u32 count_heads;
-	u32 mode;
-	struct cb_rect desktops[8];
+	struct output_config cfg[8];
+};
+
+struct mode_info {
+	u32 clock;
+	u16 width;
+	u16 hsync_start;
+	u16 hsync_end;
+	u16 htotal;
+	u16 hskew;
+	u16 height;
+	u16 vsync_start;
+	u16 vsync_end;
+	u16 vtotal;
+	u16 vscan;
+	u32 vrefresh;
+	bool interlaced;
+	bool pos_hsync;
+	bool pos_vsync;
+	bool preferred;
+};
+
+/* video timing filter pattern */
+enum cb_mode_filter_mode {
+	CB_MODE_FILTER_MODE_SIZE_OR_CLOCK = 1,
+	CB_MODE_FILTER_MODE_SIZE_AND_CLOCK,
+};
+
+struct cb_mode_filter {
+	enum cb_mode_filter_mode mode;
+	u32 min_width, max_width;
+	u32 min_height, max_height;
+	u32 min_clock, max_clock;
+};
+
+struct output_timings_enum {
+	s32 pipe;
+	void *handle_last;
+	void *handle_cur;
+	bool filter_en;
+	struct cb_mode_filter enum_filter;
 };
 
 struct cb_debug_flags {
-	u8 common_flag;
-	u8 compositor_flag;
-	u8 drm_flag;
-	u8 gbm_flag;
-	u8 ps_flag;
-	u8 timer_flag;
-	u8 gles_flag;
-	u8 egl_flag;
+	u8 clia_flag;
+	u8 comp_flag;
+	u8 sc_flag;
+	u8 rd_flag;
 };
 
 struct cb_shell_info {
 	enum cb_shell_cmd cmd;
-	union {
+	struct {
 		struct cb_debug_flags dbg_flags;
 		struct cb_canvas_layout layout;
+		struct output_timings_enum ote;
+		struct mode_info mode;
+		s32 modeset_pipe;
+		void *new_mode_handle;
 	} value;
 };
+
+#pragma pack(1)
+struct slot_info {
+	u8 slot_id:5;
+	u8 pressed:1;
+	u8 pos_x_changed:1;
+	u8 pos_y_changed:1;
+	u8 reserved;
+	u16 pos[0];
+};
+
+struct touch_event {
+	u16 count_slots:5; /* slot number - 1 */
+	u16 payload_sz:11; /* payload size */
+	u8 payload[0];
+};
+#pragma pack()
 
 struct cb_raw_input_event {
 	u16 type;
@@ -303,115 +410,232 @@ struct cb_raw_input_event {
 	} v;
 };
 
+/* server: link ID */
 u8 *cb_server_create_linkup_cmd(u64 link_id, u32 *n);
 u8 *cb_dup_linkup_cmd(u8 *dst, u8 *src, u32 n, u64 link_id);
+/* client: parse link ID */
 u64 cb_client_parse_link_id(u8 *data);
+
+#define CB_CLIENT_CAP_NOTIFY_LAYOUT (1 << 0)
+#define CB_CLIENT_CAP_RAW_INPUT (1 << 1)
+#define CB_CLIENT_CAP_HPD (1 << 2)
+#define CB_CLIENT_CAP_MC (1 << 3)
+
+/* client: create set capability command */
+u8 *cb_client_create_set_cap_cmd(u64 cap, u32 *n);
+u8 *cb_dup_set_cap_cmd(u8 *dst, u8 *src, u32 n, u64 cap);
+/* server: parse set capability command */
+s32 cb_server_parse_set_cap_cmd(u8 *data, u64 *cap);
+
+/* client: surface create request */
 u8 *cb_client_create_surface_cmd(struct cb_surface_info *s, u32 *n);
 u8 *cb_dup_create_surface_cmd(u8 *dst, u8 *src, u32 n,
-			       struct cb_surface_info *s);
+			      struct cb_surface_info *s);
+/* server: parse surface create request */
 s32 cb_server_parse_create_surface_cmd(u8 *data, struct cb_surface_info *s);
+
+/* server: surface create ack */
 u8 *cb_server_create_surface_id_cmd(u64 surface_id, u32 *n);
 u8 *cb_dup_surface_id_cmd(u8 *dst, u8 *src, u32 n, u64 surface_id);
+/* client: parse surface create ack */
 u64 cb_client_parse_surface_id(u8 *data);
+
+/* client: view create request */
 u8 *cb_client_create_view_cmd(struct cb_view_info *v, u32 *n);
 u8 *cb_dup_create_view_cmd(u8 *dst, u8 *src, u32 n, struct cb_view_info *v);
+/* server: parse view create request */
 s32 cb_server_parse_create_view_cmd(u8 *data, struct cb_view_info *v);
+
+/* server: view create ack */
 u8 *cb_server_create_view_id_cmd(u64 view_id, u32 *n);
 u8 *cb_dup_view_id_cmd(u8 *dst, u8 *src, u32 n, u64 view_id);
+/* client: parse view create ack */
 u64 cb_client_parse_view_id(u8 *data);
+
+/* client: bo create request */
 u8 *cb_client_create_bo_cmd(struct cb_buffer_info *b, u32 *n);
 u8 *cb_dup_create_bo_cmd(u8 *dst, u8 *src, u32 n, struct cb_buffer_info *b);
+/* server: parse bo create request */
 s32 cb_server_parse_create_bo_cmd(u8 *data, struct cb_buffer_info *b);
+
+/* server: bo create ack */
 u8 *cb_server_create_bo_id_cmd(u64 bo_id, u32 *n);
 u8 *cb_dup_bo_id_cmd(u8 *dst, u8 *src, u32 n, u64 bo_id);
+/* client: parse bo create ack */
 u64 cb_client_parse_bo_id(u8 *data);
-u8 *cb_client_create_commit_req_cmd(struct cb_commit_info *c, u32 *n);
-u8 *cb_dup_commit_req_cmd(u8 *dst, u8 *src, u32 n, struct cb_commit_info *c);
-s32 cb_server_parse_commit_req_cmd(u8 *data, struct cb_commit_info *c);
-u8 *cb_server_create_commit_ack_cmd(u64 ret, u32 *n);
-u8 *cb_dup_commit_ack_cmd(u8 *dst, u8 *src, u32 n, u64 ret);
-u64 cb_client_parse_commit_ack_cmd(u8 *data);
-u8 *cb_server_create_bo_flipped_cmd(u64 ret, u32 *n);
-u8 *cb_dup_bo_flipped_cmd(u8 *dst, u8 *src, u32 n, u64 ret);
-u64 cb_client_parse_bo_flipped_cmd(u8 *data);
-u8 *cb_server_create_bo_complete_cmd(u64 ret, u32 *n);
-u8 *cb_dup_bo_complete_cmd(u8 *dst, u8 *src, u32 n, u64 ret);
-u64 cb_client_parse_bo_complete_cmd(u8 *data);
-u8 *cb_create_shell_cmd(struct cb_shell_info *s, u32 *n);
-u8 *cb_dup_shell_cmd(u8 *dst, u8 *src, u32 n, struct cb_shell_info *s);
-s32 cb_parse_shell_cmd(u8 *data, struct cb_shell_info *s);
-u8 *cb_client_create_destroy_cmd(u64 link_id, u32 *n);
-u8 *cb_dup_destroy_cmd(u8 *dst, u8 *src, u32 n, u64 link_id);
-u64 cb_server_parse_destroy_cmd(u8 *data);
-u8 *cb_server_create_destroy_ack_cmd(u64 ret, u32 *n);
-u8 *cb_dup_destroy_ack_cmd(u8 *dst, u8 *src, u32 n, u64 ret);
-u64 cb_client_parse_destroy_ack_cmd(u8 *data);
-u8 *cb_server_create_raw_input_evt_cmd(struct cb_raw_input_event *evts,
-				       u32 count_evts, u32 *n);
-u8 *cb_server_fill_raw_input_evt_cmd(u8 *dst, struct cb_raw_input_event *evts,
-				     u32 count_evts, u32 *n, u32 max_size);
-struct cb_raw_input_event *cb_client_parse_raw_input_evt_cmd(u8 *data,
-							     u32 *count_evts);
+
+/* client: bo destroy request */
 u8 *cb_client_destroy_bo_cmd(u64 bo_id, u32 *n);
 u8 *cb_dup_destroy_bo_cmd(u8 *dst, u8 *src, u32 n, u64 bo_id);
+/* server: parse bo destroy request */
 u64 cb_server_parse_destroy_bo_cmd(u8 *data);
 
-#define set_hpd_info(pinfo, index, on) do { \
-	*(pinfo) |= (1 << (index)); \
-	if ((on)) { \
-		*(pinfo) |= (1 << ((index) + 8)); \
-	} else { \
-		*(pinfo) &= ~(1 << ((index) + 8)); \
-	} \
-} while (0);
+/* client: bo commit request */
+u8 *cb_client_create_commit_req_cmd(struct cb_commit_info *c, u32 *n);
+u8 *cb_dup_commit_req_cmd(u8 *dst, u8 *src, u32 n, struct cb_commit_info *c);
+/* server: parse bo commit request */
+s32 cb_server_parse_commit_req_cmd(u8 *data, struct cb_commit_info *c);
 
-#define parse_hpd_info(info, index, pavail, pon) do { \
-	if (!((info) & (1 << (index)))) { \
-		*(pavail) = 0; \
-	} else { \
-		*(pavail) = 1; \
-		if ((info) & (1 << ((index) + 8))) { \
-			*(pon) = 1; \
-		} else { \
-			*(pon) = 0; \
-		} \
-	} \
-} while (0);
+/* server: bo commit ack */
+u8 *cb_server_create_commit_ack_cmd(u64 ret, u32 *n);
+u8 *cb_dup_commit_ack_cmd(u8 *dst, u8 *src, u32 n, u64 ret);
+/* client: parse bo commit ack */
+u64 cb_client_parse_commit_ack_cmd(u8 *data);
 
-u8 *cb_server_create_hpd_cmd(u64 hpd_info, u32 *n);
-u8 *cb_dup_hpd_cmd(u8 *dst, u8 *src, u32 n, u64 hpd_info);
-u64 cb_client_parse_hpd_cmd(u8 *data);
+/* server: bo flipped notify */
+u8 *cb_server_create_bo_flipped_cmd(u64 ret, u32 *n);
+u8 *cb_dup_bo_flipped_cmd(u8 *dst, u8 *src, u32 n, u64 ret);
+/* client: parse bo flipped notify */
+u64 cb_client_parse_bo_flipped_cmd(u8 *data);
+
+/* server: bo complete notify */
+u8 *cb_server_create_bo_complete_cmd(u64 ret, u32 *n);
+u8 *cb_dup_bo_complete_cmd(u8 *dst, u8 *src, u32 n, u64 ret);
+/* client: parse bo complete notify */
+u64 cb_client_parse_bo_complete_cmd(u8 *data);
+
+/* client / server: shell cmd */
+u8 *cb_create_shell_cmd(struct cb_shell_info *s, u32 *n);
+u8 *cb_dup_shell_cmd(u8 *dst, u8 *src, u32 n, struct cb_shell_info *s);
+/* server / client: parse shell cmd */
+s32 cb_parse_shell_cmd(u8 *data, struct cb_shell_info *s);
+
+/* client: terminate cmd */
+u8 *cb_client_create_destroy_cmd(u64 link_id, u32 *n);
+u8 *cb_dup_destroy_cmd(u8 *dst, u8 *src, u32 n, u64 link_id);
+/* server: parse terminate cmd */
+u64 cb_server_parse_destroy_cmd(u8 *data);
+
+/* server: terminate cmd ack */
+u8 *cb_server_create_destroy_ack_cmd(u64 ret, u32 *n);
+u8 *cb_dup_destroy_ack_cmd(u8 *dst, u8 *src, u32 n, u64 ret);
+/* client: parse terminate cmd ack */
+u64 cb_client_parse_destroy_ack_cmd(u8 *data);
+
+/* client: parse raw event */
+struct cb_raw_input_event *cb_client_parse_raw_input_evt_cmd(u8 *data,
+							     u32 *count_evts);
+
+/* client: raw input enable cmd */
+u8 *cb_client_create_raw_input_en_cmd(u64 en, u32 *n);
+u8 *cb_dup_raw_input_en_cmd(u8 *dst, u8 *src, u32 n, u64 en);
+/* server: parse raw input enable cmd */
+s32 cb_server_parse_raw_input_en_cmd(u8 *data, u64 *en);
+
+/* client: set kbd led evts cmd */
+u8 *cb_client_create_set_kbd_led_st_cmd(u32 led_status, u32 *n);
+u8 *cb_dup_set_kbd_led_st_cmd(u8 *dst, u8 *src, u32 n, u32 led_status);
+/* server: parse set kbd led cmd */
+s32 cb_server_parse_set_kbd_led_st_cmd(u8 *data, u32 *led_status);
+
+enum {
+	CB_KBD_LED_STATUS_SCROLLL = 0,
+	CB_KBD_LED_STATUS_NUML,
+	CB_KBD_LED_STATUS_CAPSL,
+};
+
+/* client: get kbd led evts cmd */
+u8 *cb_client_create_get_kbd_led_st_cmd(u32 *n);
+/* server: set kbd led status to cmd */
+u8 *cb_server_create_get_kbd_led_st_ack_cmd(u32 led_status, u32 *n);
+/* server: dup kbd led status to cmd */
+u8 *cb_dup_get_kbd_led_st_ack_cmd(u8 *dst, u8 *src, u32 n, u32 led_status);
+/* client: parse kbd led status cmd */
+s32 cb_client_parse_get_kbd_led_st_ack_cmd(u8 *data, u32 *led_status);
+
+struct cb_connector_info {
+	bool enabled;
+	s32 pipe;
+	char connector_name[CB_CONNECTOR_NAME_MAX_LEN + 1];
+	char monitor_name[CB_MONITOR_NAME_MAX_LEN + 1];
+	u16 width, height;
+	u32 vrefresh;
+	u32 pixel_freq;
+	u16 width_cur, height_cur;
+	u32 vrefresh_cur;
+	u32 pixel_freq_cur;
+};
+
+/* server: Hotplug command */
+u8 *cb_server_create_hpd_cmd(struct cb_connector_info *conn_info, u32 *n);
+u8 *cb_dup_hpd_cmd(u8 *dst, u8 *src, u32 n,struct cb_connector_info *conn_info);
+/* client: parse hotplug command */
+u64 cb_client_parse_hpd_cmd(u8 *data, struct cb_connector_info *conn_info);
+
 void cb_cmd_dump(u8 *data);
 
 /*
- * Raw input command
+ * mouse cursor command
  * 
  */
-enum raw_input_cmd_type {
-	INPUT_CMD_TYPE_UNKNOWN = 0,
-	INPUT_CMD_TYPE_SET_CURSOR,
-	INPUT_CMD_TYPE_SET_CURSOR_RANGE,
-	INPUT_CMD_TYPE_SET_CURSOR_POS,
+enum mc_cmd_type {
+	MC_CMD_TYPE_UNKNOWN = 0,
+	MC_CMD_TYPE_SET_CURSOR,
+	MC_CMD_TYPE_SHOW,
+	MC_CMD_TYPE_HIDE,
 };
 
-#define MAX_DESKTOP_NR 8
-struct raw_input_cmd {
-	enum raw_input_cmd_type type;
-	union {
-		struct {
-			u32 data[64*64];
-			s32 hot_x, hot_y;
-			u32 w, h;
-		} cursor;
-		struct {
-			struct cb_rect global_area[MAX_DESKTOP_NR];
-			s32 count_rects;
-			s32 map[MAX_DESKTOP_NR];
-		} range;
-	} c;
+struct cb_mc_info {
+	enum mc_cmd_type type;
+	u64 bo_id; /* SHM BO, used when type is MC_CMD_TYPE_SET_CURSOR */
+	struct {
+		s32 hot_x, hot_y;
+		u32 w, h;
+	} cursor;
 };
+
+/* client: mc commit command */
+u8 *cb_client_create_mc_commit_cmd(struct cb_mc_info *info, u32 *n);
+u8 *cb_dup_mc_commit_cmd(u8 *dst, u8 *src, u32 n, struct cb_mc_info *info);
+/* server: parse mc commit command */
+s32 cb_server_parse_mc_commit_cmd(u8 *data, struct cb_mc_info *info);
+
+/* server: mc commit ack */
+u8 *cb_server_create_mc_commit_ack_cmd(u64 ret, u32 *n);
+u8 *cb_dup_mc_commit_ack_cmd(u8 *dst, u8 *src, u32 n, u64 ret);
+/* client: parse mc commit ack */
+u64 cb_client_parse_mc_commit_ack_cmd(u8 *data);
+
+/* server: mc flipped notify */
+u8 *cb_server_create_mc_flipped_cmd(u64 ret, u32 *n);
+u8 *cb_dup_mc_flipped_cmd(u8 *dst, u8 *src, u32 n, u64 ret);
+/* client: parse mc flipped notify */
+u64 cb_client_parse_mc_flipped_cmd(u8 *data);
 
 #pragma pack(pop)
+
+#define mk_fourcc(a, b, c, d) ((u32)(a) | ((u32)(b) << 8) | \
+			       ((u32)(c) << 16) | ((u32)(d) << 24))
+
+static inline enum cb_pix_fmt fourcc_to_cb_pix_fmt(u32 fourcc)
+{
+	switch (fourcc) {
+	case mk_fourcc('A', 'R', '2', '4'):
+		return CB_PIX_FMT_ARGB8888;
+	case mk_fourcc('X', 'R', '2', '4'):
+		return CB_PIX_FMT_XRGB8888;
+	case mk_fourcc('R', 'G', '2', '4'):
+		return CB_PIX_FMT_RGB888;
+	case mk_fourcc('R', 'G', '1', '6'):
+		return CB_PIX_FMT_RGB565;
+	case mk_fourcc('N', 'V', '1', '2'):
+		return CB_PIX_FMT_NV12;
+	case mk_fourcc('N', 'V', '1', '6'):
+		return CB_PIX_FMT_NV16;
+	case mk_fourcc('N', 'V', '2', '4'):
+		return CB_PIX_FMT_NV24;
+	case mk_fourcc('Y', 'U', 'Y', 'V'):
+		return CB_PIX_FMT_YUYV;
+	case mk_fourcc('Y', 'U', '1', '2'):
+		return CB_PIX_FMT_YUV420;
+	case mk_fourcc('Y', 'U', '1', '6'):
+		return CB_PIX_FMT_YUV422;
+	case mk_fourcc('Y', 'U', '2', '4'):
+		return CB_PIX_FMT_YUV444;
+	default:
+		return CB_PIX_FMT_UNKNOWN;
+	}
+}
 
 #endif
 

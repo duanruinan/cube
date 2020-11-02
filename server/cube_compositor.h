@@ -50,12 +50,21 @@ struct cb_buffer {
 	 * should decide which output it should be displayed on at this time.
 	 */
 	u32 dirty;
+
+	/* link to client's buffer list */
+	struct list_head link;
+
+	struct cb_surface *surface;
+
+	struct cb_listener dma_buf_flipped_l, dma_buf_completed_l;
+
+	/* prevent to add buffer's complete listener more than one time */
+	bool completed_l_added;
 };
 
 struct shm_buffer {
 	struct cb_buffer base;
 	struct cb_shm shm;
-	char name[128];
 };
 
 struct pipeline {
@@ -65,23 +74,13 @@ struct pipeline {
 	s32 cursor_plane_index;
 };
 
-/* video timing filter pattern */
-enum cb_mode_filter_mode {
-	CB_MODE_FILTER_MODE_SIZE_OR_CLOCK = 0,
-	CB_MODE_FILTER_MODE_SIZE_AND_CLOCK,
-};
-
-struct cb_mode_filter {
-	enum cb_mode_filter_mode mode;
-	u32 min_width, max_width;
-	u32 min_height, max_height;
-	u32 min_clock, max_clock;
-};
-
 struct compositor;
 
 struct cb_surface {
 	struct cb_compositor *c;
+	void *client_agent;
+
+	bool use_renderer;
 
 	/*
 	 * The new buffer should be rendered into renderer's surface.
@@ -119,8 +118,6 @@ struct cb_surface {
 	 */
 	u32 width, height;
 
-	/********************** FOR Renderer ************************/
-	/* used for buffer rendered in surface */
 	struct cb_listener flipped_l;
 
 	/*
@@ -138,7 +135,8 @@ struct cb_surface {
 	struct cb_output *output; /* the output generate vblank signal */
 	/************************************************************/
 
-	/* client agent */
+	/* link to client agent */
+	struct list_head link;
 };
 
 struct cb_view {
@@ -185,12 +183,35 @@ struct compositor {
 	s32 (*destroy)(struct compositor *c);
 
 	/*
+	 * notify hotplug event to all clients
+	 */
+	void (*dispatch_hotplug_event)(struct compositor *c, s32 pipe);
+
+	/*
 	 * return 0 on success, -EAGAIN means to call the destroyer later.
 	 */
 	s32 (*suspend)(struct compositor *c);
 
 	/* re-enable all */
 	void (*resume)(struct compositor *c);
+
+	/* add client */
+	struct cb_client_agent *(*add_client)(struct compositor *c, s32 sock);
+
+	/* remove client */
+	void (*rm_client)(struct compositor *c, struct cb_client_agent *client);
+
+	/* commit client's operations */
+	void (*commit_surface)(struct compositor *c, struct cb_surface *s);
+
+	/* add view to compositor's view list */
+	void (*add_view_to_comp)(struct compositor *c, struct cb_view *v);
+
+	/* remove view to compositor's view list */
+	void (*rm_view_from_comp)(struct compositor *c, struct cb_view *v);
+
+	/* commit client's DMA-BUF operations */
+	void (*commit_dmabuf)(struct compositor *c, struct cb_surface *s);
 
 	/*
 	 * register a callback to notify the server about the ready event of
@@ -264,13 +285,23 @@ struct compositor {
 			     struct cb_mode *mode);
 
 	/*
+	 * Get desktop canvas layout.
+	 * 	layout: an array of desktop rectangles, pipe (hardware index)
+	 *              and mode handles.
+	 *              mode_handle can be used to retrieve mode info.
+	 */
+	void (*get_desktop_layout)(struct compositor *c,
+				   struct cb_canvas_layout *layout);
+
+	/*
 	 * Set desktop canvas layout.
-	 * 	canvas: an array of cb_rect, each element represent a output's
-	 * 	        size and position in global canvas.
-	 * 	        The order or the element is the pipe number from 0 - N
+	 * 	layout: an array of desktop rectangles, pipe (hardware index)
+	 *              and mode handles.
+	 *              if the mode_handle is NULL, keep the video timing with
+	 *              no change.
 	 */
 	void (*set_desktop_layout)(struct compositor *c,
-				   struct cb_rect *canvas);
+				   struct cb_canvas_layout *layout);
 
 	/* hide mouse cursor */
 	s32 (*hide_mouse_cursor)(struct compositor *c);
@@ -288,6 +319,32 @@ struct compositor {
 	/* set mouse cursor update complete notify */
 	bool (*set_mouse_updated_notify)(struct compositor *c,
 					 struct cb_listener *mc_updated_l);
+
+	/* write keyboard led status */
+	void (*set_kbd_led_status)(struct compositor *c, u32 led_status);
+	
+	/* get keyboard led status */
+	s32 (*get_kbd_led_status)(struct compositor *c, u32 *led_status);
+
+	/* debug set */
+	void (*set_dbg_level)(struct compositor *c, enum cb_log_level level);
+	void (*set_sc_dbg_level)(struct compositor *c, enum cb_log_level level);
+	void (*set_rd_dbg_level)(struct compositor *c, enum cb_log_level level);
+
+	/* import DMA-BUF for renderer */
+	struct cb_buffer *(*import_rd_dmabuf)(struct compositor *c,
+					      struct cb_buffer_info *info);
+	/* import DMA-BUF for direct show */
+	struct cb_buffer *(*import_so_dmabuf)(struct compositor *c,
+					      struct cb_buffer_info *info);
+
+	/* release renderer DMA-BUF */
+	void (*release_rd_dmabuf)(struct compositor *c,
+				  struct cb_buffer *buffer);
+
+	/* release direct show DMA-BUF */
+	void (*release_so_dmabuf)(struct compositor *c,
+				  struct cb_buffer *buffer);
 };
 
 /* compositor creator */
