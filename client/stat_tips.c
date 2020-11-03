@@ -267,13 +267,13 @@ static void render_gpu(struct cube_client *client, struct bo_info *bo_info)
 	x = client->font_sz * scale;
 	y -= client->font_sz * scale * 1.5f;
 	memset(msg, 0, 64);
-	sprintf(msg, "Rate (bps):      %s", client->dashboard.rate);
+	sprintf(msg, "Rate:            %s", client->dashboard.rate);
 	render_text(client, color, msg,
 		    x, y, scale * 0.8f);
 	x = client->font_sz * scale;
 	y -= client->font_sz * scale * 1.5f;
 	memset(msg, 0, 64);
-	sprintf(msg, "Latency (ms):    %s", client->dashboard.latency);
+	sprintf(msg, "Latency:         %s", client->dashboard.latency);
 	render_text(client, color, msg,
 		    x, y, scale * 0.8f);
 	x = client->font_sz * scale;
