@@ -571,6 +571,7 @@ static void bo_flipped_cb(void *userdata, u64 bo_id)
 		fprintf(stderr, "unknown buffer flipped.\n");
 	}
 
+	cli->timer_update(cli, client->repaint_timer, 5, 0);
 	client->bo_switched = false;
 }
 
@@ -1236,7 +1237,6 @@ static s32 client_sock_cb(s32 fd, u32 mask, void *data)
 							+ sizeof(size_t));
 		memcpy(&client->dashboard, dashboard, sizeof(*dashboard));
 		client->render_needed = true;
-		cli->timer_update(cli, client->repaint_timer, 1, 0);
 	}
 
 	return 0;
