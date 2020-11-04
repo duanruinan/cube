@@ -145,7 +145,7 @@ struct cube_client {
 	u32 font_sz;
 	struct character ch[128];
 
-	bool render_needed;
+	s32 render_needed;
 };
 
 static void usage(void)
@@ -281,7 +281,7 @@ static void render_gpu(struct cube_client *client, struct bo_info *bo_info)
 
 	glFinish();
 
-	client->render_needed = false;
+	client->render_needed--;
 }
 
 static s32 signal_cb(s32 signal_number, void *userdata)
@@ -628,10 +628,9 @@ static void view_created_cb(bool success, void *userdata, u64 view_id)
 		c.view_height = client->height;
 
 		bo_info = &client->bos[client->work_bo];
-		client->render_needed = true;
+		client->render_needed = 2;
 		render_gpu(client, bo_info);
 		bo_info = &client->bos[1 - client->work_bo];
-		client->render_needed = true;
 		render_gpu(client, bo_info);
 		printf("commit 0\n");
 		ret = cli->commit_bo(cli, &c);
@@ -1236,7 +1235,7 @@ static s32 client_sock_cb(s32 fd, u32 mask, void *data)
 			(struct dashboard_info *)(ipc_client->ipc_buf
 							+ sizeof(size_t));
 		memcpy(&client->dashboard, dashboard, sizeof(*dashboard));
-		client->render_needed = true;
+		client->render_needed = 2;
 	}
 
 	return 0;
@@ -1426,7 +1425,7 @@ static s32 client_init(struct cube_client *client)
 
 	client->state = CLI_ST_SHOWN;
 
-	client->render_needed = true;
+	client->render_needed = 2;
 
 	return 0;
 
