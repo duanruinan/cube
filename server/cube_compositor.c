@@ -3281,6 +3281,9 @@ static void set_kbd_led_status(struct compositor *comp, u32 led_status)
 	if (!comp)
 		return;
 
+	if (!c->kbd_dev)
+		return;
+
 	get_kbd_led_status(comp, &led_status_cur);
 	comp_debug("led_status_cur: %08X, req: %08X", led_status_cur,
 		   led_status);
@@ -3317,9 +3320,6 @@ static void set_kbd_led_status(struct compositor *comp, u32 led_status)
 		emit_evt(c->uinput_fd, EV_SYN, SYN_REPORT, 0);
 		changed = true;;
 	}
-
-	if (!c->kbd_dev)
-		return;
 
 	while (changed && (led_status_cur != led_status)) {
 		get_kbd_led_status(comp, &led_status_cur);
