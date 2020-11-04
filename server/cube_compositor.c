@@ -3318,6 +3318,9 @@ static void set_kbd_led_status(struct compositor *comp, u32 led_status)
 		changed = true;;
 	}
 
+	if (!c->kbd_dev)
+		return;
+
 	while (changed && (led_status_cur != led_status)) {
 		get_kbd_led_status(comp, &led_status_cur);
 		usleep(50);
