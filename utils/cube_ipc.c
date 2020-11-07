@@ -108,7 +108,7 @@ s32 cb_sendmsg(s32 sock, u8 *buf, size_t sz, struct cb_fds *fds)
 	msg.msg_flags = 0;
 	
 	do {
-		ret = sendmsg(sock, &msg, MSG_NOSIGNAL | MSG_DONTWAIT);
+		ret = sendmsg(sock, &msg, MSG_NOSIGNAL);
 	} while (ret < 0 && errno == EINTR);
 
 	if (ret < 0) {
@@ -151,7 +151,7 @@ s32 cb_recvmsg(s32 sock, u8 *buf, size_t sz, struct cb_fds *fds)
 	msg.msg_flags = 0;
 
 	do {
-		ret = recvmsg(sock, &msg, MSG_DONTWAIT);
+		ret = recvmsg(sock, &msg, 0);
 	} while (ret < 0 && errno == EINTR);
 
 	if (ret < 0) {
