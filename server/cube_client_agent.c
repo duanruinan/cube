@@ -1168,6 +1168,10 @@ static void ipc_proc(struct cb_client_agent *client)
 	buf = &client->ipc_buf[0] + sizeof(size_t);
 	flag = *((u32 *)buf);
 	tlv = (struct cb_tlv *)(buf + sizeof(u32));
+	if (tlv->tag == CB_TAG_UNKNOWN) {
+		clia_err("unknown TAG ~~~~~~~~~~~");
+		return;
+	}
 	assert(ipc_sz == (tlv->length + sizeof(*tlv) + sizeof(flag)));
 
 	switch (tlv->tag) {

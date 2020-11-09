@@ -3321,10 +3321,14 @@ static void set_kbd_led_status(struct compositor *comp, u32 led_status)
 		changed = true;;
 	}
 
-	while (changed && (led_status_cur != led_status)) {
-		get_kbd_led_status(comp, &led_status_cur);
-		usleep(50);
-	}
+	/*
+	 * some kbd do not respond for scrolllock setting.
+	 * while (changed && (led_status_cur != led_status)) {
+	 * 	get_kbd_led_status(comp, &led_status_cur);
+	 * 	usleep(50);
+	 * }
+	 */
+	usleep(2000);
 }
 
 static void scan_input_devs(struct cb_compositor *c, const char *input_dir)
