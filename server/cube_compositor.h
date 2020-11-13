@@ -87,6 +87,7 @@ struct cb_surface {
 	 * The protocal engine set the field.
 	 */
 	struct cb_buffer *buffer_pending;
+
 	/*
 	 * The buffer should be displayed (attached)
 	 * 

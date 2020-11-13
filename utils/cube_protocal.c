@@ -757,7 +757,7 @@ u8 *cb_dup_commit_ack_cmd(u8 *dst, u8 *src, u32 n, u64 ret)
 	map = (u32 *)(&tlv_map->payload[0]);
 	tlv_result = (struct cb_tlv *)(dst
 			+ map[CB_CMD_COMMIT_ACK_SHIFT-CB_CMD_OFFSET]);
-	*((u32 *)(&tlv_result->payload[0])) = ret;
+	*((u64 *)(&tlv_result->payload[0])) = ret;
 	return dst;
 }
 
@@ -831,7 +831,7 @@ u8 *cb_dup_bo_complete_cmd(u8 *dst, u8 *src, u32 n, u64 ret)
 	map = (u32 *)(&tlv_map->payload[0]);
 	tlv_result = (struct cb_tlv *)(dst
 			+ map[CB_CMD_BO_COMPLETE_SHIFT-CB_CMD_OFFSET]);
-	*((u32 *)(&tlv_result->payload[0])) = ret;
+	*((u64 *)(&tlv_result->payload[0])) = ret;
 	return dst;
 }
 
@@ -905,7 +905,7 @@ u8 *cb_dup_bo_flipped_cmd(u8 *dst, u8 *src, u32 n, u64 ret)
 	map = (u32 *)(&tlv_map->payload[0]);
 	tlv_result = (struct cb_tlv *)(dst
 			+ map[CB_CMD_BO_FLIPPED_SHIFT-CB_CMD_OFFSET]);
-	*((u32 *)(&tlv_result->payload[0])) = ret;
+	*((u64 *)(&tlv_result->payload[0])) = ret;
 	return dst;
 }
 

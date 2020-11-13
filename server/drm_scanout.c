@@ -3454,6 +3454,9 @@ static void drm_output_emit_bo_flipped(struct drm_output_state *os)
 	list_for_each_entry(pls, &os->plane_states, link) {
 		if (pls->fb) {
 			buffer = &pls->fb->base;
+			drm_debug("buffer %ux%u dirty: %08X",
+				  buffer->info.width, buffer->info.height,
+				  buffer->dirty);
 			if (scanout_clr_buffer_dirty(buffer, &os->output->base))
 				cb_signal_emit(&buffer->flip_signal, buffer);
 		}

@@ -800,9 +800,11 @@ static void bo_commit_proc(struct cb_client_agent *client, u8 *buf)
 
 	s->buffer_pending = buffer;
 	if (buffer->info.type == CB_BUF_TYPE_DMA) {
+		clia_debug("commit dmabuf");
 		s->use_renderer = false;
 		client->c->commit_dmabuf(client->c, s);
 	} else {
+		clia_debug("commit surface");
 		s->use_renderer = true;
 		client->c->commit_surface(client->c, s);
 	}

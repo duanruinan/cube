@@ -173,7 +173,7 @@ static void bo_commited_cb(bool success, void *userdata, u64 bo_id)
 		printf("failed to commit bo\n");
 		cli->stop(cli);
 	} else {
-		cli->timer_update(cli, client->timeout_timer, 500, 0);
+		//cli->timer_update(cli, client->timeout_timer, 500, 0);
 	}
 }
 
@@ -233,7 +233,7 @@ static void bo_flipped_cb(void *userdata, u64 bo_id)
 	s32 ret;
 
 	client->frame_cnt++;
-	cli->timer_update(cli, client->timeout_timer, 500, 0);
+	//cli->timer_update(cli, client->timeout_timer, 500, 0);
 	client->work_bo = 1 - client->work_bo;
 
 	c.bo_id = client->bos[1 - client->work_bo].bo_id;

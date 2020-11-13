@@ -483,7 +483,7 @@ static s32 repaint_cb(void *userdata)
 	struct cb_commit_info c;
 	s32 ret;
 
-	/* printf("[stat_tips] commit bo[%d]\n", client->work_bo); */
+	/* syslog(LOG_ERR, "[stat_tips] commit bo[%d]\n", client->work_bo); */
 	c.bo_id = client->bos[client->work_bo].bo_id;
 	c.surface_id = client->s.surface_id;
 
@@ -524,14 +524,17 @@ static s32 timeout_cb(void *userdata)
 	struct cb_commit_info c;
 	s32 ret;
 
+	syslog(LOG_ERR, "[stat_tips] timeout!!! recommit bo[%d]\n",
+		client->work_bo);
+	return 0;
 	if (client->bo_switched) {
-		/* printf("[stat_tips] timeout, recommit bo[%d]\n",
-			1 - client->work_bo); */
+		printf("[stat_tips] timeout, recommit bo[%d]\n",
+			1 - client->work_bo);
 
 		c.bo_id = client->bos[1 - client->work_bo].bo_id;
 	} else {
-		/* printf("[stat_tips] timeout, recommit bo[%d]\n",
-			client->work_bo); */
+		printf("[stat_tips] timeout, recommit bo[%d]\n",
+			client->work_bo);
 
 		c.bo_id = client->bos[client->work_bo].bo_id;
 	}

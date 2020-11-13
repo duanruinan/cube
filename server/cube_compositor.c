@@ -904,8 +904,6 @@ static void cancel_renderer_surface(struct cb_surface *surface, bool force)
 	surface->buffer_last = surface->buffer_cur;
 }
 
-static void cancel_dma_buf_by_output(struct cb_view *view, struct cb_output *o);
-
 static void cancel_so_tasks(struct cb_output *output)
 {
 	struct scanout_task *sot, *sot_next;
@@ -952,13 +950,15 @@ static void cancel_so_tasks(struct cb_output *output)
 		if (!surface)
 			continue;
 		if (view->direct_show) {
-			cancel_dma_buf_by_output(view, output);
+			/* cancel_dma_buf_by_output(view, output); */
 		} else {
+			/*
 			if (surface->output == output && surface->view) {
 				comp_debug("view %p's output is %d", view,
 					   output->pipe);
 				cancel_renderer_surface(surface, false);
 			}
+			*/
 		}
 	}
 	output->renderable_buffer_changed = false;
@@ -1362,6 +1362,269 @@ static void add_mc_buffer_to_task(struct cb_compositor *c,
 	}
 }
 
+static void disable_primary_renderer(struct cb_output *o)
+{
+	if (o->primary_renderer_disabled || o->primary_renderer_disable_pending)
+		return;
+
+	comp_warn("disable primary renderer");
+	o->primary_renderer_disable_pending = true;
+}
+
+static void enable_primary_renderer(struct cb_output *o)
+{
+	if (!o->primary_renderer_disabled || o->primary_renderer_enable_pending)
+		return;
+
+	comp_warn("enable primary renderer");
+	o->primary_renderer_enable_pending = true;
+}
+
+static bool prepare_dma_buf_planes(struct cb_surface *surface,
+				   struct cb_buffer *buffer)
+{
+	struct cb_view *view = surface->view;
+	struct cb_compositor *c = surface->c;
+	struct cb_output *o;
+	struct plane *plane;
+	u32 mask = view->output_mask;
+	s32 i, pipe;
+
+	for (i = 0; i < c->count_outputs; i++) {
+		o = c->outputs[i];
+		
+		pipe = o->pipe;
+		plane = view->planes[o->pipe];
+
+		if (!(mask & (1U << o->pipe))) {
+			if (plane) {
+				if (plane != o->primary_plane)
+					put_free_output_plane(o, plane);
+				view->planes[pipe] = NULL;
+			}
+			continue;
+		}
+
+		if (plane) {
+			if (plane != o->primary_plane)
+				put_free_output_plane(o, plane);
+			view->planes[pipe] = NULL;
+		}
+
+		if (!o->enabled)
+			continue;
+
+		if (!(plane && plane == o->primary_plane)) {
+			comp_debug("find plane for fmt %d, zpos %d",
+				   buffer->info.pix_fmt, view->zpos);
+			plane = find_free_output_plane(o, buffer->info.pix_fmt,
+					       view->zpos);
+		}
+		if (!plane) {
+			comp_warn("cannot find plane.");
+			if (primary_support_fmt(o, buffer->info.pix_fmt)) {
+				plane = o->primary_plane;
+				if (o->primary_renderer_disabled) {
+					comp_warn("output %d's primary already "
+						  "be used", o->pipe);
+					return false;
+				}
+				comp_warn("Use primary");
+				disable_primary_renderer(o);
+				view->planes[pipe] = plane;
+				if (!plane->scale_support) {
+					u32 w, h;
+
+					if (view->src_areas[pipe].pos.x == 0) {
+						w = o->crtc_view_port.w +
+						  o->crtc_view_port.pos.x -
+						  view->dst_areas[pipe].pos.x;
+						w = MIN(w, buffer->info.width);
+						view->src_areas[pipe].w = w;
+					}
+
+					if (view->src_areas[pipe].pos.y == 0) {
+						h = o->crtc_view_port.h +
+						  o->crtc_view_port.pos.y -
+						  view->dst_areas[pipe].pos.y;
+						h = MIN(h, buffer->info.height);
+						view->src_areas[pipe].h = h;
+					}
+					
+					view->dst_areas[pipe].w =
+						view->src_areas[pipe].w;
+					view->dst_areas[pipe].h =
+						view->src_areas[pipe].h;
+				}
+			} else {
+				return false;
+			}
+		} else {
+			comp_debug("get this plane zpos: %d, type %d",
+				   plane->zpos, plane->type);
+			get_free_output_plane(o, plane);
+			view->planes[pipe] = plane;
+			if (!plane->scale_support) {
+				u32 w, h;
+
+				if (view->src_areas[pipe].pos.x == 0) {
+					w = o->crtc_view_port.w +
+					    o->crtc_view_port.pos.x -
+						view->dst_areas[pipe].pos.x;
+					w = MIN(w, buffer->info.width);
+					view->src_areas[pipe].w = w;
+				}
+
+				if (view->src_areas[pipe].pos.y == 0) {
+					h = o->crtc_view_port.h +
+					    o->crtc_view_port.pos.y -
+						view->dst_areas[pipe].pos.y;
+					h = MIN(h, buffer->info.height);
+					view->src_areas[pipe].h = h;
+				}
+
+				view->dst_areas[pipe].w =
+					view->src_areas[pipe].w;
+				view->dst_areas[pipe].h =
+					view->src_areas[pipe].h;
+			}
+		}
+	}
+
+	return true;
+}
+
+static void dma_buf_flipped_cb(struct cb_listener *listener, void *data)
+{
+	struct cb_buffer *buffer = data;
+	struct cb_surface *surface = buffer->surface;
+	struct cb_client_agent *client = surface->client_agent;
+
+	comp_debug("del dma buf flipped listener begin");
+	list_del(&listener->link);
+	client->send_bo_flipped(client, buffer);
+	comp_debug("del dma buf flipped listener end");
+}
+
+static void dma_buf_completed_cb(struct cb_listener *listener, void *data)
+{
+	struct cb_buffer *buffer = data;
+	struct cb_surface *surface = buffer->surface;
+	struct cb_client_agent *client = surface->client_agent;
+
+	comp_debug("del dma buf complete listener begin");
+	list_del(&listener->link);
+	client->send_bo_complete(client, buffer);
+	buffer->completed_l_added = false;
+	comp_debug("del dma buf complete listener end");
+}
+
+static void scanout_pending_buffer(struct cb_compositor *c,
+				   struct cb_surface *s)
+{
+	struct cb_view *v;
+	struct cb_output *o;
+	u32 mask, diff;
+	s32 i, pipe;
+	struct plane *plane;
+	bool empty;
+	struct cb_buffer *buffer;
+
+	s->c = c;
+	v = s->view;
+	mask = v->output_mask;
+	s->buffer_pending->surface = s;
+	s->width = s->buffer_pending->info.width;
+	s->height = s->buffer_pending->info.height;
+
+	for (i = 0; i < c->count_outputs; i++) {
+		o = c->outputs[i];
+		pipe = o->pipe;
+		plane = v->planes[pipe];
+		comp_warn("Surface %p's plane: %p", s, plane);
+		if (plane && plane != o->primary_plane) {
+			comp_warn("put plane zpos: %d, type: %d",
+				plane->zpos, plane->type);
+			put_free_output_plane(o, plane);
+		} else {
+			if (o->primary_renderer_disabled) {
+				/* perhaps ! */
+				comp_warn("enable primary: %d, %d",
+					  o->primary_renderer_disable_pending,
+					  o->primary_renderer_enable_pending);
+				o->primary_renderer_disabled = false;
+			}
+		}
+		v->planes[pipe] = NULL;
+	}
+
+	/*
+	 * view changed, may be position changed or buffer changed.
+	 */
+	setup_view_output_mask(v, c);
+	diff = mask ^ v->output_mask;
+
+	prepare_dma_buf_planes(s, s->buffer_pending);
+	empty = true;
+	scanout_buffer_dirty_init(s->buffer_pending);
+	s->buffer_cur = s->buffer_pending;
+	
+	for (i = 0; i < c->count_outputs; i++) {
+		o = c->outputs[i];
+		if (!o->enabled)
+			continue;
+		comp_warn("view->output_mask: %08X", v->output_mask);
+		if (v->output_mask & (1U << o->pipe)) {
+			/* Set buffer dirty */
+			scanout_set_buffer_dirty(s->buffer_pending, o->output);
+		} else {
+			if (!((1U << o->pipe) & diff)) {
+				continue;
+			}
+		}
+		cb_compositor_repaint_by_output(o);
+		empty = false;
+	}
+
+	buffer = s->buffer_pending;
+	s->buffer_pending = NULL;
+	if (empty) {
+		s->buffer_cur = NULL;
+		return;
+	}
+	buffer->dma_buf_flipped_l.notify = dma_buf_flipped_cb;
+	comp_warn("add flipped listener for surface %p", s);
+	c->so->add_buffer_flip_notify(c->so, buffer,&buffer->dma_buf_flipped_l);
+	if (!buffer->completed_l_added) {
+		comp_warn("add completed listener for surface %p", s);
+		buffer->dma_buf_completed_l.notify = dma_buf_completed_cb;
+		c->so->add_buffer_complete_notify(c->so, buffer,
+						  &buffer->dma_buf_completed_l);
+		buffer->completed_l_added = true;
+	}
+	s->buffer_pending = NULL;
+}
+
+static void scanout_pending_dma_buf_surface(struct cb_compositor *c)
+{
+	struct cb_view *v;
+	struct cb_surface *s;
+
+	list_for_each_entry(v, &c->views, link) {
+		if (!v->direct_show)
+			continue;
+		if (!v->surface)
+			continue;
+
+		s = v->surface;
+		if (s->buffer_pending) {
+			comp_warn("surface %p has pending buffer %p",
+				  s, s->buffer_pending);
+			scanout_pending_buffer(c, s);
+		}
+	}
+}
+
 static void head_changed_cb(struct cb_listener *listener, void *data)
 {
 	struct cb_output *o = container_of(listener, struct cb_output,
@@ -1404,6 +1667,7 @@ static void head_changed_cb(struct cb_listener *listener, void *data)
 			o->pipe, o->repaint_status);
 		comp_notice("output %d is enabled. repaint_status: %d",
 			    o->pipe, o->repaint_status);
+		scanout_pending_dma_buf_surface(c);
 	} else {
 		/* update view port when connector is disconnected */
 		update_crtc_view_port(o);
@@ -1708,7 +1972,6 @@ static void output_flipped_cb(struct cb_listener *listener, void *data)
 	
 	comp_debug("--------------- OUTPUT %d flipped ---------------",
 		   o->pipe);
-	
 	if (!o->primary_renderer_disabled) {
 		if (o->primary_renderer_disable_pending) {
 			o->primary_renderer_disable_pending = false;
@@ -1731,6 +1994,8 @@ static s32 vflipped_timer_cb(void *data)
 {
 	struct cb_output *o = data;
 
+	comp_debug("--------------- OUTPUT %d vflipped ---------------",
+		   o->pipe);
 	if (o->primary_renderer_disabled) {
 		if (o->primary_renderer_enable_pending) {
 			o->primary_renderer_enable_pending = false;
@@ -1745,22 +2010,6 @@ static s32 vflipped_timer_cb(void *data)
 	o->vflipped_pending = false;
 
 	return 0;
-}
-
-static void disable_primary_renderer(struct cb_output *o)
-{
-	if (o->primary_renderer_disabled || o->primary_renderer_disable_pending)
-		return;
-
-	o->primary_renderer_disable_pending = true;
-}
-
-static void enable_primary_renderer(struct cb_output *o)
-{
-	if (!o->primary_renderer_disabled || o->primary_renderer_enable_pending)
-		return;
-
-	o->primary_renderer_enable_pending = true;
 }
 
 #ifdef TEST_VFLIPPED
@@ -3284,23 +3533,15 @@ static void set_kbd_led_status(struct compositor *comp, u32 led_status)
 	if (!c->kbd_dev)
 		return;
 
+	led_status &= (~(1U << CB_KBD_LED_STATUS_SCROLLL));
+
 	get_kbd_led_status(comp, &led_status_cur);
+	led_status_cur &= (~(1U << CB_KBD_LED_STATUS_SCROLLL));
 	comp_debug("led_status_cur: %08X, req: %08X", led_status_cur,
 		   led_status);
 
-	if ((led_status_cur & (1 << CB_KBD_LED_STATUS_SCROLLL)) !=
-	    (led_status & (1 << CB_KBD_LED_STATUS_SCROLLL))) {
-		/* scrolllock down */
-		comp_debug("Set scrolllock");
-		emit_evt(c->uinput_fd, EV_KEY, KEY_SCROLLLOCK, 1);
-		emit_evt(c->uinput_fd, EV_SYN, SYN_REPORT, 0);
-		emit_evt(c->uinput_fd, EV_KEY, KEY_SCROLLLOCK, 0);
-		emit_evt(c->uinput_fd, EV_SYN, SYN_REPORT, 0);
-		changed = true;;
-	}
-
-	if ((led_status_cur & (1 << CB_KBD_LED_STATUS_NUML)) !=
-	    (led_status & (1 << CB_KBD_LED_STATUS_NUML))) {
+	if ((led_status_cur & (1U << CB_KBD_LED_STATUS_NUML)) !=
+	    (led_status & (1U << CB_KBD_LED_STATUS_NUML))) {
 		/* numlock down */
 		comp_debug("Set numberlock");
 		emit_evt(c->uinput_fd, EV_KEY, KEY_NUMLOCK, 1);
@@ -3310,8 +3551,8 @@ static void set_kbd_led_status(struct compositor *comp, u32 led_status)
 		changed = true;;
 	}
 
-	if ((led_status_cur & (1 << CB_KBD_LED_STATUS_CAPSL)) !=
-	    (led_status & (1 << CB_KBD_LED_STATUS_CAPSL))) {
+	if ((led_status_cur & (1U << CB_KBD_LED_STATUS_CAPSL)) !=
+	    (led_status & (1U << CB_KBD_LED_STATUS_CAPSL))) {
 		/* capslock down */
 		comp_debug("Set capslock");
 		emit_evt(c->uinput_fd, EV_KEY, KEY_CAPSLOCK, 1);
@@ -3321,14 +3562,10 @@ static void set_kbd_led_status(struct compositor *comp, u32 led_status)
 		changed = true;;
 	}
 
-	/*
-	 * some kbd do not respond for scrolllock setting.
-	 * while (changed && (led_status_cur != led_status)) {
-	 * 	get_kbd_led_status(comp, &led_status_cur);
-	 * 	usleep(50);
-	 * }
-	 */
-	usleep(2000);
+	while (changed && (led_status_cur != led_status)) {
+		get_kbd_led_status(comp, &led_status_cur);
+		usleep(50);
+	}
 }
 
 static void scan_input_devs(struct cb_compositor *c, const char *input_dir)
@@ -3686,6 +3923,8 @@ static void cb_compositor_commit_surface(struct compositor *comp,
 				   o->pipe, o->renderable_buffer_changed);
 		}
 	}
+
+	surface->buffer_pending = NULL;
 }
 
 static bool try_prepare_dma_buf_plane(struct cb_compositor *c,
@@ -3716,118 +3955,7 @@ static bool try_prepare_dma_buf_plane(struct cb_compositor *c,
 	return true;
 }
 
-static bool prepare_dma_buf_planes(struct cb_surface *surface,
-				   struct cb_buffer *buffer)
-{
-	struct cb_view *view = surface->view;
-	struct cb_compositor *c = surface->c;
-	struct cb_output *o;
-	struct plane *plane;
-	u32 mask = view->output_mask;
-	s32 i, pipe;
-
-	for (i = 0; i < c->count_outputs; i++) {
-		o = c->outputs[i];
-		if (!o->enabled)
-			continue;
-		pipe = o->pipe;
-		plane = view->planes[o->pipe];
-
-		if (!(mask & (1U << o->pipe))) {
-			if (plane) {
-				if (plane != o->primary_plane)
-					put_free_output_plane(o, plane);
-				view->planes[pipe] = NULL;
-			}
-			continue;
-		}
-
-		if (plane) {
-			if (plane != o->primary_plane)
-				put_free_output_plane(o, plane);
-			view->planes[pipe] = NULL;
-		}
-
-		if (!(plane && plane == o->primary_plane)) {
-			comp_debug("find plane for fmt %d, zpos %d",
-				   buffer->info.pix_fmt, view->zpos);
-			plane = find_free_output_plane(o, buffer->info.pix_fmt,
-					       view->zpos);
-		}
-		if (!plane) {
-			comp_warn("cannot find plane.");
-			if (primary_support_fmt(o, buffer->info.pix_fmt)) {
-				plane = o->primary_plane;
-				if (o->primary_renderer_disabled) {
-					comp_warn("output %d's primary already "
-						  "be used", o->pipe);
-					return false;
-				}
-				comp_warn("Use primary");
-				disable_primary_renderer(o);
-				view->planes[pipe] = plane;
-				if (!plane->scale_support) {
-					u32 w, h;
-
-					if (view->src_areas[pipe].pos.x == 0) {
-						w = o->crtc_view_port.w +
-						  o->crtc_view_port.pos.x -
-						  view->dst_areas[pipe].pos.x;
-						w = MIN(w, buffer->info.width);
-						view->src_areas[pipe].w = w;
-					}
-
-					if (view->src_areas[pipe].pos.y == 0) {
-						h = o->crtc_view_port.h +
-						  o->crtc_view_port.pos.y -
-						  view->dst_areas[pipe].pos.y;
-						h = MIN(h, buffer->info.height);
-						view->src_areas[pipe].h = h;
-					}
-					
-					view->dst_areas[pipe].w =
-						view->src_areas[pipe].w;
-					view->dst_areas[pipe].h =
-						view->src_areas[pipe].h;
-				}
-			} else {
-				return false;
-			}
-		} else {
-			comp_debug("get this plane zpos: %d, type %d",
-				   plane->zpos, plane->type);
-			get_free_output_plane(o, plane);
-			view->planes[pipe] = plane;
-			if (!plane->scale_support) {
-				u32 w, h;
-
-				if (view->src_areas[pipe].pos.x == 0) {
-					w = o->crtc_view_port.w +
-					    o->crtc_view_port.pos.x -
-						view->dst_areas[pipe].pos.x;
-					w = MIN(w, buffer->info.width);
-					view->src_areas[pipe].w = w;
-				}
-
-				if (view->src_areas[pipe].pos.y == 0) {
-					h = o->crtc_view_port.h +
-					    o->crtc_view_port.pos.y -
-						view->dst_areas[pipe].pos.y;
-					h = MIN(h, buffer->info.height);
-					view->src_areas[pipe].h = h;
-				}
-
-				view->dst_areas[pipe].w =
-					view->src_areas[pipe].w;
-				view->dst_areas[pipe].h =
-					view->src_areas[pipe].h;
-			}
-		}
-	}
-
-	return true;
-}
-
+/*
 static void cancel_dma_buf_by_output(struct cb_view *view, struct cb_output *o)
 {
 	struct cb_surface *surface = view->surface;
@@ -3863,6 +3991,7 @@ static void cancel_dma_buf_by_output(struct cb_view *view, struct cb_output *o)
 		}
 	}
 }
+*/
 
 static bool is_yuv(enum cb_pix_fmt pix_fmt)
 {
@@ -3913,31 +4042,6 @@ static void add_dma_buf_to_task(struct cb_output *o, struct cb_surface *surface,
 	}
 }
 
-static void dma_buf_flipped_cb(struct cb_listener *listener, void *data)
-{
-	struct cb_buffer *buffer = data;
-	struct cb_surface *surface = buffer->surface;
-	struct cb_client_agent *client = surface->client_agent;
-
-	comp_debug("del dma buf flipped listener begin");
-	list_del(&listener->link);
-	client->send_bo_flipped(client, buffer);
-	comp_debug("del dma buf flipped listener end");
-}
-
-static void dma_buf_completed_cb(struct cb_listener *listener, void *data)
-{
-	struct cb_buffer *buffer = data;
-	struct cb_surface *surface = buffer->surface;
-	struct cb_client_agent *client = surface->client_agent;
-
-	comp_debug("del dma buf complete listener begin");
-	list_del(&listener->link);
-	client->send_bo_complete(client, buffer);
-	buffer->completed_l_added = false;
-	comp_debug("del dma buf complete listener end");
-}
-
 static void cb_compositor_commit_dma_buf(struct compositor *comp,
 					 struct cb_surface *surface)
 {
@@ -3966,7 +4070,7 @@ static void cb_compositor_commit_dma_buf(struct compositor *comp,
 		for (i = 0; i < c->count_outputs; i++) {
 			o = c->outputs[i];
 			pipe = o->pipe;
-			plane = view->planes[o->pipe];
+			plane = view->planes[pipe];
 			if (view->output_mask & (1U << o->pipe)) {
 				if (plane != o->primary_plane) {
 					comp_warn("put plane zpos: %d, type "
@@ -3998,6 +4102,7 @@ static void cb_compositor_commit_dma_buf(struct compositor *comp,
 			o = c->outputs[i];
 			if (!o->enabled)
 				continue;
+			comp_debug("view->output_mask: %08X",view->output_mask);
 			if (view->output_mask & (1U << o->pipe)) {
 				/* Set buffer dirty */
 				scanout_set_buffer_dirty(
@@ -4023,8 +4128,9 @@ static void cb_compositor_commit_dma_buf(struct compositor *comp,
 		}
 
 		if (empty) {
-			comp_debug("nothing to be commit.");
-			printf("nothing to be commit.\n");
+			comp_warn("commit DMA-BUF %p for surface %p deferred",
+				  surface->buffer_pending, surface);
+			surface->buffer_cur = NULL;
 			return;
 		}
 
@@ -4044,6 +4150,8 @@ static void cb_compositor_commit_dma_buf(struct compositor *comp,
 			buffer->completed_l_added = true;
 		}
 	}
+
+	surface->buffer_pending = NULL;
 }
 
 static struct cb_buffer *cb_compositor_import_rd_dmabuf(
