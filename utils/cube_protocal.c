@@ -1768,3 +1768,139 @@ s32 cb_server_parse_set_cap_cmd(u8 *data, u64 *cap)
 	return 0;
 }
 
+u8 *cb_client_create_get_edid_cmd(u64 pipe, u32 *n)
+{
+	struct cb_tlv *tlv;
+	u32 size, *head;
+	u8 *p;
+
+	size = sizeof(*tlv) + sizeof(u32) + sizeof(pipe);
+	p = calloc(1, size);
+	if (!p)
+		return NULL;
+
+	head = (u32 *)p;
+	*head = 0xFE; /* magic or else */
+
+	tlv = (struct cb_tlv *)(p+sizeof(u32));
+	tlv->tag = CB_TAG_GET_EDID;
+	tlv->length = sizeof(pipe);
+	memcpy(&tlv->payload[0], &pipe, tlv->length);
+	*n = size;
+
+	return p;
+}
+
+u8 *cb_dup_get_edid_cmd(u8 *dst, u8 *src, u32 n, u64 pipe)
+{
+	struct cb_tlv *tlv;
+	u64 *p;
+
+	if (!dst || !src || !n)
+		return NULL;
+
+	memcpy(dst, src, n);
+
+	tlv = (struct cb_tlv *)(dst+sizeof(u32));
+	p = (u64 *)(&tlv->payload[0]);
+	*p = pipe;
+
+	return dst;
+}
+
+s32 cb_server_parse_get_edid_cmd(u8 *data, u64 *pipe)
+{
+	struct cb_tlv *tlv;
+
+	if (!pipe)
+		return -EINVAL;
+
+	tlv = (struct cb_tlv *)(data+sizeof(u32));
+	if (tlv->tag != CB_TAG_GET_EDID)
+		return -EINVAL;
+
+	*pipe = *((u64 *)(&tlv->payload[0]));
+
+	return 0;
+}
+
+u8 *cb_server_create_get_edid_ack_cmd(u64 pipe, u8 *edid, u64 edid_sz,
+				      bool avail, u32 *n)
+{
+	struct cb_tlv *tlv;
+	u32 size, *head;
+	struct edid_desc *edid_desc;
+	u8 *p;
+
+	if (!n)
+		return NULL;
+
+	size = sizeof(*tlv) + sizeof(u32) + sizeof(*edid_desc) + edid_sz;
+	p = calloc(1, size);
+	if (!p)
+		return NULL;
+
+	head = (u32 *)p;
+	*head = 0xFE;
+
+	tlv = (struct cb_tlv *)(p + sizeof(u32));
+	tlv->tag = CB_TAG_GET_EDID_ACK;
+	tlv->length = sizeof(*edid_desc) + edid_sz;
+	edid_desc = (struct edid_desc *)(&(tlv->payload[0]));
+	edid_desc->avail = avail;
+	edid_desc->pipe = pipe;
+	edid_desc->edid_sz = edid_sz;
+	if (avail && edid)
+		memcpy(&edid_desc->edid[0], edid, edid_sz);
+
+	*n = size;
+
+	return p;
+}
+
+u8 *cb_dup_get_edid_ack_cmd(u8 *dst, u8 *src, u32 n, u64 pipe, u8 *edid,
+			    u64 edid_sz, bool avail)
+{
+	struct cb_tlv *tlv;
+	struct edid_desc *edid_desc;
+
+	if (!edid || !dst || !src)
+		return NULL;
+
+	memcpy(dst, src, n);
+	tlv = (struct cb_tlv *)(dst+sizeof(u32));
+	edid_desc = (struct edid_desc *)(&(tlv->payload[0]));
+	edid_desc->avail = avail;
+	edid_desc->pipe = pipe;
+	edid_desc->edid_sz = edid_sz;
+	if (avail)
+		memcpy(&edid_desc->edid[0], edid, edid_sz);
+
+	return dst;
+}
+
+s32 cb_client_parse_get_edid_ack_cmd(u8 *data, u64 *pipe, u8 *edid, u64 *sz)
+{
+	struct cb_tlv *tlv;
+	struct edid_desc *edid_desc;
+
+	if (!pipe || !edid || !sz)
+		return -EINVAL;
+
+	tlv = (struct cb_tlv *)(data+sizeof(u32));
+	if (tlv->tag != CB_TAG_GET_EDID_ACK)
+		return -EINVAL;
+
+	edid_desc = (struct edid_desc *)(&tlv->payload[0]);
+	*pipe = edid_desc->pipe;
+	if (!edid_desc->avail) {
+		*sz = 0;
+		return -ENOENT; /* E-EDID not available */
+	}
+
+	*sz = edid_desc->edid_sz;
+	memcpy(edid, &edid_desc->edid[0], edid_desc->edid_sz);
+
+	return 0;
+}
+

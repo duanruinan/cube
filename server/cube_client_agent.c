@@ -472,6 +472,68 @@ static void cb_client_agent_send_mc_flipped(struct cb_client_agent *client,
 	}
 }
 
+static void cb_client_agent_get_and_send_edid(struct cb_client_agent *client,
+					      u64 output_index)
+{
+	struct compositor *c;
+	s32 ret;
+	s32 pipe = output_index;
+	u8 *p, *edid_tmp;
+	size_t edid_tmp_sz, length;
+	bool avail;
+
+	if (!client)
+		return;
+
+	c = client->c;
+	edid_tmp = (u8 *)malloc(512);
+	assert(edid_tmp);
+	ret = c->retrieve_edid(c, pipe, edid_tmp, &edid_tmp_sz);
+	if (ret < 0) {
+		clia_err("failed to get E-EDID for pipe %lu", pipe);
+		if (ret == -ENOENT)
+			clia_err("E-EDID not available for pipe %lu", pipe);
+		avail = false;
+	} else {
+		avail = true;
+		clia_notice("get E-EDID for pipe %lu ok.", pipe);
+	}
+
+	p = cb_dup_get_edid_ack_cmd(client->get_edid_ack_cmd,
+				    client->get_edid_ack_cmd_t,
+				    client->get_edid_ack_len,
+				    output_index, edid_tmp, edid_tmp_sz, avail);
+	if (!p) {
+		clia_err("failed to dup EDID ack cmd.");
+		return;
+	}
+	free(edid_tmp);
+
+	length = client->get_edid_ack_len;
+	do {
+		ret = cb_sendmsg(client->sock, (u8 *)&length, sizeof(size_t),
+				 NULL);
+	} while (ret == -EAGAIN);
+	clia_debug("send get edid ack cmd length: %llu", length);
+	if (ret < 0) {
+		clia_err("failed to send get edid ack cmd length. %s",
+			 strerror(errno));
+		client->c->rm_client(client->c, client);
+		return;
+	}
+
+	do {
+		ret = cb_sendmsg(client->sock, client->get_edid_ack_cmd,
+				 length, NULL);
+	} while (ret == -EAGAIN);
+	clia_debug("send get edid ack cmd: %llu", length);
+	if (ret < 0) {
+		clia_err("failed to send get edid ack cmd %s",
+			 strerror(errno));
+		client->c->rm_client(client->c, client);
+	}
+}
+
 static void cb_client_agent_send_kbd_led_status(struct cb_client_agent *client,
 						u32 led_status)
 {
@@ -495,7 +557,7 @@ static void cb_client_agent_send_kbd_led_status(struct cb_client_agent *client,
 	} while (ret == -EAGAIN);
 	clia_debug("send get kbd led st ack cmd length: %llu", length);
 	if (ret < 0) {
-		clia_err("failed to send get kbd led st ack cmd. %s",
+		clia_err("failed to send get kbd led st ack cmd length. %s",
 			 strerror(errno));
 		client->c->rm_client(client->c, client);
 		return;
@@ -718,6 +780,11 @@ void cb_client_agent_destroy(struct cb_client_agent *client)
 		free(client->kbd_led_status_ack_cmd_t);
 	if (client->kbd_led_status_ack_cmd)
 		free(client->kbd_led_status_ack_cmd);
+
+	if (client->get_edid_ack_cmd_t)
+		free(client->get_edid_ack_cmd_t);
+	if (client->get_edid_ack_cmd)
+		free(client->get_edid_ack_cmd);
 
 	free(client);
 }
@@ -1160,7 +1227,7 @@ static void ipc_proc(struct cb_client_agent *client)
 	size_t ipc_sz;
 	u32 flag;
 	struct cb_tlv *tlv;
-	u64 cap, raw_input_en;
+	u64 cap, raw_input_en, pipe;
 	u32 led_status;
 
 	if (!client)
@@ -1212,6 +1279,14 @@ static void ipc_proc(struct cb_client_agent *client)
 				client->c->set_mouse_updated_notify(client->c,
 					&client->mc_flipped_l);
 			}
+		}
+		return;
+	case CB_TAG_GET_EDID:
+		if (cb_server_parse_get_edid_cmd(buf, &pipe) < 0) {
+			clia_err("failed to parse get edid cmd.");
+		} else {
+			clia_notice("receive get edid cmd. pipe: %lu", pipe);
+			cb_client_agent_get_and_send_edid(client, pipe);
 		}
 		return;
 	case CB_TAG_WIN:
@@ -1444,6 +1519,13 @@ struct cb_client_agent *cb_client_agent_create(s32 sock,
 	client->kbd_led_status_ack_cmd = malloc(n);
 	assert(client->kbd_led_status_ack_cmd);
 	client->kbd_led_status_ack_len = n;
+
+	client->get_edid_ack_cmd_t =
+		cb_server_create_get_edid_ack_cmd(0, NULL, 512, false, &n);
+	assert(client->get_edid_ack_cmd_t);
+	client->get_edid_ack_cmd = malloc(n);
+	assert(client->get_edid_ack_cmd);
+	client->get_edid_ack_len = n;
 
 	client->send_surface_ack = cb_client_agent_send_surface_ack;
 	client->send_view_ack = cb_client_agent_send_view_ack;

@@ -2059,8 +2059,11 @@ static s32 drm_head_copy_edid(struct head *h, u8 *data, size_t *length)
 	if (!data || !length)
 		return -EINVAL;
 
+	if (!head->base.connected)
+		return -ENOENT;
+
 	if (!head->edid.data || !head->edid.length)
-		return -ENODEV;
+		return -ENOENT;
 
 	*length = head->edid.length;
 	memcpy(data, head->edid.data, head->edid.length);

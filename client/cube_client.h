@@ -85,6 +85,12 @@ struct cb_client {
 	s32 (*set_destroyed_cb)(struct cb_client *client, void *userdata,
 				void (*destroyed_cb)(void *userdata));
 	void (*set_raw_input_en)(struct cb_client *client, bool en);
+	s32 (*send_get_edid)(struct cb_client *client, u64 pipe);
+	s32 (*set_get_edid_cb)(struct cb_client *client, void *userdata,
+			       void (*get_edid_cb)(void *userdata,
+			       			   u64 pipe,
+			       			   u8 *edid,
+			       			   size_t edid_len));
 	s32 (*send_set_kbd_led_st)(struct cb_client *client,u32 led_status);
 	s32 (*send_get_kbd_led_st)(struct cb_client *client);
 	s32 (*set_kbd_led_st_cb)(struct cb_client *client, void *userdata,

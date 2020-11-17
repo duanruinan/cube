@@ -63,6 +63,8 @@ void usage(void)
 	fprintf(stderr, "\t\t1366x768@60 72MHz RB Timing:\n"
 			"\t\t\t1:72000:1366:1380:1436:1500:0"
 			":768:769:772:800:0:60:0:1:1\n");
+	fprintf(stderr, "cube_manager --edid pipe\n");
+	fprintf(stderr, "\tGet E-EDID by given connector index.\n");
 	fprintf(stderr, "cube_manager --detect-monitor\n");
 }
 
@@ -73,10 +75,11 @@ static struct option options[] = {
 	{"enumerate", 0, NULL, 'e'},
 	{"create-mode", 1, NULL, 'c'},
 	{"detect-monitor", 0, NULL, 'd'},
+	{"edid", 1, NULL, 'x'},
 	{NULL, 0, NULL, 0},
 };
 
-static char short_options[] = "l:is:ec:d";
+static char short_options[] = "l:is:ec:dx:";
 
 struct cube_manager {
 	struct cb_client *client;
@@ -84,8 +87,10 @@ struct cube_manager {
 	struct cb_debug_flags dbg;
 	bool log_pending;
 	bool query_layout_pending;
+	bool query_edid_pending;
 	bool enumerate_pending;
 	s32 enumerate_pipe;
+	s32 edid_pipe;
 	bool change_layout_pending;
 	bool create_mode_pending;
 	struct mode_info custom_mode;
@@ -393,6 +398,15 @@ static void layout_query_cb(void *userdata)
 		printf("\tenabled: %d\n", disp->enabled);
 	}
 
+	if (manager->query_edid_pending) {
+		manager->query_edid_pending = false;
+		ret = client->send_get_edid(client, (u64)manager->edid_pipe);
+		if (ret) {
+			fprintf(stderr, "failed to send get edid cmd.\n");
+		}
+		return;
+	}
+
 	if (manager->enumerate_pending) {
 		ret = client->enumerate_mode(client, manager->enumerate_pipe,
 					     NULL, false, NULL);
@@ -533,6 +547,18 @@ static void hpd_cb(void *userdata, struct cb_connector_info *info)
 		conn_info.pixel_freq_cur / 1000.0f);
 }
 
+static void query_edid_cb(void *userdata, u64 pipe, u8 *edid, size_t edid_len)
+{
+	s32 i;
+
+	printf("EDID pipe: %lu Size: %lu\n", pipe, edid_len);
+	for (i = 0; i < edid_len; i++) {
+		printf("%02X ", edid[i]);
+		if (!((i+1) % 16))
+			printf("\n");
+	}
+}
+
 s32 main(s32 argc, char **argv)
 {
 	s32 ch;
@@ -559,6 +585,7 @@ s32 main(s32 argc, char **argv)
 	client->set_enumerate_mode_cb(client, manager, enumerate_mode_cb);
 	client->set_create_mode_cb(client, manager, mode_created_cb);
 	client->set_hpd_cb(client, manager, hpd_cb);
+	client->set_get_edid_cb(client, manager, query_edid_cb);
 
 	while ((ch = getopt_long(argc, argv, short_options,
 				 options, NULL)) != -1) {
@@ -592,6 +619,11 @@ s32 main(s32 argc, char **argv)
 		case 'd':
 			manager->query_layout_pending = true;
 			manager->detect_mode = true;
+			break;
+		case 'x':
+			manager->query_layout_pending = true;
+			manager->query_edid_pending = true;
+			manager->edid_pipe = atoi(optarg);
 			break;
 		default:
 			usage();

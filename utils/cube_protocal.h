@@ -117,6 +117,20 @@ enum cb_cmd_shift {
 	CB_CMD_LAST_SHIFT,
 };
 
+/*
+ * E-EDID descriptor
+ *     avail:   available or not.
+ *     pipe:    which connector's E-EDID.
+ *     edid_sz: E-EDID blob's size, typically is 128 or 256.
+ *     edid:    blob data.
+ */
+struct edid_desc {
+	bool avail;
+	u64 pipe;
+	size_t edid_sz;
+	u8 edid[0];
+};
+
 enum cb_tag {
 	CB_TAG_UNKNOWN = 0,
 	CB_TAG_RAW_INPUT,
@@ -125,6 +139,8 @@ enum cb_tag {
 	CB_TAG_GET_KBD_LED_STATUS,
 	CB_TAG_GET_KBD_LED_STATUS_ACK,
 	CB_TAG_SET_CAPABILITY,
+	CB_TAG_GET_EDID,
+	CB_TAG_GET_EDID_ACK,
 	CB_TAG_WIN,
 	CB_TAG_MAP, /* array of u32 */
 	CB_TAG_RESULT, /* for all ACK CMDs. u64 */
@@ -601,6 +617,26 @@ u8 *cb_server_create_mc_flipped_cmd(u64 ret, u32 *n);
 u8 *cb_dup_mc_flipped_cmd(u8 *dst, u8 *src, u32 n, u64 ret);
 /* client: parse mc flipped notify */
 u64 cb_client_parse_mc_flipped_cmd(u8 *data);
+
+/* client: create get E-EDID command */
+u8 *cb_client_create_get_edid_cmd(u64 pipe, u32 *n);
+u8 *cb_dup_get_edid_cmd(u8 *dst, u8 *src, u32 n, u64 pipe);
+/* server: parse get E-EDID command, return pipe number. */
+s32 cb_server_parse_get_edid_cmd(u8 *data, u64 *pipe);
+
+/* server: create get E-EDID ack command */
+u8 *cb_server_create_get_edid_ack_cmd(u64 pipe, u8 *edid, u64 edid_sz,
+				      bool avail, u32 *n);
+u8 *cb_dup_get_edid_ack_cmd(u8 *dst, u8 *src, u32 n, u64 pipe, u8 *edid,
+			    u64 edid_sz, bool avail);
+/*
+ * client: parse get E-EDID ack command, return length and edid data
+ *         return
+ *                  0: success
+ *            -EINVAL: invalid argument.
+ *            -ENOENT: E-EDID not available.
+ */
+s32 cb_client_parse_get_edid_ack_cmd(u8 *data, u64 *pipe, u8 *edid, u64 *sz);
 
 #pragma pack(pop)
 

@@ -104,6 +104,14 @@ struct client {
 	u8 *shell_tx_cmd;
 	u32 shell_tx_len;
 
+	u8 *get_edid_cmd_t;
+	u8 *get_edid_cmd;
+	u32 get_edid_len;
+
+	u8 edid[512];
+	size_t edid_sz;
+	u64 edid_pipe;
+
 	u8 *set_kbd_led_st_cmd_t;
 	u8 *set_kbd_led_st_cmd;
 	u32 set_kbd_led_st_len;
@@ -114,6 +122,10 @@ struct client {
 	u8 *raw_input_en_cmd_t;
 	u8 *raw_input_en_cmd;
 	u32 raw_input_en_len;
+
+	void *get_edid_cb_userdata;
+	void (*get_edid_cb)(void *userdata, u64 pipe, u8 *edid,
+			    size_t edid_len);
 
 	void *raw_input_evts_cb_userdata;
 	void (*raw_input_evts_cb)(void *userdata, struct cb_raw_input_event *,
@@ -218,6 +230,12 @@ static void destroy(struct cb_client *client)
 
 		if (cli->shell_tx_cmd)
 			free(cli->shell_tx_cmd);
+
+		if (cli->get_edid_cmd_t)
+			free(cli->get_edid_cmd_t);
+
+		if (cli->get_edid_cmd)
+			free(cli->get_edid_cmd);
 
 		if (cli->set_kbd_led_st_cmd_t)
 			free(cli->set_kbd_led_st_cmd_t);
@@ -391,6 +409,50 @@ static s32 set_kbd_led_st_cb(struct cb_client *client, void *userdata,
 	return 0;
 }
 
+static s32 send_get_edid(struct cb_client *client, u64 pipe)
+{
+	struct client *cli = to_client(client);
+	u8 *cmd;
+	size_t length;
+	s32 ret;
+
+	if (!client)
+		return -EINVAL;
+
+	cmd = cb_dup_get_edid_cmd(cli->get_edid_cmd,
+				  cli->get_edid_cmd_t,
+				  cli->get_edid_len,
+				  pipe);
+	if (!cmd)
+		return -EINVAL;
+
+	length = cli->get_edid_len;
+
+	do {
+		ret = cb_sendmsg(cli->sock, (u8 *)&length, sizeof(size_t),
+				 NULL);
+	} while (ret == -EAGAIN);
+	if (ret < 0) {
+		fprintf(stderr, "failed to send get edid length. %s\n",
+			strerror(errno));
+		stop(&cli->base);
+		return -errno;
+	}
+
+	do {
+		ret = cb_sendmsg(cli->sock, cli->get_edid_cmd, length,
+				 NULL);
+	} while (ret == -EAGAIN);
+	if (ret < 0) {
+		fprintf(stderr, "failed to send get edid cmd. %s\n",
+			strerror(errno));
+		stop(&cli->base);
+		return -errno;
+	}
+
+	return 0;
+}
+
 static s32 send_set_kbd_led_st(struct cb_client *client, u32 led_status)
 {
 	struct client *cli = to_client(client);
@@ -549,6 +611,22 @@ static s32 set_ready_cb(struct cb_client *client, void *userdata,
 
 	cli->ready_cb_userdata = userdata;
 	cli->ready_cb = ready_cb;
+	return 0;
+}
+
+static s32 set_get_edid_cb(struct cb_client *client, void *userdata,
+			   void (*get_edid_cb)(void *userdata,
+			   		       u64 pipe,
+			   		       u8 *edid,
+			   		       size_t edid_len))
+{
+	struct client *cli = to_client(client);
+
+	if (!client || !get_edid_cb)
+		return -EINVAL;
+
+	cli->get_edid_cb_userdata = userdata;
+	cli->get_edid_cb = get_edid_cb;
 	return 0;
 }
 
@@ -1509,7 +1587,7 @@ static void client_ipc_proc(struct client *cli)
 {
 	u8 *buf;
 	size_t ipc_sz;
-	u32 flag;
+	u32 flag, ret;
 	struct cb_tlv *tlv;
 	u64 id;
 	struct cb_raw_input_event *evts;
@@ -1524,7 +1602,8 @@ static void client_ipc_proc(struct client *cli)
 	tlv = (struct cb_tlv *)(buf + sizeof(u32));
 	assert(ipc_sz == (tlv->length + sizeof(*tlv) + sizeof(flag)));
 	assert(tlv->tag == CB_TAG_WIN || tlv->tag == CB_TAG_RAW_INPUT ||
-		tlv->tag == CB_TAG_GET_KBD_LED_STATUS_ACK);
+		tlv->tag == CB_TAG_GET_KBD_LED_STATUS_ACK ||
+		tlv->tag == CB_TAG_GET_EDID_ACK);
 
 	if (tlv->tag == CB_TAG_RAW_INPUT) {
 		evts = cb_client_parse_raw_input_evt_cmd(buf, &count_evts);
@@ -1535,6 +1614,30 @@ static void client_ipc_proc(struct client *cli)
 		if (cli->raw_input_evts_cb) {
 			cli->raw_input_evts_cb(cli->raw_input_evts_cb_userdata,
 					       evts, count_evts);
+		}
+		return;
+	}
+
+	if (tlv->tag == CB_TAG_GET_EDID_ACK) {
+		ret = cb_client_parse_get_edid_ack_cmd(buf,
+						       &cli->edid_pipe,
+						       &cli->edid[0],
+						       &cli->edid_sz);
+		if (ret < 0) {
+			if (ret == -ENOENT) {
+				fprintf(stderr,
+					"edid of pipe %lu not available\n",
+					cli->edid_pipe);
+				cli->edid_sz = 0;
+			} else {
+				return;
+			}
+		}
+
+		if (cli->get_edid_cb) {
+			cli->get_edid_cb(cli->get_edid_cb_userdata,
+					 cli->edid_pipe,
+					 cli->edid, cli->edid_sz);
 		}
 		return;
 	}
@@ -1936,6 +2039,12 @@ struct cb_client *cb_client_create(s32 seat)
 		goto err;
 	cli->shell_tx_cmd = malloc(cli->shell_tx_len);
 
+	cli->get_edid_cmd_t = cb_client_create_get_edid_cmd(
+					0, &cli->get_edid_len);
+	if (!cli->get_edid_cmd_t)
+		goto err;
+	cli->get_edid_cmd = malloc(cli->get_edid_len);
+
 	cli->set_kbd_led_st_cmd_t = cb_client_create_set_kbd_led_st_cmd(
 					0, &cli->set_kbd_led_st_len);
 	if (!cli->set_kbd_led_st_cmd_t)
@@ -1961,6 +2070,8 @@ struct cb_client *cb_client_create(s32 seat)
 	cli->base.set_ready_cb = set_ready_cb;
 	cli->base.set_destroyed_cb = set_destroyed_cb;
 	cli->base.set_raw_input_en = set_raw_input_en;
+	cli->base.send_get_edid = send_get_edid;
+	cli->base.set_get_edid_cb = set_get_edid_cb;
 	cli->base.send_set_kbd_led_st = send_set_kbd_led_st;
 	cli->base.send_get_kbd_led_st = send_get_kbd_led_st;
 	cli->base.set_kbd_led_st_cb = set_kbd_led_st_cb;

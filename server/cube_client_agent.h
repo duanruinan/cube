@@ -99,6 +99,10 @@ struct cb_client_agent {
 	u8 *kbd_led_status_ack_cmd;
 	u32 kbd_led_status_ack_len;
 
+	u8 *get_edid_ack_cmd_t;
+	u8 *get_edid_ack_cmd;
+	u32 get_edid_ack_len;
+
 	void (*send_surface_ack)(struct cb_client_agent *client, void *s);
 	void (*send_view_ack)(struct cb_client_agent *client, void *v);
 	void (*send_bo_create_ack)(struct cb_client_agent *client, void *bo);
