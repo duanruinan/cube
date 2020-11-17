@@ -25,6 +25,10 @@
 #include <cube_utils.h>
 #include <cube_protocal.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* helper functions for cube display server */
 
 #define MAX_NR_KBD_LED_EVTS 64
@@ -260,6 +264,10 @@ void *cb_client_gbm_bo_create(s32 drmfd,
 void cb_client_gbm_bo_destroy(void *bo);
 void *cb_gbm_open(s32 drmfd);
 void cb_gbm_close(void *gbm);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
 

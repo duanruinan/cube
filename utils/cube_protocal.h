@@ -26,6 +26,10 @@
 #include <cube_utils.h>
 #include <cube_shm.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define CB_SERVER_NAME_PREFIX "/tmp"
 #define LOG_SERVER_NAME_PREFIX "/tmp"
 #define LOG_SERVER_SOCK_NAME "cube_log_server"
@@ -672,6 +676,10 @@ static inline enum cb_pix_fmt fourcc_to_cb_pix_fmt(u32 fourcc)
 		return CB_PIX_FMT_UNKNOWN;
 	}
 }
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
 
