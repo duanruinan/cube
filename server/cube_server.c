@@ -115,18 +115,6 @@ struct cb_server {
 	struct cb_event_source *sig_tem_source;
 	struct cb_event_source *sig_stp_source;
 	struct cb_event_source *comp_destroy_timer;
-#ifdef TEST_MC
-	struct cb_event_source *mc_chg_timer;
-	struct cb_event_source *mc_collect_timer;
-	struct cb_event_source *test_hide_mc_timer;
-	struct cb_event_source *set_cursor_idle_source;
-	u32 mc_cnt;
-	bool mc_pending;
-	u8 *mc_bufs[2];
-	s32 mc_cur;
-	struct cb_listener mc_flipped_listener;
-	bool mc_busy;
-#endif
 	s32 sock;
 	s32 seat;
 	bool compositor_ready;
@@ -148,37 +136,6 @@ static void usage(void)
 	printf("\t\t-s, --seat=ID, cube server's instance ID.\n");
 	printf("\t\t-d, --device=/dev/dri/cardX, device name.\n");
 }
-
-#ifdef TEST_MC
-static void set_cursor_idle_proc(void *data)
-{
-	struct cb_server *server = data;
-	s32 ret;
-
-	if (server->mc_chg_timer)
-		cb_event_source_timer_update(server->mc_chg_timer, 0, 0);
-	ret = server->c->set_mouse_cursor(server->c,
-					  server->mc_bufs[server->mc_cur],
-					  16, 16, 64, 0, 0, false);
-	if (ret) {
-		printf("ret = %d\n", ret);
-		if (server->mc_chg_timer)
-			cb_event_source_timer_update(server->mc_chg_timer,
-				     8, 0);
-	} else {
-		server->mc_cnt++;
-		server->mc_cur = 1 - server->mc_cur;
-	}
-	server->set_cursor_idle_source = NULL;
-}
-
-static void start_set_cursor_idle_task(struct cb_server *server)
-{
-	server->set_cursor_idle_source = cb_event_loop_add_idle(server->loop,
-					set_cursor_idle_proc,
-					server);
-}
-#endif
 
 static void run_background(void)
 {
@@ -247,22 +204,6 @@ static s32 cb_server_prepare_destroy(struct cb_server *server)
 		return 0;
 
 	if (server->loop) {
-#ifdef TEST_MC
-		if (server->test_hide_mc_timer) {
-			cb_event_source_remove(server->test_hide_mc_timer);
-			server->test_hide_mc_timer = NULL;
-		}
-		if (server->mc_collect_timer) {
-			cb_event_source_remove(server->mc_collect_timer);
-			server->mc_collect_timer = NULL;
-		}
-
-		if (server->mc_chg_timer) {
-			cb_event_source_remove(server->mc_chg_timer);
-			server->mc_chg_timer = NULL;
-		}
-#endif
-
 		if (server->c) {
 			if (server->c) {
 				if (server->c->destroy(server->c) < 0) {
@@ -292,11 +233,6 @@ static void cb_server_destroy(struct cb_server *server)
 		return;
 
 	if (server->loop) {
-#ifdef TEST_MC
-		free(server->mc_bufs[0]);
-		free(server->mc_bufs[1]);
-#endif
-
 		if (server->sig_stp_source) {
 			cb_event_source_remove(server->sig_stp_source);
 			server->sig_stp_source = NULL;
@@ -380,15 +316,6 @@ static s32 server_sock_cb(s32 fd, u32 mask, void *data)
 	return 0;
 }
 
-#ifdef TEST_MC
-static void mc_flipped_cb(struct cb_listener *listener, void *data)
-{
-	struct cb_server *server = container_of(listener, struct cb_server,
-						mc_flipped_listener);
-	start_set_cursor_idle_task(server);
-}
-#endif
-
 static void head_changed_cb(struct cb_listener *listener, void *data)
 {
 	struct cb_display *disp = container_of(listener, struct cb_display,
@@ -396,22 +323,12 @@ static void head_changed_cb(struct cb_listener *listener, void *data)
 	struct compositor *c = disp->server->c;
 
 	disp->connected = c->head_connected(c, disp->pipe);
-	printf("***** head: %s connected: %d, monitor: %s\n",
-			c->get_connector_name(c, disp->pipe),
-			disp->connected,
-			c->get_monitor_name(c, disp->pipe));
+	serv_notice("***** head: %s connected: %d, monitor: %s",
+		    c->get_connector_name(c, disp->pipe),
+		    disp->connected,
+		    c->get_monitor_name(c, disp->pipe));
 
 	c->dispatch_hotplug_event(c, disp->pipe);
-
-	if (disp->connected) {
-#ifdef TEST_MC
-		printf("head change Set cursor\n");
-		start_set_cursor_idle_task(disp->server);
-#endif
-	} else {
-//		cb_event_source_timer_update(disp->server->mc_chg_timer,
-//					     0, 0);
-	}
 }
 
 static void compositor_ready_cb(struct cb_listener *listener, void *data)
@@ -425,7 +342,7 @@ static void compositor_ready_cb(struct cb_listener *listener, void *data)
 
 	list_del(&listener->link);
 	server->compositor_ready = true;
-	printf("Compositor ready\n");
+	serv_notice("Compositor ready");
 
 	server->disp = calloc(server->disp_nr, sizeof(struct cb_display *));
 	if (!server->disp)
@@ -443,10 +360,10 @@ static void compositor_ready_cb(struct cb_listener *listener, void *data)
 					server->c,
 					pipe_cfg[i].head_index,
 					&server->disp[i]->head_status_l);
-		printf("***** init head: %s connected: %d, monitor: %s\n",
-			c->get_connector_name(c, i),
-			server->disp[i]->connected,
-			c->get_monitor_name(c, i));
+		serv_notice("***** init head: %s connected: %d, monitor: %s",
+			    c->get_connector_name(c, i),
+			    server->disp[i]->connected,
+			    c->get_monitor_name(c, i));
 	}
 
 	/* begin listen */
@@ -459,76 +376,22 @@ static void compositor_ready_cb(struct cb_listener *listener, void *data)
 		= cb_server_create_linkup_cmd(0, &size);
 	server->linkid_created_ack_tx_cmd = malloc(size);
 	server->linkid_created_ack_tx_len = size;
-
-#ifdef TEST_MC
-	server->mc_flipped_listener.notify = mc_flipped_cb;
-	server->c->set_mouse_updated_notify(server->c,
-					    &server->mc_flipped_listener);
-
-	printf("Set cursor\n");
-//	start_set_cursor_idle_task(server);
-#endif
 }
-
-#ifdef TEST_MC
-static s32 mc_collect_proc(void *data)
-{
-	struct cb_server *server = data;
-
-	printf("-----------mc update cnt: %u---------------\n", server->mc_cnt);
-	cb_event_source_timer_update(server->mc_collect_timer, 1000, 0);
-	server->mc_cnt = 0;
-
-	return 0;
-}
-#endif
 
 static s32 comp_destroy_delayed_proc(void *data)
 {
 	struct cb_server *server = data;
 
-	printf("delay destroy\n");
+	serv_notice("delay destroy");
 	if (cb_server_prepare_destroy(server) < 0) {
 		cb_event_source_timer_update(
 			server->comp_destroy_timer, 3, 0);
 	} else {
-		printf("exit loop\n");
+		serv_notice("exit loop");
 		server->exit = true;
 	}
 	return 0;
 }
-
-#ifdef TEST_MC
-static s32 test_hide_mc_proc(void *data)
-{
-	struct cb_server *server = data;
-	static s32 cnt = 1;
-
-	if (cnt == 1) {
-		cnt--;
-		/* hide */
-		printf("hide cursor !\n");
-		server->c->hide_mouse_cursor(server->c);
-		cb_event_source_timer_update(server->test_hide_mc_timer,
-					5000, 0);
-	} else {
-		/* show */
-		printf("show cursor !\n");
-		server->c->show_mouse_cursor(server->c);
-	}
-
-	return 0;
-}
-
-static s32 change_mc_delay_proc(void *data)
-{
-	struct cb_server *server = data;
-
-	start_set_cursor_idle_task(server);
-
-	return 0;
-}
-#endif
 
 static struct cb_server *cb_server_create(s32 seat, char *dev)
 {
@@ -594,55 +457,11 @@ static struct cb_server *cb_server_create(s32 seat, char *dev)
 	server->compositor_ready_l.notify = compositor_ready_cb;
 	server->c->register_ready_cb(server->c, &server->compositor_ready_l);
 
-#ifdef TEST_MC
-	server->mc_chg_timer = cb_event_loop_add_timer(server->loop,
-						       change_mc_delay_proc,
-						       server);
-	if (!server->mc_chg_timer)
-		goto err;
-
-	server->mc_collect_timer = cb_event_loop_add_timer(server->loop,
-						       mc_collect_proc,
-						       server);
-	if (!server->mc_collect_timer)
-		goto err;
-#endif
-
 	server->comp_destroy_timer = cb_event_loop_add_timer(server->loop,
 						comp_destroy_delayed_proc,
 						server);
 	if (!server->comp_destroy_timer)
 		goto err;
-
-#ifdef TEST_MC
-	server->mc_cnt = 0;
-	cb_event_source_timer_update(server->mc_collect_timer, 1000, 0);
-
-	server->test_hide_mc_timer = cb_event_loop_add_timer(server->loop,
-						test_hide_mc_proc,
-						server);
-	if (!server->test_hide_mc_timer)
-		goto err;
-	cb_event_source_timer_update(server->test_hide_mc_timer, 10000, 0);
-
-	server->mc_cur = 0;
-	server->mc_bufs[0] = malloc(16*16*4);
-	{
-		s32 i;
-		u32 *pixel = (u32 *)(server->mc_bufs[0]);
-		for (i = 0; i < 16 * 16; i++) {
-			pixel[i] = 0x80FF0000;
-		}
-	}
-	server->mc_bufs[1] = malloc(16*16*4);
-	{
-		s32 i;
-		u32 *pixel = (u32 *)(server->mc_bufs[1]);
-		for (i = 0; i < 16 * 16; i++) {
-			pixel[i] = 0x800000FF;
-		}
-	}
-#endif
 
 	return server;
 
