@@ -68,20 +68,6 @@
 
 #define CONN_STATUS_DB_TIME 500
 
-//#define TEST_DUMMY_VIEW 1
-//#define TEST_DUMMY_VIEW_MOVE 1
-//#define TEST_DUMMY_YUV444P 1
-#if 0
-#define TEST_DUMMY_NV24 1
-#define TEST_DMA_BUF_DUMMY_VIEW_MOVE 1
-#define TEST_DMA_BUF_DUMMY_VIEW 1
-
-#define TEST_DUMMY_DMA_BUF 1
-#define TEST_DUMMY_DMA_BUF_NV12 1
-#endif
-
-//#define TEST_VFLIPPED 1
-
 static enum cb_log_level comp_dbg = CB_LOG_NOTICE;
 
 #define comp_debug(fmt, ...) do { \
@@ -148,9 +134,6 @@ struct cb_output {
 	bool primary_renderer_enable_pending;
 	bool vflipped_pending;
 	struct cb_event_source *primary_vflipped_timer;
-#ifdef TEST_VFLIPPED
-	struct cb_event_source *test_primary_vflipped_timer;
-#endif
 
 	/* desktop size */
 	struct cb_rect desktop_rc;
@@ -285,23 +268,6 @@ struct cb_compositor {
 	/* native device */
 	void *native_dev;
 
-#ifdef TEST_DUMMY_VIEW
-	struct cb_surface dummy_surf;
-	struct cb_view dummy_view;
-	struct shm_buffer dummy_buf[2];
-	s32 dummy_index;
-	struct cb_event_source *test_rm_view_timer;
-#endif
-#ifdef TEST_DMA_BUF_DUMMY_VIEW
-	struct cb_surface dummy_surf;
-	struct cb_view dummy_view;
-	struct cb_buffer *nv24_dumb_buf[2];
-	struct cb_buffer *dummy_buf[2];
-	struct cb_listener dummy_buf_flipped_l[2];
-	struct cb_listener dummy_buf_complete_l[2];
-	s32 dummy_index;
-	struct cb_event_source *test_rm_view_timer;
-#endif
 	/* views in z-order from top to bottom */
 	struct list_head views;
 
@@ -1149,16 +1115,6 @@ static s32 cb_compositor_destroy(struct compositor *comp)
 
 	list_for_each_entry_safe(view, view_next, &c->views, link) {
 		list_del(&view->link);
-#ifdef TEST_DUMMY_VIEW
-		if (view == &c->dummy_view) {
-			cb_shm_release(&c->dummy_buf[0].shm);
-			cb_shm_release(&c->dummy_buf[1].shm);
-			if (view->surface && view->surface->renderer_state) {
-				free(view->surface->renderer_state);
-				view->surface->renderer_state = NULL;
-			}
-		}
-#endif
 	}
 
 	if (c->so)
@@ -2012,29 +1968,6 @@ static s32 vflipped_timer_cb(void *data)
 	return 0;
 }
 
-#ifdef TEST_VFLIPPED
-static s32 test_vflipped_timer_cb(void *data)
-{
-	struct cb_output *o = data;
-
-	if (o->pipe == 0)
-		return 0;
-
-	if (o->primary_renderer_disabled) {
-		printf("try to enable primary renderer\n");
-		enable_primary_renderer(o);
-	} else {
-		printf("try to disable primary renderer\n");
-		disable_primary_renderer(o);
-	}
-
-	cb_event_source_timer_update(o->test_primary_vflipped_timer,
-					     10000, 0);
-
-	return 0;
-}
-#endif
-
 static struct cb_output *cb_output_create(struct cb_compositor *c,
 					  struct pipeline *pipecfg)
 {
@@ -2161,18 +2094,6 @@ static struct cb_output *cb_output_create(struct cb_compositor *c,
 							output);
 	if (!output->primary_vflipped_timer)
 		goto err;
-
-#ifdef TEST_VFLIPPED
-	output->test_primary_vflipped_timer = cb_event_loop_add_timer(c->loop,
-					test_vflipped_timer_cb,
-					output);
-
-	/*
-	if (output->test_primary_vflipped_timer)
-		cb_event_source_timer_update(output->test_primary_vflipped_timer,
-					     20000, 0);
-	*/
-#endif
 
 	/* draw dummy buffer if monitor is connected */
 	if (output->head->connected) {
@@ -3792,9 +3713,6 @@ static void surface_flipped_cb(struct cb_listener *listener, void *data)
 						  flipped_l);
 	struct cb_view *view = surface->view;
 	struct cb_client_agent *client = surface->client_agent;
-#ifdef TEST_DUMMY_VIEW
-	struct cb_compositor *c = surface->c;
-#endif
 
 	comp_debug("surface_flipped_cb");
 	if (view->painted) {
@@ -3802,42 +3720,6 @@ static void surface_flipped_cb(struct cb_listener *listener, void *data)
 		cancel_renderer_surface(surface, true);
 		client->send_bo_flipped(client, NULL);
 		client->send_bo_complete(client, NULL);
-#if 1
-#ifdef TEST_DUMMY_VIEW
-#ifdef TEST_DUMMY_VIEW_MOVE
-		static s32 dx = 2;
-		static s32 dy = 1;
-		c->dummy_view.area.pos.x += dx;
-		c->dummy_view.area.pos.y += dy;
-		if (c->dummy_view.area.pos.x + c->dummy_view.area.w
-			> (1920 + 1600)) {
-			dx = -dx;
-			c->dummy_view.area.pos.x += dx;
-		}
-		if (c->dummy_view.area.pos.y + c->dummy_view.area.h > 1200) {
-			dy = -dy;
-			c->dummy_view.area.pos.y += dy;
-		}
-		if (c->dummy_view.area.pos.x <= 0) {
-			dx = -dx;
-			c->dummy_view.area.pos.x += dx;
-		}
-		if (c->dummy_view.area.pos.y <= 0) {
-			dy = -dy;
-			c->dummy_view.area.pos.y += dy;
-		}
-		c->dummy_surf.buffer_pending =
-			&c->dummy_buf[c->dummy_index].base;
-		comp_debug("commit dummy surface %d", c->dummy_index);
-		cb_compositor_commit_surface(&c->base, surface);
-#else
-		c->dummy_index = 1 - c->dummy_index;
-		c->dummy_surf.buffer_pending = &c->dummy_buf[c->dummy_index].base;
-		comp_debug("commit dummy surface");
-		cb_compositor_commit_surface(&c->base, surface);
-#endif
-#endif
-#endif
 	}
 }
 
@@ -4513,358 +4395,6 @@ static void mc_buf_complete_cb(struct cb_listener *listener, void *data)
 }
 #endif
 
-#ifdef TEST_DMA_BUF_DUMMY_VIEW
-static struct cb_buffer *nv24_buf_create(struct cb_compositor *c,
-					 u32 width, u32 height)
-{
-	struct cb_buffer_info info;
-	struct cb_buffer *buffer;
-
-	memset(&info, 0, sizeof(info));
-	info.pix_fmt = CB_PIX_FMT_NV24;
-	info.width = width;
-	info.height = height;
-
-	buffer = c->so->dumb_buffer_create(c->so, &info);
-	if (buffer) {
-		printf("width: %u, height: %u, strides: %u,%u,%u,%u, "
-			"offsets: %u,%u,%u,%u\n", info.width, info.height,
-			info.strides[0],
-			info.strides[1],
-			info.strides[2],
-			info.strides[3],
-			info.offsets[0],
-			info.offsets[1],
-			info.offsets[2],
-			info.offsets[3]);
-	}
-	return buffer;
-}
-
-static void dummy_buf_flipped_cb(struct cb_listener *listener, void *data)
-{
-	struct cb_buffer *buffer = data;
-	s64 index = (s64)(buffer->userdata);
-	struct cb_compositor *c = container_of(listener, struct cb_compositor,
-						dummy_buf_flipped_l[index]);
-
-	//comp_notice("dma-buf index:%ld (%p) flipped.", index, buffer);
-
-#ifdef TEST_DMA_BUF_DUMMY_VIEW_MOVE
-	static s32 dx = 2;
-	static s32 dy = 1;
-	c->dummy_view.area.pos.x += dx;
-	c->dummy_view.area.pos.y += dy;
-	if (c->dummy_view.area.pos.x + c->dummy_view.area.w
-		> (1920 + 1600)) {
-		dx = -dx;
-		c->dummy_view.area.pos.x += dx;
-	}
-	if (c->dummy_view.area.pos.y + c->dummy_view.area.h > 1200) {
-		dy = -dy;
-		c->dummy_view.area.pos.y += dy;
-	}
-	if (c->dummy_view.area.pos.x <= 0) {
-		dx = -dx;
-		c->dummy_view.area.pos.x += dx;
-	}
-	if (c->dummy_view.area.pos.y <= 0) {
-		dy = -dy;
-		c->dummy_view.area.pos.y += dy;
-	}
-	if (c->dummy_surf.buffer_pending)
-		c->dummy_surf.buffer_pending = c->dummy_buf[c->dummy_index];
-	cb_compositor_commit_dma_buf(&c->base, &c->dummy_surf);
-#else
-	c->dummy_index = 1 - c->dummy_index;
-	if (c->dummy_surf.buffer_pending)
-		c->dummy_surf.buffer_pending = c->dummy_buf[c->dummy_index];
-	cb_compositor_commit_dma_buf(&c->base, &c->dummy_surf);
-#endif
-
-}
-
-static void dummy_buf_complete_cb(struct cb_listener *listener, void *data)
-{
-	struct cb_buffer *buffer = data;
-	s64 index = (s64)(buffer->userdata);
-
-	//comp_notice("dma-buf index:%ld (%p) complete.", index, buffer);
-}
-
-static void init_dma_buf_dummy_buf(struct cb_compositor *c)
-{
-	s32 i;
-
-	c->nv24_dumb_buf[0] = nv24_buf_create(c, 1024, 768);
-	assert(c->nv24_dumb_buf[0]);
-	c->nv24_dumb_buf[1] = nv24_buf_create(c, 1024, 768);
-	assert(c->nv24_dumb_buf[1]);
-	c->dummy_buf[0] = c->so->import_dmabuf(c->so,
-					       &c->nv24_dumb_buf[0]->info);
-	assert(c->dummy_buf[0]);
-	c->dummy_buf[1] = c->so->import_dmabuf(c->so,
-					       &c->nv24_dumb_buf[1]->info);
-	assert(c->dummy_buf[1]);
-#ifdef TEST_DUMMY_NV24
-	{
-		s32 fd = open("/tmp/1024x768_nv24.yuv", O_RDONLY, 0644);
-		printf("size: %lu\n", c->dummy_buf[0]->info.sizes[0]);
-		printf("maps: %p, %p, %p, %p\n", 
-			(u8 *)c->dummy_buf[0]->info.maps[0],
-			(u8 *)c->dummy_buf[0]->info.maps[1],
-			(u8 *)c->dummy_buf[0]->info.maps[2],
-			(u8 *)c->dummy_buf[0]->info.maps[3]);
-		read(fd, (u8 *)c->dummy_buf[0]->info.maps[0], 
-			c->dummy_buf[0]->info.sizes[0] * 3);
-		close(fd);
-	}
-#endif
-	memset(&c->dummy_surf, 0, sizeof(c->dummy_surf));
-	memset(&c->dummy_surf, 0, sizeof(c->dummy_surf));
-	c->dummy_surf.is_opaque = true;
-	c->dummy_surf.view = &c->dummy_view;
-	cb_region_init_rect(&c->dummy_surf.damage, 0, 0, 1024, 768);
-	cb_region_init_rect(&c->dummy_surf.opaque, 0, 0, 1024, 768);
-	cb_signal_init(&c->dummy_surf.destroy_signal);
-
-	memset(&c->dummy_view, 0, sizeof(c->dummy_view));
-	c->dummy_view.surface = &c->dummy_surf;
-	c->dummy_view.area.pos.x = 1500;
-	c->dummy_view.area.pos.y = 0;
-	c->dummy_view.area.w = 1024;
-	c->dummy_view.area.h = 768;
-	c->dummy_view.alpha = 1.0f;
-	/* c->dummy_view.output_mask = 0x01; */
-	list_add_tail(&c->dummy_view.link, &c->views);
-
-	c->dummy_surf.buffer_pending = c->dummy_buf[0];
-	c->dummy_index = 0;
-
-	for (i = 0; i < 2; i++) {
-		c->dummy_buf[i]->userdata = (void *)((s64)(i));
-		c->dummy_buf_flipped_l[i].notify = dummy_buf_flipped_cb;
-		c->so->add_buffer_flip_notify(c->so, c->dummy_buf[i],
-					      &c->dummy_buf_flipped_l[i]);
-		c->dummy_buf_complete_l[i].notify = dummy_buf_complete_cb;
-		c->so->add_buffer_complete_notify(c->so,
-						  c->dummy_buf[i],
-						  &c->dummy_buf_complete_l[i]);
-	}
-}
-#endif
-
-#ifdef TEST_DUMMY_VIEW
-static void init_dummy_buf(struct cb_compositor *c)
-{
-	u32 *pixel;
-
-	comp_debug("init dummy view ...");
-	memset(&c->dummy_surf, 0, sizeof(c->dummy_surf));
-	c->dummy_surf.is_opaque = true;
-	c->dummy_surf.view = &c->dummy_view;
-	cb_region_init_rect(&c->dummy_surf.damage, 0, 0, 1024, 768);
-	cb_region_init_rect(&c->dummy_surf.opaque, 0, 0, 1024, 768);
-	cb_signal_init(&c->dummy_surf.destroy_signal);
-
-	memset(&c->dummy_view, 0, sizeof(c->dummy_view));
-	c->dummy_view.surface = &c->dummy_surf;
-	c->dummy_view.area.pos.x = 0;
-	c->dummy_view.area.pos.y = 0;
-	c->dummy_view.area.w = 1024;
-	c->dummy_view.area.h = 768;
-	c->dummy_view.alpha = 1.0f;
-	/* c->dummy_view.output_mask = 0x01; */
-	list_add_tail(&c->dummy_view.link, &c->views);
-
-	memset(&c->dummy_buf[0], 0, sizeof(c->dummy_buf[0]));
-	c->dummy_buf[0].base.info.type = CB_BUF_TYPE_SHM;
-	c->dummy_buf[0].base.info.width = 1024;
-	c->dummy_buf[0].base.info.height = 768;
-	memset(&c->dummy_buf[1], 0, sizeof(c->dummy_buf[1]));
-	c->dummy_buf[1].base.info.type = CB_BUF_TYPE_SHM;
-	c->dummy_buf[1].base.info.width = 1024;
-	c->dummy_buf[1].base.info.height = 768;
-#ifdef TEST_DUMMY_YUV444P
-	c->dummy_buf[0].base.info.strides[0] = 1024;
-	c->dummy_buf[0].base.info.offsets[0] = 0;
-	c->dummy_buf[0].base.info.sizes[0] = c->dummy_buf[0].base.info.strides[0]
-					* c->dummy_buf[0].base.info.height;
-	c->dummy_buf[0].base.info.strides[1] = 1024;
-	c->dummy_buf[0].base.info.offsets[1] = c->dummy_buf[0].base.info.sizes[0];
-	c->dummy_buf[0].base.info.sizes[1] = c->dummy_buf[0].base.info.strides[1]
-					* c->dummy_buf[0].base.info.height;
-	c->dummy_buf[0].base.info.strides[2] = 1024;
-	c->dummy_buf[0].base.info.offsets[2] = c->dummy_buf[0].base.info.sizes[0]
-				+ c->dummy_buf[0].base.info.sizes[1];
-	c->dummy_buf[0].base.info.sizes[2] = c->dummy_buf[0].base.info.strides[2]
-					* c->dummy_buf[0].base.info.height;
-	c->dummy_buf[0].base.info.pix_fmt = CB_PIX_FMT_YUV444;
-	c->dummy_buf[0].base.info.planes = 3;
-	strcpy(c->dummy_buf[0].name, "shm_dummy_buf");
-	unlink(c->dummy_buf[0].name);
-	cb_shm_init(&c->dummy_buf[0].shm, c->dummy_buf[0].name,
-		    c->dummy_buf[0].base.info.sizes[0] * 3, 1);
-	pixel = (u32 *)c->dummy_buf[0].shm.map;
-
-	c->dummy_buf[1].base.info.strides[0] = 1024;
-	c->dummy_buf[1].base.info.offsets[0] = 0;
-	c->dummy_buf[1].base.info.sizes[0] = c->dummy_buf[1].base.info.strides[0]
-					* c->dummy_buf[1].base.info.height;
-	c->dummy_buf[1].base.info.strides[1] = 1024;
-	c->dummy_buf[1].base.info.offsets[1] = c->dummy_buf[1].base.info.sizes[0];
-	c->dummy_buf[1].base.info.sizes[1] = c->dummy_buf[1].base.info.strides[1]
-					* c->dummy_buf[1].base.info.height;
-	c->dummy_buf[1].base.info.strides[2] = 1024;
-	c->dummy_buf[1].base.info.offsets[2] = c->dummy_buf[1].base.info.sizes[0]
-				+ c->dummy_buf[1].base.info.sizes[1];
-	c->dummy_buf[1].base.info.sizes[2] = c->dummy_buf[1].base.info.strides[2]
-					* c->dummy_buf[1].base.info.height;
-	c->dummy_buf[1].base.info.pix_fmt = CB_PIX_FMT_YUV444;
-	c->dummy_buf[1].base.info.planes = 3;
-	strcpy(c->dummy_buf[1].name, "shm_dummy_buf");
-	unlink(c->dummy_buf[1].name);
-	cb_shm_init(&c->dummy_buf[1].shm, c->dummy_buf[1].name,
-		    c->dummy_buf[1].base.info.sizes[0] * 3, 1);
-#else
-#ifdef TEST_DUMMY_NV24
-	c->dummy_buf[0].base.info.strides[0] = 1024;
-	c->dummy_buf[0].base.info.offsets[0] = 0;
-	c->dummy_buf[0].base.info.sizes[0] = c->dummy_buf[0].base.info.strides[0]
-					* c->dummy_buf[0].base.info.height;
-	c->dummy_buf[0].base.info.strides[1] = 1024;
-	c->dummy_buf[0].base.info.offsets[1] = c->dummy_buf[0].base.info.sizes[0];
-	c->dummy_buf[0].base.info.sizes[1] = c->dummy_buf[0].base.info.strides[1]
-					* c->dummy_buf[0].base.info.height;
-	c->dummy_buf[0].base.info.pix_fmt = CB_PIX_FMT_NV24;
-	c->dummy_buf[0].base.info.planes = 2;
-	strcpy(c->dummy_buf[0].name, "shm_dummy_buf[0]");
-	unlink(c->dummy_buf[0].name);
-	cb_shm_init(&c->dummy_buf[0].shm, c->dummy_buf[0].name,
-		    c->dummy_buf[0].base.info.sizes[0] * 3, 1);
-	pixel = (u32 *)c->dummy_buf[0].shm.map;
-
-	c->dummy_buf[1].base.info.strides[0] = 1024;
-	c->dummy_buf[1].base.info.offsets[0] = 0;
-	c->dummy_buf[1].base.info.sizes[0] = c->dummy_buf[1].base.info.strides[0]
-					* c->dummy_buf[1].base.info.height;
-	c->dummy_buf[1].base.info.strides[1] = 1024;
-	c->dummy_buf[1].base.info.offsets[1] = c->dummy_buf[1].base.info.sizes[0];
-	c->dummy_buf[1].base.info.sizes[1] = c->dummy_buf[1].base.info.strides[1]
-					* c->dummy_buf[1].base.info.height;
-	c->dummy_buf[1].base.info.pix_fmt = CB_PIX_FMT_NV24;
-	c->dummy_buf[1].base.info.planes = 2;
-	strcpy(c->dummy_buf[1].name, "shm_dummy_buf[1]");
-	unlink(c->dummy_buf[1].name);
-	cb_shm_init(&c->dummy_buf[1].shm, c->dummy_buf[1].name,
-		    c->dummy_buf[1].base.info.sizes[0] * 3, 1);
-#else
-	c->dummy_buf[0].base.info.strides[0] = 1024 * 4;
-	c->dummy_buf[0].base.info.sizes[0] = c->dummy_buf[0].base.info.strides[0]
-						* c->dummy_buf[0].base.info.height;
-	c->dummy_buf[0].base.info.pix_fmt = CB_PIX_FMT_ARGB8888;
-	c->dummy_buf[0].base.info.planes = 1;
-	strcpy(c->dummy_buf[0].name, "shm_dummy_buf[0]");
-	unlink(c->dummy_buf[0].name);
-	cb_shm_init(&c->dummy_buf[0].shm, c->dummy_buf[0].name,
-		    c->dummy_buf[0].base.info.sizes[0], 1);
-	pixel = (u32 *)c->dummy_buf[0].shm.map;
-
-	c->dummy_buf[1].base.info.strides[0] = 1024 * 4;
-	c->dummy_buf[1].base.info.sizes[0] = c->dummy_buf[1].base.info.strides[0]
-						* c->dummy_buf[1].base.info.height;
-	c->dummy_buf[1].base.info.pix_fmt = CB_PIX_FMT_ARGB8888;
-	c->dummy_buf[1].base.info.planes = 1;
-	strcpy(c->dummy_buf[1].name, "shm_dummy_buf[1]");
-	unlink(c->dummy_buf[1].name);
-	cb_shm_init(&c->dummy_buf[1].shm, c->dummy_buf[1].name,
-		    c->dummy_buf[1].base.info.sizes[0], 1);
-#endif
-#endif
-	
-#ifdef TEST_DUMMY_YUV444P
-	{
-		s32 fd = open("/tmp/1024x768_yuv444p.yuv", O_RDONLY, 0644);
-		read(fd, (u8 *)c->dummy_buf[0].shm.map, 
-			c->dummy_buf[0].base.info.sizes[0] * 3);
-		close(fd);
-	}
-#else
-#ifdef TEST_DUMMY_NV24
-	{
-		s32 fd = open("/tmp/1024x768_nv24.yuv", O_RDONLY, 0644);
-		read(fd, (u8 *)c->dummy_buf[0].shm.map, 
-			c->dummy_buf[0].base.info.sizes[0] * 3);
-		close(fd);
-	}
-#else
-	for (s32 i = 0; i < c->dummy_buf[0].base.info.sizes[0] / 4; i++)
-		pixel[i] = 0xFF404040;
-#endif
-#endif
-
-	c->dummy_surf.buffer_pending = &c->dummy_buf[0].base;
-	c->dummy_index = 0;
-
-	c->r->attach_buffer(c->r, &c->dummy_surf,
-			    c->dummy_surf.buffer_pending);
-	c->dummy_surf.width = c->dummy_surf.buffer_pending->info.width;
-	c->dummy_surf.height = c->dummy_surf.buffer_pending->info.height;
-	c->r->flush_damage(c->r, &c->dummy_surf);
-}
-#endif
-
-#ifdef TEST_DMA_BUF_DUMMY_VIEW
-static s32 test_rm_view_timer_cb(void *data)
-{
-	struct cb_compositor *c = data;
-	struct cb_surface *surface = &c->dummy_surf;
-
-	printf("buffer_pending: %p\n", surface->buffer_pending);
-	if (surface->buffer_pending) {
-		surface->buffer_pending = NULL;
-		printf("remove dma-buf dummy view!!!!\n");
-		comp_notice("remove dma-buf dummy view!!!!");
-		cb_event_source_timer_update(c->test_rm_view_timer,
-				     15000, 0);
-	} else {
-		printf("reshow dma-buf dummy view!!!!\n");
-		comp_notice("reshow dma-buf dummy view!!!!");
-		list_add_tail(&c->dummy_view.link, &c->views);
-		surface->buffer_pending = c->dummy_buf[c->dummy_index];
-		cb_event_source_timer_update(c->test_rm_view_timer, 10000, 0);
-	}
-	cb_compositor_commit_dma_buf(&c->base, surface);
-
-	return 0;
-}
-#endif
-
-#ifdef TEST_DUMMY_VIEW
-static s32 test_rm_view_timer_cb(void *data)
-{
-	struct cb_compositor *c = data;
-	struct cb_surface *surface = &c->dummy_surf;
-
-	if (surface->buffer_pending) {
-		surface->buffer_pending = NULL;
-		printf("remove dummy view!!!!\n");
-		comp_notice("remove dummy view!!!!");
-		cb_event_source_timer_update(c->test_rm_view_timer,
-				     15000, 0);
-	} else {
-		printf("reshow dummy view!!!!\n");
-		comp_notice("reshow dummy view!!!!");
-		list_add_tail(&c->dummy_view.link, &c->views);
-		surface->buffer_pending = &c->dummy_buf[c->dummy_index].base;
-		cb_event_source_timer_update(c->test_rm_view_timer, 10000, 0);
-	}
-	cb_compositor_commit_surface(&c->base, surface);
-
-	return 0;
-}
-#endif
-
 static void cb_compositor_set_dbg_level(struct compositor *comp,
 					enum cb_log_level level)
 {
@@ -4923,23 +4453,6 @@ struct compositor *compositor_create(char *device_name,
 
 	INIT_LIST_HEAD(&c->clients);
 	INIT_LIST_HEAD(&c->views);
-#ifdef TEST_DUMMY_VIEW
-	init_dummy_buf(c);
-	c->test_rm_view_timer = cb_event_loop_add_timer(c->loop,
-							test_rm_view_timer_cb,
-							c);
-	//cb_event_source_timer_update(c->test_rm_view_timer,
-	//			     10000, 0);
-#endif
-
-#ifdef TEST_DMA_BUF_DUMMY_VIEW
-	init_dma_buf_dummy_buf(c);
-	c->test_rm_view_timer = cb_event_loop_add_timer(c->loop,
-							test_rm_view_timer_cb,
-							c);
-	cb_event_source_timer_update(c->test_rm_view_timer,
-					10000, 0);
-#endif
 
 	c->count_outputs = count_outputs;
 	c->outputs = calloc(count_outputs, sizeof(struct cb_output *));
@@ -5024,15 +4537,6 @@ struct compositor *compositor_create(char *device_name,
 	/* prepare input devices */
 	if (cb_compositor_input_init(c) < 0)
 		goto err;
-
-#ifdef TEST_DUMMY_VIEW
-	cb_compositor_commit_surface(&c->base, &c->dummy_surf);
-#endif
-
-#ifdef TEST_DMA_BUF_DUMMY_VIEW
-	printf(">>>>>>>>>>>>>\n");
-	cb_compositor_commit_dma_buf(&c->base, &c->dummy_surf);
-#endif
 
 	c->base.register_ready_cb = cb_compositor_register_ready_cb;
 	c->base.commit_surface = cb_compositor_commit_surface;
