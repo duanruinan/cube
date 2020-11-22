@@ -53,8 +53,10 @@
 /*
 #define MC_SINGLE_SYNC 1
 */
-#define DUMMY_WIDTH 1920
-#define DUMMY_HEIGHT 1200
+#define DUMMY_WIDTH 640
+#define DUMMY_HEIGHT 480
+
+#define SW_KBD_NAME "cube kbd led virtual dev"
 
 #define MC_MAX_WIDTH 64
 #define MC_MAX_HEIGHT 64
@@ -328,8 +330,6 @@ struct cb_compositor {
 	struct udev_monitor *udev_monitor;
 	struct cb_event_source *udev_source;
 	struct list_head input_devs;
-	/* point to current kbd, used to get led status */
-	struct input_device *kbd_dev;
 
 	s32 uinput_fd;
 
@@ -2812,6 +2812,9 @@ static s32 cb_compositor_set_mouse_cursor(struct compositor *comp,
 
 	/* if mouse is hide, just update cursor data */
 	if (c->mc_hide) {
+#ifdef MC_DEBUG
+		printf("cursor is hide\n");
+#endif
 		comp_debug("cursor is hide");
 		return -ENODEV;
 	}
@@ -2899,6 +2902,9 @@ static bool cb_compositor_set_mouse_updated_notify(
 	if (!c || !mc_updated_l)
 		return true;
 
+#ifdef MC_DEBUG
+	printf("add to mc update complete signal\n");
+#endif
 	cb_signal_add(&c->mc_update_complete_signal, mc_updated_l);
 	return c->mc_update_pending;
 }
@@ -2914,6 +2920,7 @@ struct input_device {
 	s32 fd;
 	enum input_type type;
 	char name[256];
+	char devpath[256];
 	struct cb_event_source *input_source;
 	struct cb_compositor *c;
 	struct list_head link;
@@ -2973,20 +2980,22 @@ static enum input_type test_dev(const char *dev)
 			}
 		}
 	}
+
+	if (!strcmp(buffer, SW_KBD_NAME)) {
+		comp_notice("device %s (%s) is software kbd", buffer, dev);
+		return INPUT_TYPE_KBD_LED_VDEV;
+	}
 	
 	if (test_bit(EV_KEY, evbit) && test_bit(EV_REL, evbit)
 			&& test_bit(EV_SYN, evbit)) {
-		comp_notice("device %s is mouse", dev);
+		comp_notice("device %s (%s) is mouse", buffer, dev);
 		return INPUT_TYPE_MOUSE;
 	} else if (test_bit(EV_KEY, evbit) && test_bit(EV_REP, evbit)
 	    && test_bit(EV_LED, evbit)) {
-		comp_notice("device %s is keyboard", dev);
+		comp_notice("device %s (%s) is keyboard", buffer, dev);
 		return INPUT_TYPE_KBD;
-	} else if (test_bit(EV_KEY, evbit) && !test_bit(EV_REP, evbit)
-		   && !test_bit(EV_LED, evbit)) {
-		comp_notice("device %s is virtual keyboard for LED set", dev);
-		return INPUT_TYPE_KBD_LED_VDEV;
 	}
+
 	comp_debug("end test %s", dev);
 
 	return INPUT_TYPE_UNKNOWN;
@@ -3233,7 +3242,7 @@ static void input_device_destroy(struct input_device *dev)
 	if (!dev)
 		return;
 
-	comp_debug("Destroy input %s", dev->name);
+	comp_debug("Destroy input %s", dev->devpath);
 	list_del(&dev->link);
 	if (dev->input_source)
 		cb_event_source_remove(dev->input_source);
@@ -3241,42 +3250,16 @@ static void input_device_destroy(struct input_device *dev)
 	free(dev);
 }
 
-/*
- * update kbd sysfs device path
- * search around the whole device list, search for TYPE==INPUT_TYPE_KBD.
- * If there is still a keyboard, update the file path, otherwise remove
- * the file /tmp/kbd_name.
- */
-static void update_kbd_dev(struct cb_compositor *c)
-{
-	struct input_device *dev;
-	bool kbd_empty = true;
-
-	list_for_each_entry(dev, &c->input_devs, link) {
-		if (dev->type == INPUT_TYPE_KBD) {
-			kbd_empty = false;
-			break;
-		}
-	}
-
-	if (kbd_empty) {
-		c->kbd_dev = NULL;
-		comp_debug("no kbd left.");
-	} else {
-		c->kbd_dev = dev;
-	}
-}
-
 static void remove_input_device(struct cb_compositor *c, const char *devpath)
 {
-	struct input_device *dev_present, *next;
+	struct input_device *dev, *next;
 
-	list_for_each_entry_safe(dev_present, next, &c->input_devs, link) {
-		if (!strcmp(dev_present->name, devpath)) {
-			comp_debug("Remove %s, type %s", devpath,
-				dev_present->type == INPUT_TYPE_MOUSE?"M":"K");
-			input_device_destroy(dev_present);
-			update_kbd_dev(c);
+	list_for_each_entry_safe(dev, next, &c->input_devs, link) {
+		if (!strcmp(dev->devpath, devpath)) {
+			comp_notice("Remove %s (%s), type %s", dev->name,
+				    devpath,
+				    dev->type == INPUT_TYPE_MOUSE ? "M" : "K");
+			input_device_destroy(dev);
 			return;
 		}
 	}
@@ -3289,8 +3272,8 @@ static void add_input_device(struct cb_compositor *c, const char *devpath)
 	s32 fd;
 
 	type = test_dev(devpath);
-	if (type == INPUT_TYPE_UNKNOWN ||
-	    type == INPUT_TYPE_KBD_LED_VDEV)
+
+	if (type == INPUT_TYPE_UNKNOWN)
 		return;
 
 	fd = open(devpath, O_RDWR | O_CLOEXEC, 0644);
@@ -3300,7 +3283,7 @@ static void add_input_device(struct cb_compositor *c, const char *devpath)
 	}
 
 	list_for_each_entry(b, &c->input_devs, link) {
-		if (!strcmp(b->name, devpath)) {
+		if (!strcmp(b->devpath, devpath)) {
 			comp_err("already add device %s, skip it.", devpath);
 			close(fd);
 			return;
@@ -3313,24 +3296,28 @@ static void add_input_device(struct cb_compositor *c, const char *devpath)
 	dev->fd = fd;
 	dev->type = type;
 	dev->c = c;
-	memset(dev->name, 0, 256);
-	strcpy(dev->name, devpath);
-	dev->input_source = cb_event_loop_add_fd(
-					c->loop,
-					dev->fd,
-					CB_EVT_READABLE,
-					read_input_event, dev);
-	if (!dev->input_source) {
-		close(dev->fd);
-		free(dev);
-		return;
+	ioctl(fd, EVIOCGNAME(sizeof(dev->name) - 1), &dev->name);
+	memset(dev->devpath, 0, 256);
+	strcpy(dev->devpath, devpath);
+	if (type == INPUT_TYPE_KBD_LED_VDEV) {
+		dev->input_source = NULL;
+	} else {
+		dev->input_source = cb_event_loop_add_fd(
+						c->loop,
+						dev->fd,
+						CB_EVT_READABLE,
+						read_input_event, dev);
+		if (!dev->input_source) {
+			close(dev->fd);
+			free(dev);
+			return;
+		}
 	}
 
 	list_add_tail(&dev->link, &c->input_devs);
-	comp_debug("Add %s, type %s",
-		   dev->name,type == INPUT_TYPE_MOUSE? "M":"K");
-	if (type == INPUT_TYPE_KBD)
-		c->kbd_dev = dev;
+	comp_notice("Add %s (%s), type %s",
+		   dev->name,
+		   dev->devpath, type == INPUT_TYPE_MOUSE? "M" : "K");
 }
 
 static s32 udev_input_hotplug_event_proc(s32 fd, u32 mask, void *data)
@@ -3396,15 +3383,25 @@ static void cb_compositor_input_fini(struct cb_compositor *c)
 static s32 get_kbd_led_status(struct compositor *comp, u32 *led_status)
 {
 	struct cb_compositor *c = to_cb_c(comp);
+	struct input_device *dev;
 	s32 i;
 	u8 led_bits[(LED_MAX + 1) / 8];
+	bool found = false;
 
-	if (!c->kbd_dev) {
-		comp_err("failed to get kbd led status.");
-		return -EINVAL;
+	list_for_each_entry(dev, &c->input_devs, link) {
+		if (dev->type == INPUT_TYPE_KBD) {
+			found = true;
+			break;
+		}
 	}
 
-	if (ioctl(c->kbd_dev->fd, EVIOCGLED(sizeof(led_bits)), led_bits) < 0) {
+	if (!found) {
+		comp_err("no kbd connected.");
+		*led_status = 0;
+		return 0;
+	}
+
+	if (ioctl(dev->fd, EVIOCGLED(sizeof(led_bits)), led_bits) < 0) {
 		comp_err("EVIOCGLED failed. %s", strerror(errno));
 		return -errno;
 	}
@@ -3426,6 +3423,8 @@ static s32 get_kbd_led_status(struct compositor *comp, u32 *led_status)
 		}
 	}
 
+	comp_notice("current keyboard led state: %08X", *led_status);
+
 	return 0;
 }
 
@@ -3446,12 +3445,8 @@ static void set_kbd_led_status(struct compositor *comp, u32 led_status)
 {
 	struct cb_compositor *c = to_cb_c(comp);
 	u32 led_status_cur;
-	bool changed = false;
 
 	if (!comp)
-		return;
-
-	if (!c->kbd_dev)
 		return;
 
 	led_status &= (~(1U << CB_KBD_LED_STATUS_SCROLLL));
@@ -3469,7 +3464,6 @@ static void set_kbd_led_status(struct compositor *comp, u32 led_status)
 		emit_evt(c->uinput_fd, EV_SYN, SYN_REPORT, 0);
 		emit_evt(c->uinput_fd, EV_KEY, KEY_NUMLOCK, 0);
 		emit_evt(c->uinput_fd, EV_SYN, SYN_REPORT, 0);
-		changed = true;;
 	}
 
 	if ((led_status_cur & (1U << CB_KBD_LED_STATUS_CAPSL)) !=
@@ -3480,13 +3474,9 @@ static void set_kbd_led_status(struct compositor *comp, u32 led_status)
 		emit_evt(c->uinput_fd, EV_SYN, SYN_REPORT, 0);
 		emit_evt(c->uinput_fd, EV_KEY, KEY_CAPSLOCK, 0);
 		emit_evt(c->uinput_fd, EV_SYN, SYN_REPORT, 0);
-		changed = true;;
 	}
 
-	while (changed && (led_status_cur != led_status)) {
-		get_kbd_led_status(comp, &led_status_cur);
-		usleep(50);
-	}
+	usleep(2000);
 }
 
 static void scan_input_devs(struct cb_compositor *c, const char *input_dir)
@@ -3495,7 +3485,6 @@ static void scan_input_devs(struct cb_compositor *c, const char *input_dir)
 	char *filename;
 	DIR *dir;
 	struct dirent *de;
-	enum input_type type;
 
 	dir = opendir(input_dir);
 	if(dir == NULL)
@@ -3514,11 +3503,6 @@ static void scan_input_devs(struct cb_compositor *c, const char *input_dir)
 			continue;
 
 		strcpy(filename, de->d_name);
-		type = test_dev(devname);
-		if (type == INPUT_TYPE_UNKNOWN)
-			continue;
-		if (type == INPUT_TYPE_KBD_LED_VDEV)
-			continue;
 		add_input_device(c, devname);
 	}
 
@@ -3576,7 +3560,7 @@ static s32 cb_compositor_input_init(struct cb_compositor *c)
 	ioctl(c->uinput_fd, UI_SET_KEYBIT, KEY_SCROLLLOCK);
 
 	memset(&uud, 0, sizeof(uud));
-	snprintf(uud.name, UINPUT_MAX_NAME_SIZE, "cube simulate keyboard");
+	snprintf(uud.name, UINPUT_MAX_NAME_SIZE, SW_KBD_NAME);
 	write(c->uinput_fd, &uud, sizeof(uud));
 
 	ioctl(c->uinput_fd, UI_DEV_CREATE);
