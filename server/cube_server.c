@@ -24,7 +24,9 @@
 #include <string.h>
 #include <ctype.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <sys/stat.h>
+#include <sys/param.h>
 #include <errno.h>
 #include <stdint.h>
 #include <sys/mman.h>
@@ -42,6 +44,9 @@
 #include <cube_protocal.h>
 #include <cube_client_agent.h>
 #include <cube_compositor.h>
+
+#define MAIN_ARG_MAX_NR 16
+#define MAIN_ARG_MAX_LEN 128
 
 static enum cb_log_level serv_dbg = CB_LOG_DEBUG;
 
@@ -137,9 +142,95 @@ static void usage(void)
 	printf("\t\t-d, --device=/dev/dri/cardX, device name.\n");
 }
 
-static void run_background(void)
+struct child_process {
+	s32 pid;
+	s32 argc;
+	char argv[MAIN_ARG_MAX_NR][MAIN_ARG_MAX_LEN];
+	s32 start_delay_ms;
+	struct list_head link;
+};
+
+static s32 find_server_pid(struct list_head *processes)
+{
+	struct child_process *p;
+
+	list_for_each_entry(p, processes, link) {
+		if (strstr(p->argv[0], "cube_server"))
+			return p->pid;
+	}
+
+	return 0;
+}
+
+static void start_child_process(struct list_head *processes, s32 argc,
+				char *argv[], s32 ms)
+{
+	struct child_process *p;
+	s32 pid, i;
+
+	p = calloc(1, sizeof(*p));
+	p->start_delay_ms = ms;
+	p->argc = argc;
+
+	for (i = 0; i < argc; i++)
+		strcpy(p->argv[i], argv[i]);
+
+	pid = fork();
+	if (pid == 0) {
+		chdir("/");
+		umask(0);
+		for (i = 0; i < NOFILE; i++)
+			close(i);
+		execv(p->argv[0], argv);
+	} else if (pid > 0) {
+		p->pid = pid;
+		list_add_tail(&p->link, processes);
+		usleep(ms * 1000);
+		printf("Process %s started with pid %d.\n", p->argv[0], p->pid);
+	} else {
+		fprintf(stderr, "failed to create process %s\n", p->argv[0]);
+	}
+}
+
+static s32 child_processes_proc(s32 signal_number, void *data)
+{
+	struct list_head *processes = data;
+	s32 state, pid, server_pid;
+	struct child_process *p, *n;
+	char *av[MAIN_ARG_MAX_NR] = {NULL};
+	s32 i;
+
+	while ((pid = waitpid(-1, &state, WNOHANG)) > 0) {
+		list_for_each_entry_safe(p, n, processes, link) {
+			if (pid == p->pid) {
+				list_del(&p->link);
+				fprintf(stderr, "Process %s hangup.\n",
+					p->argv[0]);
+				if (strstr(p->argv[0], "cube_log")) {
+					server_pid = find_server_pid(processes);
+					printf("Kill cube server. %d\n",
+						server_pid);
+					kill(server_pid, SIGKILL);
+				}
+				for (i = 0; i < p->argc; i++) {
+					av[i] = p->argv[i];
+				}
+				av[i] = NULL;
+				start_child_process(processes, p->argc, av, 10);
+				free(p);
+			}
+		}
+	}
+
+	return 0;
+}
+
+static void run_background(s32 log_argc, char *log_argv[],
+			   s32 server_argc, char *server_argv[])
 {
 	s32 pid;
+	struct list_head child_processes;
+	struct cb_event_loop *loop;
 
 	signal(SIGTTOU, SIG_IGN);
 	signal(SIGTTIN, SIG_IGN);
@@ -165,7 +256,17 @@ static void run_background(void)
 
 	umask(0);
 
-	signal(SIGCHLD, SIG_IGN);
+	INIT_LIST_HEAD(&child_processes);
+	start_child_process(&child_processes, log_argc, log_argv, 10);
+	start_child_process(&child_processes, server_argc, server_argv, 10);
+
+	loop = cb_event_loop_create();
+	(void)cb_event_loop_add_signal(loop, SIGCHLD,
+				       child_processes_proc,
+				       &child_processes);
+	while (1) {
+		cb_event_loop_dispatch(loop, -1);
+	}
 }
 
 static void cb_server_stop(struct cb_server *server)
@@ -478,6 +579,11 @@ s32 main(s32 argc, char **argv)
 	bool run_as_background = false;
 	struct cb_server *server;
 	s32 seat = 0;
+	char log_argv0[MAIN_ARG_MAX_LEN];
+	char log_argv1[MAIN_ARG_MAX_LEN];
+	char *log_argv[MAIN_ARG_MAX_NR] = {NULL};
+	char *server_argv[MAIN_ARG_MAX_NR] = {NULL};
+	char *p;
 
 	while ((ch = getopt_long(argc, argv, short_options,
 				 long_options, NULL)) != -1) {
@@ -500,8 +606,21 @@ s32 main(s32 argc, char **argv)
 		}
 	}
 
-	if (run_as_background)
-		run_background();
+	if (run_as_background) {
+		strcpy(log_argv0, argv[0]);
+		p = strstr(log_argv0, "cube_server");
+		*p = '\0';
+		strcat(p, "cube_log");
+		sprintf(log_argv1, "-s %d", seat);
+		log_argv[0] = log_argv0;
+		log_argv[1] = log_argv1;
+		log_argv[2] = NULL;
+		server_argv[0] = argv[0];
+		server_argv[1] = log_argv1;
+		server_argv[2] = device_name;
+		server_argv[3] = NULL;
+		run_background(2, log_argv, 3, server_argv);
+	}
 
 	server = cb_server_create(seat, device_name);
 	if (!server)
