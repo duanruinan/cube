@@ -50,6 +50,12 @@ struct cube_input {
 	s32 count_bos;
 	struct mc_bo_info bos[2];
 	s32 work_bo;
+	bool show_mc_pending;
+	bool hide_mc_pending;
+	bool update_mc_pending;
+	bool need_timeout_detect;
+	bool draw_mc_pending;
+	void *update_mc_timer;
 	void *delayed_timer;
 	void *timeout_timer;
 	void *show_hide_timer;
@@ -75,11 +81,78 @@ static void mc_commited_cb(bool success, void *userdata, u64 bo_id)
 	struct cb_client *client = input->client;
 
 	if (!success) {
-		client->timer_update(client, input->delayed_timer, 100, 0);
+		printf("failed to commit mc %ld\n", (s64)bo_id);
+		if (((s32)bo_id) == -ENOENT ||
+		    ((s32)bo_id) == -EBUSY) {
+			client->timer_update(client, input->delayed_timer,
+					     100, 0);
+		}
 	} else {
 		client->timer_update(client, input->delayed_timer, 0, 0);
-		client->timer_update(client, input->timeout_timer,
-					     500, 0);
+		if (!input->need_timeout_detect)
+			return;
+		printf("update timer\n");
+		client->timer_update(client, input->timeout_timer, 100, 0);
+	}
+}
+
+static void mc_idle_task(void *data)
+{
+	struct cube_input *input = data;
+	struct cb_client *client = input->client;
+	struct cb_mc_info mc_info;
+	s32 ret;
+
+	if (input->hide_mc_pending) {
+		printf("Hide mc cursor\n");
+		if (input->update_mc_pending) {
+			printf("Hide mc cursor delayed.\n");
+			return;
+		}
+		input->hide_mc_pending = false;
+		mc_info.type = MC_CMD_TYPE_HIDE;
+		input->need_timeout_detect = false;
+		ret = client->commit_mc(client, &mc_info);
+		if (ret < 0) {
+			fprintf(stderr, "failed to hide cursor\n");
+		}
+		input->shown = false;
+	} else if (input->show_mc_pending) {
+		printf("Show mc cursor\n");
+		if (input->update_mc_pending) {
+			printf("Show mc cursor delayed.\n");
+			return;
+		}
+		input->show_mc_pending = false;
+		mc_info.type = MC_CMD_TYPE_SHOW;
+		input->need_timeout_detect = false;
+		ret = client->commit_mc(client, &mc_info);
+		if (ret < 0) {
+			fprintf(stderr, "failed to show cursor\n");
+		}
+		input->shown = true;
+		if (input->draw_mc_pending)
+			client->add_idle_task(client, input, mc_idle_task);
+	} else {
+		if (input->update_mc_pending)
+			return;
+		if (!input->draw_mc_pending)
+			return;
+		input->draw_mc_pending = false;
+		input->update_mc_pending = true;
+		mc_info.cursor.hot_x = 5;
+		mc_info.cursor.hot_y = 5;
+		mc_info.cursor.w = 64;
+		mc_info.cursor.h = 64;
+		mc_info.type = MC_CMD_TYPE_SET_CURSOR;
+		input->work_bo = 1 - input->work_bo;
+		mc_info.bo_id = input->bos[1 - input->work_bo].bo_id;
+		input->need_timeout_detect = true;
+		ret = client->commit_mc(client, &mc_info);
+		if (ret < 0) {
+			fprintf(stderr, "failed to commit mc %s\n", __func__);
+			client->stop(client);
+		}
 	}
 }
 
@@ -87,21 +160,12 @@ static void mc_flipped_cb(void *userdata, u64 bo_id)
 {
 	struct cube_input *input = userdata;
 	struct cb_client *client = input->client;
-	struct cb_mc_info mc_info;
-	s32 ret;
 
+	printf("flipped\n");
+	input->update_mc_pending = false;
 	client->timer_update(client, input->timeout_timer, 0, 0);
-	mc_info.cursor.hot_x = 5;
-	mc_info.cursor.hot_y = 5;
-	mc_info.cursor.w = 64;
-	mc_info.cursor.h = 64;
-	mc_info.type = MC_CMD_TYPE_SET_CURSOR;
-	input->work_bo = 1 - input->work_bo;
-	mc_info.bo_id = input->bos[1 - input->work_bo].bo_id;
-	ret = client->commit_mc(client, &mc_info);
-	if (ret < 0) {
-		fprintf(stderr, "failed to commit mc %s\n", __func__);
-		client->stop(client);
+	if (input->draw_mc_pending) {
+		client->add_idle_task(client, input, mc_idle_task);
 	}
 }
 
@@ -144,6 +208,8 @@ err:
 		client->set_mc_flipped_cb(client,
 					  input,
 					  mc_flipped_cb);
+		input->update_mc_pending = true;
+		input->need_timeout_detect = true;
 		ret = client->commit_mc(client, &mc_info);
 		if (ret < 0) {
 			fprintf(stderr, "failed to commit mc %s\n", __func__);
@@ -306,6 +372,10 @@ static void ready_cb(void *userdata)
 	client->set_kbd_led_st_cb(client, input, kbd_led_st_cb);
 	printf("<<< Get kbd led status\n");
 	client->send_get_kbd_led_st(client);
+
+	input->show_mc_pending = true;
+	client->add_idle_task(client, input, mc_idle_task);
+	client->timer_update(client, input->update_mc_timer, 5, 0);
 }
 
 static void raw_input_evts_cb(void *userdata,
@@ -351,39 +421,35 @@ static s32 show_hide_cb(void *userdata)
 {
 	struct cube_input *input = userdata;
 	struct cb_client *client = input->client;
-	struct cb_mc_info mc_info;
-	s32 ret;
 
-	input->shown = !input->shown;
-	if (input->shown)
-		mc_info.type = MC_CMD_TYPE_SHOW;
-	else
-		mc_info.type = MC_CMD_TYPE_HIDE;
-	ret = client->commit_mc(client, &mc_info);
-	if (ret < 0) {
-		fprintf(stderr, "failed to commit mc %s\n", __func__);
+	if (!input->shown) {
+		printf("Show mc cursor pending\n");
+		input->show_mc_pending = true;
+	} else {
+		printf("Hide mc cursor pending\n");
+		input->hide_mc_pending = true;
 	}
-	client->timer_update(client, input->show_hide_timer, 3000, 0);
+	client->timer_update(client, input->show_hide_timer, 5000, 0);
+	client->add_idle_task(client, input, mc_idle_task);
+	return 0;
+}
+
+static s32 update_mc_cb(void *userdata)
+{
+	struct cube_input *input = userdata;
+	struct cb_client *client = input->client;
+
+	client->timer_update(client, input->update_mc_timer, 5, 0);
+	if (!input->draw_mc_pending) {
+		input->draw_mc_pending = true;
+		client->add_idle_task(client, input, mc_idle_task);
+	}
 	return 0;
 }
 
 static s32 timeout_cb(void *userdata)
 {
-	struct cube_input *input = userdata;
-	struct cb_client *client = input->client;
-	struct cb_mc_info mc_info;
-	s32 ret;
-
-	mc_info.cursor.hot_x = 5;
-	mc_info.cursor.hot_y = 5;
-	mc_info.cursor.w = 64;
-	mc_info.cursor.h = 64;
-	mc_info.type = MC_CMD_TYPE_SET_CURSOR;
-	mc_info.bo_id = input->bos[1 - input->work_bo].bo_id;
-	ret = client->commit_mc(client, &mc_info);
-	if (ret < 0) {
-		fprintf(stderr, "failed to commit mc %s\n", __func__);
-	}
+	printf("MC timeout.\n");
 	return 0;
 }
 
@@ -420,8 +486,12 @@ s32 main(s32 argc, char **argv)
 	if (!input->client)
 		goto out;
 
+	input->shown = true;
+
 	client = input->client;
 
+	input->update_mc_timer = client->add_timer_handler(client, input,
+							   update_mc_cb);
 	input->delayed_timer = client->add_timer_handler(client, input,
 							 timer_cb);
 	input->timeout_timer = client->add_timer_handler(client, input,
@@ -434,13 +504,15 @@ s32 main(s32 argc, char **argv)
 	input->update_led_timer = client->add_timer_handler(client, input,
 							    update_led);
 	input->capsl_led = true;
-	client->timer_update(client, input->show_hide_timer, 3000, 0);
+	client->timer_update(client, input->show_hide_timer, 5000, 0);
 
 	client->set_ready_cb(client, input, ready_cb);
 	client->set_raw_input_evts_cb(client, input, raw_input_evts_cb);
+
 out:
 	if (input->client)
 		client->run(client);
+	client->rm_handler(client, input->update_mc_timer);
 	client->rm_handler(client, input->delayed_timer);
 	client->rm_handler(client, input->timeout_timer);
 	client->rm_handler(client, input->show_hide_timer);
