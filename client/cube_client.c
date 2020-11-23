@@ -1785,9 +1785,9 @@ static void client_ipc_proc(struct client *cli)
 	if (flag & (1 << CB_CMD_MC_COMMIT_ACK_SHIFT)) {
 		id = cb_client_parse_mc_commit_ack_cmd(buf);
 		if (cli->mc_commited_cb) {
-			if (id == (u64)(-1)) {
+			if (id) {
 				cli->mc_commited_cb(false,
-					cli->mc_commited_cb_userdata, 0UL);
+					cli->mc_commited_cb_userdata, id);
 				return;
 			}
 			cli->mc_commited_cb(true,

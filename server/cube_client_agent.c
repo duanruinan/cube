@@ -1028,7 +1028,8 @@ static void mc_proc(struct cb_client_agent *client, u8 *buf)
 		buffer = container_of((struct cb_buffer *)bo_id,
 				      struct shm_buffer, base);
 		if (!buffer) {
-			cb_client_agent_send_mc_commit_ack(client, (u64)(-1ULL));
+			cb_client_agent_send_mc_commit_ack(client,
+							   (u64)(-EINVAL));
 			return;
 		}
 		ret = client->c->set_mouse_cursor(client->c, buffer->shm.map,
@@ -1040,7 +1041,8 @@ static void mc_proc(struct cb_client_agent *client, u8 *buf)
 					false);
 		if (ret < 0) {
 			clia_err("failed to set cursor %d", ret);
-			cb_client_agent_send_mc_commit_ack(client, (u64)(-1ULL));
+			cb_client_agent_send_mc_commit_ack(client,
+							   (u64)ret);
 			return;
 		}
 		cb_client_agent_send_mc_commit_ack(client, 0);

@@ -2795,12 +2795,12 @@ static s32 cb_compositor_set_mouse_cursor(struct compositor *comp,
 #endif
 	if (!data || !width || width > MC_MAX_WIDTH || !height ||
 	    height > MC_MAX_HEIGHT || !stride || !comp) {
-		comp_err("illegal param");
+		comp_err("illegal mc param");
 		return -EINVAL;
 	}
 
 	if (c->mc_update_pending) {
-		comp_debug("mc update pending");
+		comp_warn("mc update pending");
 		return -EBUSY;
 	}
 
@@ -2815,8 +2815,8 @@ static s32 cb_compositor_set_mouse_cursor(struct compositor *comp,
 #ifdef MC_DEBUG
 		printf("cursor is hide\n");
 #endif
-		comp_debug("cursor is hide");
-		return -ENODEV;
+		comp_warn("cursor is hide");
+		return -ENOENT;
 	}
 
 	buffer = c->mc_buf[1 - c->mc_buf_cur];
@@ -2885,10 +2885,8 @@ static s32 cb_compositor_set_mouse_cursor(struct compositor *comp,
 	if (dirty) {
 		c->mc_update_pending = true;
 	} else {
-#ifdef MC_DEBUG
 		comp_warn("no dirty");
-#endif
-		return -EINVAL;
+		return -ENOENT;
 	}
 
 	return 0;
