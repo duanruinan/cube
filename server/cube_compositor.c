@@ -1558,7 +1558,6 @@ static void scanout_pending_buffer(struct cb_compositor *c,
 						  &buffer->dma_buf_completed_l);
 		buffer->completed_l_added = true;
 	}
-	s->buffer_pending = NULL;
 }
 
 static void scanout_pending_dma_buf_surface(struct cb_compositor *c)
@@ -3818,44 +3817,6 @@ static bool try_prepare_dma_buf_plane(struct cb_compositor *c,
 
 	return true;
 }
-
-/*
-static void cancel_dma_buf_by_output(struct cb_view *view, struct cb_output *o)
-{
-	struct cb_surface *surface = view->surface;
-	struct plane *plane;
-
-	comp_warn("view->output_mask: %08X, pipe: %d", view->output_mask,
-		o->pipe);
-	if (view->output_mask & (1U << o->pipe)) {
-		plane = view->planes[o->pipe];
-		if (plane != o->primary_plane) {
-			comp_warn("put plane zpos: %d, type: %d",
-				plane->zpos, plane->type);
-			put_free_output_plane(o, plane);
-		} else {
-			enable_primary_renderer(o);
-		}
-		view->planes[o->pipe] = NULL;
-		view->output_mask &= (~(1U << o->pipe));
-	}
-
-	if (surface->buffer_cur) {
-		if (surface->buffer_cur->dirty) {
-			surface->buffer_cur->dirty &= (~(1U << o->pipe));
-			if (!surface->buffer_cur->dirty) {
-				comp_warn("del flipped listener for dma-buf");
-				list_del(&surface->buffer_cur->
-						dma_buf_flipped_l.link);
-				comp_warn("del completed listener for dma-buf");
-				list_del(&surface->buffer_cur->
-						dma_buf_completed_l.link);
-				surface->buffer_cur->completed_l_added = false;
-			}
-		}
-	}
-}
-*/
 
 static bool is_yuv(enum cb_pix_fmt pix_fmt)
 {
