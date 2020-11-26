@@ -233,6 +233,7 @@ enum {
 	PLANE_FEATURE_IDX_HDR2SDR,
 	PLANE_FEATURE_IDX_SDR2HDR,
 	PLANE_FEATURE_IDX_AFBDC,
+	PLANE_FEATURE_IDX_PDAF_POS,
 	PLANE_FEATURE_IDX_NR,
 };
 
@@ -251,6 +252,9 @@ static struct enum_value plane_feature_enum[] = {
 	},
 	[PLANE_FEATURE_IDX_AFBDC] = {
 		.name = "afbdc",
+	},
+	[PLANE_FEATURE_IDX_PDAF_POS] = {
+		.name = "pdaf_pos",
 	},
 };
 
@@ -1929,11 +1933,16 @@ static struct plane *drm_plane_create(struct drm_scanout *dev,
 			plane->base.afbdc_support = true;
 		else
 			plane->base.afbdc_support = false;
+		if (value & prop->c.ev.values[PLANE_FEATURE_IDX_PDAF_POS].value)
+			plane->base.pdaf_pos_support = true;
+		else
+			plane->base.pdaf_pos_support = false;
 		drm_debug("scale support: %d", plane->base.scale_support);
 		drm_debug("alpha support: %d", plane->base.alpha_support);
 		drm_debug("hdr2sdr support: %d", plane->base.hdr2sdr_support);
 		drm_debug("sdr2hdr support: %d", plane->base.sdr2hdr_support);
 		drm_debug("afbdc support: %d", plane->base.afbdc_support);
+		drm_debug("pdaf pos support: %d", plane->base.pdaf_pos_support);
 	}
 
 	alpha_src = drm_get_prop_value(

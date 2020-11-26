@@ -223,6 +223,7 @@ struct plane {
 	bool hdr2sdr_support;
 	bool sdr2hdr_support;
 	bool afbdc_support;
+	bool pdaf_pos_support;
 
 	/* the sink of this plane */
 	struct output *output;
