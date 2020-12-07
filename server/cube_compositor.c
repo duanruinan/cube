@@ -118,7 +118,7 @@ struct cb_output {
 
 	/*
 	 * crtc's primary plane and cursor plane,
-	 * a crtc must at least own the two planes.
+	 * a crtc must at least own two planes.
 	 * the two plane pointer here are used to accelerate plane selection.
 	 */
 	struct plane *primary_plane;
@@ -556,7 +556,7 @@ static struct plane *find_free_output_plane(struct cb_output *o,
 		}
 	}
 
-	comp_err("cannot find plane with format %d", fmt);
+	comp_err("cannot find plane which supports format %4.4s.", fourcc);
 
 	return NULL;
 }
@@ -863,11 +863,6 @@ static void cancel_renderer_surface(struct cb_surface *surface, bool force)
 		}
 		cb_compositor_repaint(c);
 	}
-
-	if (surface->buffer_last) {
-		comp_debug("surface buffer %p complete.", surface->buffer_last);
-	}
-	surface->buffer_last = surface->buffer_cur;
 }
 
 static void cancel_so_tasks(struct cb_output *output)
@@ -877,17 +872,10 @@ static void cancel_so_tasks(struct cb_output *output)
 	struct cb_view *view;
 	struct cb_surface *surface;
 
-	comp_debug("sot remains:");
-	printf("sot remains:\n");
+	comp_warn("sot remains:");
 	list_for_each_entry_safe(sot, sot_next, &output->so_tasks, link) {
 		list_del(&sot->link);
-		comp_debug("\t%d,%d %ux%u -> %d,%d %ux%u, zpos: %d, dirty:%08X",
-			   sot->src->pos.x, sot->src->pos.y,
-			   sot->src->w, sot->src->h,
-			   sot->dst->pos.x, sot->dst->pos.y,
-			   sot->dst->w, sot->dst->h, sot->zpos,
-			   sot->buffer->dirty);
-		printf("\t%d,%d %ux%u -> %d,%d %ux%u, zpos: %d, dirty:%08X\n",
+		comp_warn("\t%d,%d %ux%u -> %d,%d %ux%u, zpos: %d, dirty:%08X",
 			   sot->src->pos.x, sot->src->pos.y,
 			   sot->src->w, sot->src->h,
 			   sot->dst->pos.x, sot->dst->pos.y,
@@ -904,7 +892,6 @@ static void cancel_so_tasks(struct cb_output *output)
 						  NULL);
 					}
 				} else {
-					printf("!!!!!!!!!!!!\n");
 				}
 			}
 		}
@@ -928,8 +915,7 @@ static void cancel_so_tasks(struct cb_output *output)
 		}
 	}
 	output->renderable_buffer_changed = false;
-	comp_debug("Clear output %d renderable_buffer_changed", output->pipe);
-	printf("Clear output %d renderable_buffer_changed\n", output->pipe);
+	comp_warn("Clear output %d renderable_buffer_changed", output->pipe);
 }
 
 static void disable_output_render(struct cb_output *o)
@@ -1348,6 +1334,10 @@ static bool prepare_dma_buf_planes(struct cb_surface *surface,
 
 	for (i = 0; i < c->count_outputs; i++) {
 		o = c->outputs[i];
+
+		/* keep plane info when connector is disconnected */
+		if (!o->enabled)
+			continue;
 		
 		pipe = o->pipe;
 		plane = view->planes[o->pipe];
@@ -1366,9 +1356,6 @@ static bool prepare_dma_buf_planes(struct cb_surface *surface,
 				put_free_output_plane(o, plane);
 			view->planes[pipe] = NULL;
 		}
-
-		if (!o->enabled)
-			continue;
 
 		if (!(plane && plane == o->primary_plane)) {
 			comp_debug("find plane for fmt %d, zpos %d",
@@ -1475,111 +1462,6 @@ static void dma_buf_completed_cb(struct cb_listener *listener, void *data)
 	comp_debug("del dma buf complete listener end");
 }
 
-static void scanout_pending_buffer(struct cb_compositor *c,
-				   struct cb_surface *s)
-{
-	struct cb_view *v;
-	struct cb_output *o;
-	u32 mask, diff;
-	s32 i, pipe;
-	struct plane *plane;
-	bool empty;
-	struct cb_buffer *buffer;
-
-	s->c = c;
-	v = s->view;
-	mask = v->output_mask;
-	s->buffer_pending->surface = s;
-	s->width = s->buffer_pending->info.width;
-	s->height = s->buffer_pending->info.height;
-
-	for (i = 0; i < c->count_outputs; i++) {
-		o = c->outputs[i];
-		pipe = o->pipe;
-		plane = v->planes[pipe];
-		comp_warn("Surface %p's plane: %p", s, plane);
-		if (plane && plane != o->primary_plane) {
-			comp_warn("put plane zpos: %d, type: %d",
-				plane->zpos, plane->type);
-			put_free_output_plane(o, plane);
-		} else {
-			if (o->primary_renderer_disabled) {
-				/* perhaps ! */
-				comp_warn("enable primary: %d, %d",
-					  o->primary_renderer_disable_pending,
-					  o->primary_renderer_enable_pending);
-				o->primary_renderer_disabled = false;
-			}
-		}
-		v->planes[pipe] = NULL;
-	}
-
-	/*
-	 * view changed, may be position changed or buffer changed.
-	 */
-	setup_view_output_mask(v, c);
-	diff = mask ^ v->output_mask;
-
-	prepare_dma_buf_planes(s, s->buffer_pending);
-	empty = true;
-	scanout_buffer_dirty_init(s->buffer_pending);
-	s->buffer_cur = s->buffer_pending;
-	
-	for (i = 0; i < c->count_outputs; i++) {
-		o = c->outputs[i];
-		if (!o->enabled)
-			continue;
-		comp_warn("view->output_mask: %08X", v->output_mask);
-		if (v->output_mask & (1U << o->pipe)) {
-			/* Set buffer dirty */
-			scanout_set_buffer_dirty(s->buffer_pending, o->output);
-		} else {
-			if (!((1U << o->pipe) & diff)) {
-				continue;
-			}
-		}
-		cb_compositor_repaint_by_output(o);
-		empty = false;
-	}
-
-	buffer = s->buffer_pending;
-	s->buffer_pending = NULL;
-	if (empty) {
-		s->buffer_cur = NULL;
-		return;
-	}
-	buffer->dma_buf_flipped_l.notify = dma_buf_flipped_cb;
-	comp_warn("add flipped listener for surface %p", s);
-	c->so->add_buffer_flip_notify(c->so, buffer,&buffer->dma_buf_flipped_l);
-	if (!buffer->completed_l_added) {
-		comp_warn("add completed listener for surface %p", s);
-		buffer->dma_buf_completed_l.notify = dma_buf_completed_cb;
-		c->so->add_buffer_complete_notify(c->so, buffer,
-						  &buffer->dma_buf_completed_l);
-		buffer->completed_l_added = true;
-	}
-}
-
-static void scanout_pending_dma_buf_surface(struct cb_compositor *c)
-{
-	struct cb_view *v;
-	struct cb_surface *s;
-
-	list_for_each_entry(v, &c->views, link) {
-		if (!v->direct_show)
-			continue;
-		if (!v->surface)
-			continue;
-
-		s = v->surface;
-		if (s->buffer_pending) {
-			comp_warn("surface %p has pending buffer %p",
-				  s, s->buffer_pending);
-			scanout_pending_buffer(c, s);
-		}
-	}
-}
-
 static void head_changed_cb(struct cb_listener *listener, void *data)
 {
 	struct cb_output *o = container_of(listener, struct cb_output,
@@ -1618,11 +1500,16 @@ static void head_changed_cb(struct cb_listener *listener, void *data)
 			comp_err("failed to create renderer output");
 			assert(o->ro);
 		}
-		printf("output %d is enabled. repaint_status: %d\n",
+		printf("output %d is enabled. repaint_status: %d.\n",
 			o->pipe, o->repaint_status);
 		comp_notice("output %d is enabled. repaint_status: %d",
 			    o->pipe, o->repaint_status);
-		scanout_pending_dma_buf_surface(c);
+		/*
+		 * force to repaint all surface.
+		 * surface buffer is released.
+		 */
+		o->renderable_buffer_changed = true;
+		/* scanout_pending_dma_buf_surface(c); */
 	} else {
 		/* update view port when connector is disconnected */
 		update_crtc_view_port(o);
@@ -1961,6 +1848,11 @@ static s32 vflipped_timer_cb(void *data)
 				  o->pipe);
 		}
 		cb_signal_emit(&o->surface_flipped_signal, NULL);
+		/*
+		 * force to repaint all surface.
+		 * (surface buffer may be released)
+		 */
+		o->renderable_buffer_changed = true;
 	}
 	o->vflipped_pending = false;
 
@@ -2016,11 +1908,13 @@ static struct cb_output *cb_output_create(struct cb_compositor *c,
 
 	/* register output's page flip handler */
 	output->output_flipped_l.notify = output_flipped_cb;
+	INIT_LIST_HEAD(&output->output_flipped_l.link);
 	output->output->add_page_flip_notify(output->output,
 					     &output->output_flipped_l);
 
 	/* register dummy page flip handler */
 	output->dummy_flipped_l.notify = dummy_flipped_cb;
+	INIT_LIST_HEAD(&output->dummy_flipped_l.link);
 	so->add_buffer_flip_notify(so, output->dummy, &output->dummy_flipped_l);
 
 	/* set desktop size as DUMMY SIZE */
@@ -3700,7 +3594,35 @@ static void surface_flipped_cb(struct cb_listener *listener, void *data)
 		view->painted = false;
 		cancel_renderer_surface(surface, true);
 		client->send_bo_flipped(client, NULL);
-		client->send_bo_complete(client, NULL);
+	}
+}
+
+static void set_renderable_buffer_changed(struct cb_compositor *c,
+					  struct cb_view *view,
+					  u32 mask_diff)
+{
+	struct cb_output *o;
+	bool in_area;
+	s32 i;
+
+	for (i = 0; i < c->count_outputs; i++) {
+		o = c->outputs[i];
+		/*
+		 * refressh conditions:
+		 * 	1. output enabled.
+		 * 	2. has something to draw now.
+		 * 	3. has something to draw before,
+		 * 	   but now there is no need to draw.
+		 */
+		if (!o->enabled)
+			continue;
+		in_area = ((view->output_mask & (1U << o->pipe)) != 0);
+		if (in_area ||
+		    ((!in_area) && ((1U << o->pipe) & mask_diff))) {
+			o->renderable_buffer_changed = true;
+			comp_debug("Set output %d renderable_buffer_changed %d",
+				   o->pipe, o->renderable_buffer_changed);
+		}
 	}
 }
 
@@ -3709,10 +3631,9 @@ static void cb_compositor_commit_surface(struct compositor *comp,
 {
 	struct cb_compositor *c = to_cb_c(comp);
 	struct cb_view *view = surface->view;
-	s32 i;
+	struct cb_client_agent *client = surface->client_agent;
 	struct cb_output *o;
 	u32 mask, diff;
-	bool in_area;
 
 	comp_debug("commit surface %p's buffer %p", surface,
 		   surface->buffer_pending);
@@ -3742,11 +3663,10 @@ static void cb_compositor_commit_surface(struct compositor *comp,
 			/* buffer changed */
 			c->r->attach_buffer(c->r, surface,
 					    surface->buffer_pending);
-			/* DMA-BUF for renderer do not need to flush damage */
-			if (surface->buffer_pending->info.type
-					== CB_BUF_TYPE_SHM) {
-				c->r->flush_damage(c->r, surface);
-			}
+		}
+		/* DMA-BUF for renderer do not need to flush damage */
+		if (surface->buffer_pending->info.type == CB_BUF_TYPE_SHM) {
+			c->r->flush_damage(c->r, surface);
 		}
 
 		surface->width = surface->buffer_pending->info.width;
@@ -3767,55 +3687,10 @@ static void cb_compositor_commit_surface(struct compositor *comp,
 		cb_compositor_repaint(c);
 	}
 
-	for (i = 0; i < c->count_outputs; i++) {
-		o = c->outputs[i];
-		/*
-		 * refressh conditions:
-		 * 	1. output enabled.
-		 * 	2. has something to draw now.
-		 * 	3. has something to draw before,
-		 * 	   but now there is no need to draw.
-		 */
-		if (!o->enabled)
-			continue;
-		in_area = ((view->output_mask & (1U << o->pipe)) != 0);
-		if (in_area ||
-		    ((!in_area) && ((1U << o->pipe) & diff))) {
-			o->renderable_buffer_changed = true;
-			comp_debug("Set output %d renderable_buffer_changed %d",
-				   o->pipe, o->renderable_buffer_changed);
-		}
-	}
+	set_renderable_buffer_changed(c, view, diff);
 
+	client->send_bo_complete(client, surface->buffer_pending);
 	surface->buffer_pending = NULL;
-}
-
-static bool try_prepare_dma_buf_plane(struct cb_compositor *c,
-				      struct cb_buffer *buffer, u32 mask,
-				      s32 zpos)
-{
-	struct cb_output *o;
-	struct plane *plane;
-	s32 i;
-
-	for (i = 0; i < c->count_outputs; i++) {
-		o = c->outputs[i];
-		plane = find_free_output_plane(o, buffer->info.pix_fmt, zpos);
-		if (!plane) {
-			if (primary_support_fmt(o, buffer->info.pix_fmt)) {
-				plane = o->primary_plane;
-				if (o->primary_renderer_disabled) {
-					comp_warn("output %d's primary already "
-						  "be used", o->pipe);
-					return false;
-				}
-			} else {
-				return false;
-			}
-		}
-	}
-
-	return true;
 }
 
 static bool is_yuv(enum cb_pix_fmt pix_fmt)
@@ -3867,7 +3742,7 @@ static void add_dma_buf_to_task(struct cb_output *o, struct cb_surface *surface,
 	}
 }
 
-static void cb_compositor_commit_dma_buf(struct compositor *comp,
+static s32 cb_compositor_commit_dma_buf(struct compositor *comp,
 					 struct cb_surface *surface)
 {
 	struct cb_compositor *c = to_cb_c(comp);
@@ -3897,12 +3772,20 @@ static void cb_compositor_commit_dma_buf(struct compositor *comp,
 			pipe = o->pipe;
 			plane = view->planes[pipe];
 			if (view->output_mask & (1U << o->pipe)) {
-				if (plane != o->primary_plane) {
-					comp_warn("put plane zpos: %d, type "
-						"%d", plane->zpos, plane->type);
-					put_free_output_plane(o, plane);
-				} else {
-					enable_primary_renderer(o);
+				if (plane) {
+					if (plane != o->primary_plane) {
+						comp_warn("put plane zpos: %d, "
+							  "type %d",
+							  plane->zpos,
+							  plane->type);
+						/* crash ? plane is null
+						 * when dp is out */
+						put_free_output_plane(o, plane);
+					} else {
+						comp_warn("enable primary "
+							  "render");
+						enable_primary_renderer(o);
+					}
 				}
 				view->planes[pipe] = NULL;
 			}
@@ -3922,7 +3805,6 @@ static void cb_compositor_commit_dma_buf(struct compositor *comp,
 
 		empty = true;
 		scanout_buffer_dirty_init(surface->buffer_pending);
-		surface->buffer_cur = surface->buffer_pending;
 		for (i = 0; i < c->count_outputs; i++) {
 			o = c->outputs[i];
 			if (!o->enabled)
@@ -3933,11 +3815,6 @@ static void cb_compositor_commit_dma_buf(struct compositor *comp,
 				scanout_set_buffer_dirty(
 					surface->buffer_pending,
 					o->output);
-				/*
-				printf("Set buffer %p dirty %08X\n",
-					surface->buffer_pending,
-					surface->buffer_pending->dirty);
-				*/
 			} else {
 				if (!((1U << o->pipe) & diff)) {
 					continue;
@@ -3955,10 +3832,17 @@ static void cb_compositor_commit_dma_buf(struct compositor *comp,
 		if (empty) {
 			comp_warn("commit DMA-BUF %p for surface %p deferred",
 				  surface->buffer_pending, surface);
+			surface->buffer_pending = NULL;
 			surface->buffer_cur = NULL;
-			return;
+			return -ENOENT;
 		}
-
+		surface->buffer_cur = surface->buffer_pending;
+		comp_debug("set buffer_cur: %lX", (u64)(surface->buffer_cur));
+		/* printf("set buffer_cur: %lX\n",
+			(u64)(surface->buffer_cur)); */
+		surface->buffer_last = surface->buffer_cur;
+		comp_debug("set buffer last: %lX",
+			   (u64)(surface->buffer_last));
 		buffer = surface->buffer_pending;
 		buffer->dma_buf_flipped_l.notify = dma_buf_flipped_cb;
 		comp_debug("add flipped listener for dma-buf");
@@ -3977,6 +3861,8 @@ static void cb_compositor_commit_dma_buf(struct compositor *comp,
 	}
 
 	surface->buffer_pending = NULL;
+
+	return 0;
 }
 
 static struct cb_buffer *cb_compositor_import_rd_dmabuf(
@@ -4032,7 +3918,12 @@ static void cb_compositor_release_so_dmabuf(struct compositor *comp,
 	if (!b)
 		return;
 
-	return c->so->release_dmabuf(c->so, b);
+	c->so->release_dmabuf(c->so, b);
+	if (b->surface && b->surface->buffer_cur == b) {
+		b->surface->buffer_cur = NULL;
+		comp_warn("clear buffer_cur: %lX",
+			  (u64)(b->surface->buffer_cur));
+	}
 }
 
 static void cb_compositor_add_view(struct compositor *comp, struct cb_view *v)
@@ -4061,6 +3952,19 @@ static void cb_compositor_rm_view(struct compositor *comp, struct cb_view *v)
 		cb_compositor_commit_dma_buf(comp, v->surface);
 }
 
+static void destroy_surface_fb_cb(struct cb_buffer *b, void *userdata)
+{
+	struct cb_output *o = userdata;
+
+	if (!o)
+		return;
+
+	if (b == o->rbuf_cur) {
+		o->rbuf_cur = NULL;
+		comp_warn("clear output %d's obuf: %lX", o->pipe, o->rbuf_cur);
+	}
+}
+
 static void do_virtual_renderer_repaint(struct cb_output *o)
 {
 	struct cb_compositor *c = o->c;
@@ -4069,17 +3973,12 @@ static void do_virtual_renderer_repaint(struct cb_output *o)
 	u32 ms, us;
 	u32 refresh_nsec;
 	bool repainted;
-	struct cb_buffer *buffer;
-/*
-	struct scanout_task *sot;
-*/
 
 	if (o->vflipped_pending)
 		return;
 
 	if (o->renderable_buffer_changed) {
 		if (list_empty(&c->views)) {
-			o->rbuf_cur = NULL;
 			goto out;
 		}
 		repainted = ro->repaint(ro, &c->views);
@@ -4087,12 +3986,6 @@ static void do_virtual_renderer_repaint(struct cb_output *o)
 			o->rbuf_cur = NULL;
 			goto out;
 		}
-
-		buffer = c->so->get_surface_buf(c->so, o->native_surface);
-		if (!buffer)
-			goto out;
-		c->so->put_surface_buf(c->so, buffer);
-		o->rbuf_cur = NULL;
 	}
 out:
 
@@ -4111,16 +4004,6 @@ out:
 			view->painted = true;
 	}
 	o->renderable_buffer_changed = false;
-/*
-	sot = cb_cache_get(o->c->so_task_cache, false);
-	sot->buffer = o->dummy;
-	sot->plane = o->primary_plane;
-	sot->zpos = -1;
-	sot->src = &o->dummy_src;
-	sot->dst = &o->crtc_view_port;
-	sot->alpha_src_pre_mul = true;
-	list_add_tail(&sot->link, &o->so_tasks);
-*/
 }
 
 static void do_renderer_repaint(struct cb_output *o)
@@ -4152,7 +4035,9 @@ static void do_renderer_repaint(struct cb_output *o)
 			goto out;
 		}
 
-		buffer = c->so->get_surface_buf(c->so, o->native_surface);
+		buffer = c->so->get_surface_buf(c->so, o->native_surface,
+						destroy_surface_fb_cb,
+						o);
 		if (!buffer) {
 			comp_err("failed to get surface buffer.");
 			goto out;
@@ -4180,6 +4065,9 @@ static void do_dma_buf_repaint(struct cb_output *o)
 	struct cb_compositor *c = o->c;
 	struct cb_view *view;
 	struct cb_surface *surface;
+	/*
+	struct timespec now;
+	*/
 
 	if (list_empty(&c->views))
 		return;
@@ -4188,14 +4076,27 @@ static void do_dma_buf_repaint(struct cb_output *o)
 		if (!view->direct_show)
 			continue;
 		surface = view->surface;
+		
 		if (view->output_mask & (1U << o->pipe)) {
 			/* add buffer to output's so task list */
 			/*
-			printf("Add DMA-BUF %p to output [%d]\n",
-				surface->buffer_cur, o->pipe);
+			clock_gettime(c->clock_type, &now);
+			printf("[%05lu:%06lu] Add DMA-BUF %lX to output [%d]\n",
+				now.tv_sec % 86400l, now.tv_nsec / 1000l,
+				(u64)(surface->buffer_cur), o->pipe);
 			*/
+			comp_debug("Use buffer %lX for surface %p",
+				   (u64)(surface->buffer_cur), surface);
+			/* printf("Use buffer %lX for surface %p\n",
+				   (u64)(surface->buffer_cur), surface); */
 			add_dma_buf_to_task(o, surface, surface->buffer_cur,
 					    view->planes[o->pipe]);
+
+			surface->buffer_last = NULL;
+			comp_debug("clear buffer last: %lX",
+				   (u64)(surface->buffer_last));
+			/* printf("clear buffer last: %lX\n",
+				   (u64)(surface->buffer_last)); */
 		} else {
 			add_dma_buf_to_task(o, surface, NULL,
 					    view->planes[o->pipe]);
@@ -4438,6 +4339,7 @@ struct compositor *compositor_create(char *device_name,
 
 	/* register mc page flip handler */
 	for (i = 0; i < 2; i++) {
+		INIT_LIST_HEAD(&c->mc_flipped_l[i].link);
 		c->mc_flipped_l[i].notify = mc_flipped_cb;
 		c->so->add_buffer_flip_notify(c->so, c->mc_buf[i],
 					      &c->mc_flipped_l[i]);

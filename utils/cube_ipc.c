@@ -33,7 +33,7 @@
 
 s32 cb_socket_cloexec(void)
 {
-	s32 fd;
+	s32 fd, buf_sz, ret;
 
 	fd = socket(PF_LOCAL, SOCK_STREAM | SOCK_CLOEXEC, 0);
 	if (fd >= 0)
@@ -44,6 +44,23 @@ s32 cb_socket_cloexec(void)
 	}
 
 	fd = socket(PF_LOCAL, SOCK_STREAM, 0);
+	buf_sz = 20 * 1024 * 1024;
+	ret = setsockopt(fd, SOL_SOCKET, SO_RCVBUF, (const char*)&buf_sz,
+			 sizeof(s32));
+	if (ret) {
+		fprintf(stderr, "failed to set recv buf sz. %s\n",
+			strerror(errno));
+		return -1;
+	}
+
+	buf_sz = 20 * 1024 * 1024;
+	ret = setsockopt(fd, SOL_SOCKET, SO_SNDBUF, (const char*)&buf_sz,
+			 sizeof(s32));
+	if (ret) {
+		fprintf(stderr, "failed to set snd buf sz. %s\n",
+			strerror(errno));
+		return -1;
+	}
 	return cb_set_cloexec_or_close(fd);
 }
 

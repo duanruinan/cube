@@ -472,6 +472,8 @@ struct drm_fb {
 	s32 ref_cnt;
 	u32 fb_id;
 	void *dev;
+	void (*destroy_surface_fb_cb)(struct cb_buffer *b, void *userdata);
+	void *destroy_surface_fb_cb_userdata;
 };
 
 struct drm_scanout;
@@ -987,7 +989,8 @@ static void drm_fb_ref(struct drm_fb *fb)
 
 	drm_debug("[REF] +");
 	fb->ref_cnt++;
-	drm_debug("[REF] ID: %u %d", fb->fb_id, fb->ref_cnt);
+	drm_debug("[REF] ID: %u %d %lX", fb->fb_id, fb->ref_cnt,
+		  (u64)(&fb->base));
 	/*
 	if (fb->base.info.width != 64 && fb->base.info.width != 1920)
 	printf("[REF] ID: %u %d\n", fb->fb_id, fb->ref_cnt);
@@ -1156,7 +1159,8 @@ static void drm_fb_unref(struct drm_fb *fb)
 	}
 
 	fb->ref_cnt--;
-	drm_debug("[UNREF] ID: %u %d", fb->fb_id, fb->ref_cnt);
+	drm_debug("[UNREF] ID: %u %d %lX", fb->fb_id, fb->ref_cnt,
+		  (u64)(&fb->base));
 	/*
 	if (fb->base.info.width != 64 && fb->base.info.width != 1920)
 	printf("[UNREF] ID: %u %d\n", fb->fb_id, fb->ref_cnt);
@@ -1516,6 +1520,7 @@ static s32 drm_commit(struct drm_pending_state *ps, bool async)
 	ret = drmModeAtomicCommit(dev->fd, req, flags, dev);
 	if (ret) {
 		drm_err("[KMS] failed to commit. (%s)", strerror(errno));
+		assert(0);
 		goto out;
 	}
 
@@ -2993,6 +2998,10 @@ static void drm_fb_destroy_surface_fb(struct gbm_bo *bo, void *data)
 			drm_debug("Remove surface DRM FB");
 			drmModeRmFB(dev->fd, fb->fb_id);
 		}
+		if (fb->destroy_surface_fb_cb) {
+			fb->destroy_surface_fb_cb(&fb->base,
+					fb->destroy_surface_fb_cb_userdata);
+		}
 		cb_cache_put(fb, dev->drm_fb_cache);
 	}
 }
@@ -3008,7 +3017,11 @@ static void drm_scanout_put_surface_buf(struct scanout *so,
 }
 
 static struct cb_buffer *drm_scanout_get_surface_buf(struct scanout *so,
-						     void *surface)
+						     void *surface,
+						     void (*destroy_cb)(
+						     	struct cb_buffer *b,
+						     	void *userdata),
+						     void *userdata)
 {
 	struct drm_fb *fb = NULL;
 	struct drm_scanout *dev = to_dev(so);
@@ -3069,6 +3082,8 @@ static struct cb_buffer *drm_scanout_get_surface_buf(struct scanout *so,
 	fb->surface = (struct gbm_surface *)surface;
 
 	fb->base.info.type = CB_BUF_TYPE_SURFACE;
+	fb->destroy_surface_fb_cb = destroy_cb;
+	fb->destroy_surface_fb_cb_userdata = userdata;
 
 	return &fb->base;
 
@@ -3552,6 +3567,7 @@ static s32 drm_add_buffer_flip_notify(struct scanout *so,
 	if (!so || !buffer || !l)
 		return -EINVAL;
 
+	list_del(&l->link);
 	cb_signal_add(&buffer->flip_signal, l);
 	return 0;
 }
@@ -3563,6 +3579,7 @@ static s32 drm_add_buffer_complete_notify(struct scanout *so,
 	if (!so || !buffer || !l)
 		return -EINVAL;
 
+	list_del(&l->link);
 	cb_signal_add(&buffer->complete_signal, l);
 	return 0;
 }

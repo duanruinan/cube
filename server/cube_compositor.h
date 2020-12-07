@@ -99,11 +99,7 @@ struct cb_surface {
 	 *         device, commit it directly to scanout device.
 	 */
 	struct cb_buffer *buffer_cur;
-	/*
-	 * last buffer attached to renderer's surface
-	 * when a new pending buffer is commited, the buffer before is set as
-	 * buffer_last.
-	 */
+	
 	struct cb_buffer *buffer_last;
 
 	bool is_opaque;
@@ -212,7 +208,7 @@ struct compositor {
 	void (*rm_view_from_comp)(struct compositor *c, struct cb_view *v);
 
 	/* commit client's DMA-BUF operations */
-	void (*commit_dmabuf)(struct compositor *c, struct cb_surface *s);
+	s32 (*commit_dmabuf)(struct compositor *c, struct cb_surface *s);
 
 	/*
 	 * register a callback to notify the server about the ready event of

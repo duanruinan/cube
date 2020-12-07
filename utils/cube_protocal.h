@@ -114,7 +114,7 @@ enum cb_cmd_shift {
 	/* 20: server feeds back the result of mc command */
 	CB_CMD_MC_COMMIT_ACK_SHIFT,
 
-	/* 21: server notify client the mc bo flipped event.*/
+	/* 21: server notify client the mc bo flipped event. */
 	CB_CMD_MC_FLIPPED_SHIFT,
 
 	/* 22: */
@@ -501,6 +501,9 @@ u8 *cb_server_create_commit_ack_cmd(u64 ret, u32 *n);
 u8 *cb_dup_commit_ack_cmd(u8 *dst, u8 *src, u32 n, u64 ret);
 /* client: parse bo commit ack */
 u64 cb_client_parse_commit_ack_cmd(u8 *data);
+
+#define COMMIT_REPLACE 0
+#define COMMIT_FAILED ((u64)(-1ULL))
 
 /* server: bo flipped notify */
 u8 *cb_server_create_bo_flipped_cmd(u64 ret, u32 *n);

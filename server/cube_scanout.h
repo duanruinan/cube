@@ -280,7 +280,11 @@ struct scanout {
 	 * Get active buffer from surface
 	 * The surface buffer's life cycle is maintained by scanout.
 	 */
-	struct cb_buffer *(*get_surface_buf)(struct scanout *so, void *surface);
+	struct cb_buffer *(*get_surface_buf)(struct scanout *so, void *surface,
+					     void (*destroy_cb)(
+					     	struct cb_buffer *b,
+					     	void *userdata),
+					     void *userdata);
 
 	/*
 	 * release surface buffer.

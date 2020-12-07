@@ -925,6 +925,11 @@ static struct cb_buffer *gl_import_dmabuf(struct renderer *renderer,
 	list_add_tail(&dma_buf->link, &r->dmabuf_images);
 
 	dma_buf->base.info.type = CB_BUF_TYPE_DMA;
+	cb_signal_init(&dma_buf->base.flip_signal);
+	cb_signal_init(&dma_buf->base.complete_signal);
+
+	INIT_LIST_HEAD(&dma_buf->base.dma_buf_flipped_l.link);
+	INIT_LIST_HEAD(&dma_buf->base.dma_buf_completed_l.link);
 
 	return &dma_buf->base;
 }

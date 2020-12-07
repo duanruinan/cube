@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <errno.h>
 #include <getopt.h>
 #include <signal.h>
@@ -37,11 +38,14 @@
 #include <cube_protocal.h>
 #include <cube_client.h>
 
+#define BO_NR 4
+
 static void usage(void)
 {
 	fprintf(stderr, "test_client --type dma/shm --x x_pos --y y_pos "
 			"--width w --height h "
-			"--hstride hs --vstride vs --pixel-fmt fourcc\n");
+			"--hstride hs --vstride vs --pixel-fmt fourcc "
+			"--dmabuf-zpos zpos\n");
 }
 
 static struct option options[] = {
@@ -70,13 +74,13 @@ struct bo_info {
 	u32 pitches[4];
 	u32 offsets[4];
 	u32 sizes[4];
+	struct list_head link;
 };
 
 struct cube_client {
 	struct cb_client *cli;
 	s32 count_bos;
-	struct bo_info bos[2];
-	s32 work_bo;
+	struct bo_info bos[BO_NR];
 
 	bool use_dmabuf;
 	s32 x, y;
@@ -93,10 +97,15 @@ struct cube_client {
 	struct cb_surface_info s;
 	struct cb_view_info v;
 
-	void *timeout_timer;
+	void *repaint_timer;
 	void *collect_timer;
 
 	u32 last_frame_cnt, frame_cnt;
+	u32 last_drop_cnt, drop_cnt;
+
+	struct list_head free_bos;
+
+	bool replace_flag;
 };
 
 static s32 signal_cb(s32 signal_number, void *userdata)
@@ -122,7 +131,28 @@ static void fill_argb_colorbar(u8 *data, u32 width, u32 height, u32 stride)
 		0xFFFF0000, /* blue */
 	};
 
-	static u32 colors[] = {
+	s32 i, j;
+	u32 bar;
+	u32 interval = width / ARRAY_SIZE(ccolors);
+	u32 *pixel = (u32 *)data;
+	static u32 delta = 0;
+
+	for (i = 0; i < height; i++) {
+		for (j = 0; j < width; j++) {
+			bar = (j + delta) / interval;
+			bar %= ARRAY_SIZE(ccolors);
+			pixel[j] = ccolors[bar];
+		}
+		pixel += (stride >> 2);
+	}
+	delta += 2;
+	if (delta >= width)
+		delta = 0;
+}
+
+static void fill_argb_colorbar_m(u8 *data, u32 width, u32 height, u32 stride)
+{
+	const u32 ccolors[] = {
 		0xFFFFFFFF, /* white */
 		0xFF00FFFF, /* yellow */
 		0xFFFFFF00, /* cyan */
@@ -133,35 +163,50 @@ static void fill_argb_colorbar(u8 *data, u32 width, u32 height, u32 stride)
 		0xFFFF0000, /* blue */
 	};
 
-	const u32 delta[] = {
-		0x010101, /* white */
-		0x000101, /* yellow */
-		0x010100, /* cyan */
-		0x000100, /* green */
-		0x010001, /* perple */
-		0x000001, /* red */
-		0x000000, /* black */
-		0x010000, /* blue */
-	};
-
 	s32 i, j;
 	u32 bar;
-	u32 interval = width / ARRAY_SIZE(colors);
-	u32 *pixel = (u32 *)data;
+	u32 interval = width / ARRAY_SIZE(ccolors);
+	u32 *pixel = (u32 *)data + (stride >> 2) * height / 8 * 3;
+	static u32 delta = 2;
 
-	for (i = 0; i < height; i++) {
+	for (i = 0; i < height / 8 * 2; i++) {
 		for (j = 0; j < width; j++) {
-			bar = j / interval;
-			pixel[j] = colors[bar] - delta[bar];
+			bar = (j + delta) / interval;
+			bar %= ARRAY_SIZE(ccolors);
+			pixel[j] = ccolors[bar];
 		}
 		pixel += (stride >> 2);
 	}
+	delta += 2;
+	if (delta >= width)
+		delta = 0;
+}
 
-	for (i = 0; i < ARRAY_SIZE(colors); i++) {
-		colors[i] -= delta[i];
-		if (colors[i] == 0xFF000000)
-			colors[i] = ccolors[i];
+static struct bo_info *get_free_bo(struct cube_client *client)
+{
+	struct bo_info *bo, *bo_next;
+
+	if (!client)
+		return NULL;
+
+	list_for_each_entry_safe(bo, bo_next, &client->free_bos, link) {
+		list_del(&bo->link);
+		return bo;
 	}
+
+	printf("[TEST_CLIENT] cannot find a free bo!!!!!\n");
+	return NULL;
+}
+
+static void put_free_bo(struct cube_client *client, struct bo_info *bo)
+{
+	if (!client)
+		return;
+
+	if (!bo)
+		return;
+
+	list_add_tail(&bo->link, &client->free_bos);
 }
 
 static void bo_commited_cb(bool success, void *userdata, u64 bo_id)
@@ -170,10 +215,18 @@ static void bo_commited_cb(bool success, void *userdata, u64 bo_id)
 	struct cb_client *cli = client->cli;
 
 	if (bo_id == (u64)(-1)) {
-		printf("failed to commit bo\n");
-		cli->stop(cli);
+		printf("[TEST_CLIENT] failed to commit bo: %lX\n", bo_id);
+	} else if (bo_id == COMMIT_REPLACE) {
+		printf("[TEST_CLIENT] commit replace last buffer\n");
+		client->drop_cnt++;
+		client->replace_flag = true;
+		/* wait 2 flipped
+		cli->timer_update(cli, client->repaint_timer, 0, 0);
+		client->sync_cnt = 2;
+		*/
 	} else {
-		//cli->timer_update(cli, client->timeout_timer, 500, 0);
+		printf("[TEST_CLIENT] ok\n");
+		client->replace_flag = false;
 	}
 }
 
@@ -183,27 +236,62 @@ static s32 collect_cb(void *userdata)
 	struct cb_client *cli = client->cli;
 
 	printf("frame cnt: %d\n", client->frame_cnt - client->last_frame_cnt);
+	printf("drop cnt: %d\n", client->drop_cnt - client->last_drop_cnt);
 	client->last_frame_cnt = client->frame_cnt;
+	client->last_drop_cnt = client->drop_cnt;
 	cli->timer_update(cli, client->collect_timer, 1000, 0);
 	return 0;
 }
 
-static s32 timeout_cb(void *userdata)
+static s32 repaint_cb(void *userdata)
 {
 	struct cube_client *client = userdata;
 	struct cb_client *cli = client->cli;
 	struct cb_commit_info c;
+	struct bo_info *bo_info;
 	s32 ret;
+	struct timespec now;
+#if 0
+	static bool first = true;
 
-	printf("timeout\n");
+	if (first)
+		first = false;
+	else
+		return 0;
+#endif
+	bo_info = get_free_bo(client);
+	if (!bo_info) {
+		cli->timer_update(cli, client->repaint_timer, 16, 0);
+		return -EINVAL;
+	}
 
-	c.bo_id = client->bos[1 - client->work_bo].bo_id;
+	if (client->replace_flag)
+		usleep(7000);
+	cli->timer_update(cli, client->repaint_timer, 16, 667);
+	
+	if (client->use_dmabuf) {
+		cb_client_dma_buf_bo_sync_begin(bo_info->bo);
+
+		fill_argb_colorbar(bo_info->maps[0],
+			   bo_info->width,
+			   bo_info->height,
+			   bo_info->pitches[0]);
+
+		cb_client_dma_buf_bo_sync_end(bo_info->bo);
+	} else {
+		fill_argb_colorbar_m(bo_info->maps[0],
+			   bo_info->width,
+			   bo_info->height,
+			   bo_info->pitches[0]);
+	}
+
+	c.bo_id = bo_info->bo_id;
 	c.surface_id = client->s.surface_id;
 	if (!client->use_dmabuf) {
-		c.bo_damage.pos.x = client->width / 4;
-		c.bo_damage.pos.y = client->height / 4;
-		c.bo_damage.w = client->width / 2;
-		c.bo_damage.h = client->height / 2;
+		c.bo_damage.pos.x = 0;
+		c.bo_damage.pos.y = client->height / 8 * 3;
+		c.bo_damage.w = client->width;
+		c.bo_damage.h = client->height / 8 * 2;
 	} else {
 		c.bo_damage.pos.x = 0;
 		c.bo_damage.pos.y = 0;
@@ -215,9 +303,13 @@ static s32 timeout_cb(void *userdata)
 	c.view_width = client->width;
 	c.view_height = client->height;
 
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	printf("[TEST_CLIENT][%05lu:%06lu] commit bo: %lX\n",
+	       now.tv_sec % 86400l, now.tv_nsec / 1000l, c.bo_id);
 	ret = cli->commit_bo(cli, &c);
 	if (ret < 0) {
-		fprintf(stderr, "failed to commit bo %s\n", __func__);
+		fprintf(stderr, "[TEST_CLIENT] failed to commit bo: %lX, "
+			"ret: %d\n", c.bo_id, ret);
 		cli->stop(cli);
 	}
 
@@ -228,51 +320,39 @@ static void bo_flipped_cb(void *userdata, u64 bo_id)
 {
 	struct cube_client *client = userdata;
 	struct cb_client *cli = client->cli;
-	struct cb_commit_info c;
-	struct bo_info *bo_info;
-	s32 ret;
+	struct timespec now;
 
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	printf("[TEST_CLIENT][%05lu:%06lu] receive bo flipped: %lX\n",
+		now.tv_sec % 86400l, now.tv_nsec / 1000l, bo_id);
 	client->frame_cnt++;
-	//cli->timer_update(cli, client->timeout_timer, 500, 0);
-	client->work_bo = 1 - client->work_bo;
-
-	c.bo_id = client->bos[1 - client->work_bo].bo_id;
-	c.surface_id = client->s.surface_id;
-	if (!client->use_dmabuf) {
-		c.bo_damage.pos.x = client->width / 4;
-		c.bo_damage.pos.y = client->height / 4;
-		c.bo_damage.w = client->width / 2;
-		c.bo_damage.h = client->height / 2;
-	} else {
-		c.bo_damage.pos.x = 0;
-		c.bo_damage.pos.y = 0;
-		c.bo_damage.w = client->width;
-		c.bo_damage.h = client->height;
+/*
+	if (client->sync_cnt) {
+		client->sync_cnt--;
+		if (!client->sync_cnt) {
+			cli->timer_update(cli, client->repaint_timer, 1, 0);
+		}
 	}
-	c.view_x = client->x;
-	c.view_y = client->y;
-	c.view_width = client->width;
-	c.view_height = client->height;
-
-	ret = cli->commit_bo(cli, &c);
-	if (ret < 0) {
-		fprintf(stderr, "failed to commit bo %s\n", __func__);
-		cli->stop(cli);
-	}
-	bo_info = &client->bos[client->work_bo];
-	if (client->use_dmabuf)
-		cb_client_dma_buf_bo_sync_begin(bo_info->bo);
-	fill_argb_colorbar(bo_info->maps[0],
-			   bo_info->width,
-			   bo_info->height,
-			   bo_info->pitches[0]);
-	if (client->use_dmabuf)
-		cb_client_dma_buf_bo_sync_end(bo_info->bo);
+*/
 }
 
 static void bo_completed_cb(void *userdata, u64 bo_id)
 {
-	
+	struct bo_info *bo;
+	struct cube_client *client = userdata;
+	s32 i;
+
+	printf("[TEST_CLIENT] receive bo complete: %lX\n", bo_id);
+	for (i = 0; i < BO_NR; i++) {
+		bo = &client->bos[i];
+		if (bo_id == bo->bo_id) {
+			put_free_bo(client, bo);
+			return;
+		}
+	}
+
+	printf("[TEST_CLIENT] failed to find bo %lX\n", bo_id);
+	exit(1);
 }
 
 static void view_created_cb(bool success, void *userdata, u64 view_id)
@@ -281,16 +361,24 @@ static void view_created_cb(bool success, void *userdata, u64 view_id)
 	struct cb_client *cli = client->cli;
 	struct cb_commit_info c;
 	s32 ret;
+	struct bo_info *bo;
+	struct timespec now;
 
 	if (success) {
 		printf("create view succesfull\n");
 		client->v.view_id = view_id;
-		client->work_bo = 0;
 		cli->set_commit_bo_cb(cli, client, bo_commited_cb);
 		cli->set_bo_flipped_cb(cli, client, bo_flipped_cb);
 		cli->set_bo_completed_cb(cli, client, bo_completed_cb);
 
-		c.bo_id = client->bos[1 - client->work_bo].bo_id;
+		bo = get_free_bo(client);
+		if (!bo) {
+			fprintf(stderr,"[TEST_CLIENT] failed to get free bo.\n");
+			cli->stop(cli);
+			return;
+		}
+
+		c.bo_id = bo->bo_id;
 		c.surface_id = client->s.surface_id;
 		c.bo_damage.pos.x = 0;
 		c.bo_damage.pos.y = 0;
@@ -301,9 +389,13 @@ static void view_created_cb(bool success, void *userdata, u64 view_id)
 		c.view_width = client->width;
 		c.view_height = client->height;
 
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		printf("[TEST_CLIENT][%05lu:%06lu] commit bo: %lX\n",
+		       now.tv_sec % 86400l, now.tv_nsec / 1000l, c.bo_id);
 		ret = cli->commit_bo(cli, &c);
 		if (ret < 0) {
-			fprintf(stderr, "failed to commit bo %s\n", __func__);
+			fprintf(stderr, "[TEST_CLIENT] failed to "
+				"commit bo %lX\n", c.bo_id);
 			cli->stop(cli);
 		}
 	} else {
@@ -352,8 +444,8 @@ static void bo_created_cb(bool success, void *userdata, u64 bo_id)
 	printf("bo_id: %016lX\n", bo_id);
 	bo_info->bo_id = bo_id;
 
-	if (client->count_bos == 2) {
-		printf("create bo complete.\n");
+	if (client->count_bos == BO_NR) {
+		printf("create bo complete. <<<\n");
 		ret = cli->create_surface(cli, &client->s);
 		if (ret < 0) {
 			fprintf(stderr, "failed to create surface.\n");
@@ -362,16 +454,15 @@ static void bo_created_cb(bool success, void *userdata, u64 bo_id)
 		}
 		cli->set_create_surface_cb(cli, client, surface_created_cb);
 	} else {
-		while (client->count_bos < 2) {
-			bo_info = &client->bos[client->count_bos];
-			ret = cli->create_bo(cli, bo_info->bo);
-			if (ret < 0) {
-				fprintf(stderr, "failed to create bo.\n");
-				cli->stop(cli);
-				return;
-			}
-			client->count_bos++;
+		bo_info = &client->bos[client->count_bos];
+		printf("[TEST_CLIENT] create bo\n");
+		ret = cli->create_bo(cli, bo_info->bo);
+		if (ret < 0) {
+			fprintf(stderr, "failed to create bo.\n");
+			cli->stop(cli);
+			return;
 		}
+		client->count_bos++;
 	}
 }
 
@@ -383,6 +474,7 @@ static void ready_cb(void *userdata)
 	s32 ret;
 
 	cli->set_create_bo_cb(cli, client, bo_created_cb);
+	printf("[TEST_CLIENT] create bo\n");
 	ret = cli->create_bo(cli, bo_info->bo);
 	if (ret < 0) {
 		fprintf(stderr, "failed to create bo.\n");
@@ -447,8 +539,10 @@ static s32 client_init(struct cube_client *client)
 
 	client->dev_fd = cb_drm_device_open("/dev/dri/renderD128");
 
+	INIT_LIST_HEAD(&client->free_bos);
+
 	if (!client->use_dmabuf) {
-		for (i = 0; i < 2; i++) {
+		for (i = 0; i < BO_NR; i++) {
 			sprintf(name, "test_client-%d-%d", getpid(), i);
 			bo_info = &client->bos[i];
 			printf("create shm buffer\n");
@@ -494,9 +588,10 @@ static s32 client_init(struct cube_client *client)
 				bo_info->sizes[1],
 				bo_info->sizes[2],
 				bo_info->sizes[3]);
+			list_add_tail(&bo_info->link, &client->free_bos);
 		}
 	} else {
-		for (i = 0; i < 2; i++) {
+		for (i = 0; i < BO_NR; i++) {
 			printf("create dma buffer\n");
 			bo_info = &client->bos[i];
 			bo_info->bo = cb_client_dma_buf_bo_create(
@@ -551,6 +646,7 @@ static s32 client_init(struct cube_client *client)
 					   bo_info->height,
 					   bo_info->pitches[0]);
 			cb_client_dma_buf_bo_sync_end(bo_info->bo);
+			list_add_tail(&bo_info->link, &client->free_bos);
 		}
 	}
 
@@ -562,11 +658,12 @@ static s32 client_init(struct cube_client *client)
 	client->signal_handler = cli->add_signal_handler(cli, client,
 							 SIGINT,
 							 signal_cb);
-	client->timeout_timer = cli->add_timer_handler(cli, client,
-						       timeout_cb);
+	client->repaint_timer = cli->add_timer_handler(cli, client,
+						       repaint_cb);
 	client->collect_timer = cli->add_timer_handler(cli, client,
 						       collect_cb);
 	cli->timer_update(cli, client->collect_timer, 1000, 0);
+	cli->timer_update(cli, client->repaint_timer, 35, 0);
 	cli->set_ready_cb(cli, client, ready_cb);
 
 	surface_info_init(client);
@@ -578,6 +675,7 @@ err_buf_alloc:
 	if (!client->use_dmabuf) {
 		for (j = 0; j < i; j++) {
 			bo_info = &client->bos[j];
+			list_del(&bo_info->link);
 			if (bo_info->bo)
 				cb_client_shm_bo_destroy(bo_info->bo);
 			client->bos[j].bo = NULL;
@@ -585,6 +683,7 @@ err_buf_alloc:
 	} else {
 		for (j = 0; j < i; j++) {
 			bo_info = &client->bos[j];
+			list_del(&bo_info->link);
 			if (bo_info->bo)
 				cb_client_dma_buf_bo_destroy(bo_info->bo);
 			client->bos[j].bo = NULL;
@@ -611,26 +710,27 @@ static void client_fini(struct cube_client *client)
 
 	while (client->count_bos) {
 		printf("destroy bo\n");
+		list_del(&client->bos[client->count_bos - 1].link);
 		cli->destroy_bo(cli,
 				client->bos[client->count_bos - 1].bo_id);
 		client->count_bos--;
 	}
 
+	cli->rm_handler(cli, client->repaint_timer);
 	cli->rm_handler(cli, client->signal_handler);
-	cli->rm_handler(cli, client->timeout_timer);
 	cli->rm_handler(cli, client->collect_timer);
 
 	cli->destroy(cli);
 
 	if (!client->use_dmabuf) {
-		for (i = 0; i < 2; i++) {
+		for (i = 0; i < BO_NR; i++) {
 			bo_info = &client->bos[i];
 			if (bo_info->bo)
 				cb_client_shm_bo_destroy(bo_info->bo);
 			client->bos[i].bo = NULL;
 		}
 	} else {
-		for (i = 0; i < 2; i++) {
+		for (i = 0; i < BO_NR; i++) {
 			bo_info = &client->bos[i];
 			if (bo_info->bo)
 				cb_client_dma_buf_bo_destroy(bo_info->bo);

@@ -662,14 +662,14 @@ static void destroy_bo(struct cb_client_agent *client, struct cb_buffer *buffer)
 		}
 	}
 
-	printf("destroy bo\n");
+	clia_warn("destroy bo: %lX", (u64)buffer);
 	switch (buffer->info.type) {
 	case CB_BUF_TYPE_SHM:
-		printf("release shm-buf\n");
+		clia_warn("release shm-buf");
 		release_shm_buf(buffer);
 		break;
 	case CB_BUF_TYPE_DMA:
-		printf("release dma-buf\n");
+		clia_warn("release dma-buf");
 		list_del(&buffer->dma_buf_flipped_l.link);
 		list_del(&buffer->dma_buf_completed_l.link);
 		client->c->release_so_dmabuf(client->c, buffer);
@@ -695,7 +695,6 @@ static void surface_destroy(struct cb_client_agent *client,
 		cb_signal_rm(&s->flipped_l);
 	list_for_each_entry_safe(b, next_b, &client->buffers, link) {
 		clia_warn("clear buffer remained %p", b);
-		printf("clear buffer remained %p\n", b);
 		destroy_bo(client, b);
 	}
 	cb_signal_fini(&s->destroy_signal);
@@ -822,62 +821,156 @@ static void bo_destroy_proc(struct cb_client_agent *client, u8 *buf)
 	destroy_bo(client, buffer);
 }
 
+static s32 dma_buf_bo_commit_proc(struct cb_client_agent *client,
+				  struct cb_commit_info *info)
+{
+	struct cb_buffer *buffer;
+	struct cb_surface *s;
+	struct cb_view *v;
+	u64 bo_id;
+	s32 ret;
+
+	bo_id = info->bo_id;
+	s = (struct cb_surface *)(info->surface_id);
+	v = s->view;
+
+	buffer = (struct cb_buffer *)bo_id;
+
+	cb_region_init_rect(&s->damage,
+			    info->bo_damage.pos.x,
+			    info->bo_damage.pos.y,
+			    info->bo_damage.w,
+			    info->bo_damage.h);
+
+	v->area.pos.x = info->view_x;
+	v->area.pos.y = info->view_y;
+	v->area.w = info->view_width;
+	v->area.h = info->view_height;
+
+	s->buffer_pending = buffer;
+	clia_debug("commit dmabuf");
+	s->use_renderer = false;
+	ret = client->c->commit_dmabuf(client->c, s);
+
+	cb_region_fini(&s->damage);
+	return ret;
+}
+
+static void surface_bo_commit_proc(struct cb_client_agent *client,
+				   struct cb_commit_info *info)
+{
+	struct cb_buffer *buffer;
+	struct cb_surface *s;
+	struct cb_view *v;
+	u64 bo_id;
+
+	bo_id = info->bo_id;
+	s = (struct cb_surface *)(info->surface_id);
+	v = s->view;
+
+	buffer = (struct cb_buffer *)bo_id;
+
+	cb_region_init_rect(&s->damage,
+			    info->bo_damage.pos.x,
+			    info->bo_damage.pos.y,
+			    info->bo_damage.w,
+			    info->bo_damage.h);
+
+	v->area.pos.x = info->view_x;
+	v->area.pos.y = info->view_y;
+	v->area.w = info->view_width;
+	v->area.h = info->view_height;
+
+	s->buffer_pending = buffer;
+	clia_debug("commit surface");
+	s->use_renderer = true;
+	client->c->commit_surface(client->c, s);
+	cb_region_fini(&s->damage);
+}
+
 static void bo_commit_proc(struct cb_client_agent *client, u8 *buf)
 {
 	struct cb_commit_info info;
-	struct cb_buffer *buffer;
+	struct cb_buffer *buffer, *buffer_last;
 	struct cb_surface *s;
 	struct cb_view *v;
 	u64 bo_id;
 
 	if (cb_server_parse_commit_req_cmd(buf, &info) < 0) {
 		clia_err("failed to parse bo commit.");
+		cb_client_agent_send_bo_commit_ack(client, COMMIT_FAILED);
 		return;
 	}
 
-	/* TODO show / hide */
-
 	bo_id = info.bo_id;
+	buffer = (struct cb_buffer *)(bo_id);
+	if (!buffer) {
+		clia_err("invalid buffer");
+		cb_client_agent_send_bo_commit_ack(client, COMMIT_FAILED);
+		return;
+	}
+
 	s = (struct cb_surface *)(info.surface_id);
 	if (!s) {
 		clia_err("invalid surface");
-		cb_client_agent_send_bo_commit_ack(client, (u64)(-1ULL));
+		cb_client_agent_send_bo_commit_ack(client, COMMIT_FAILED);
 		return;
 	}
 
 	v = s->view;
-	
-	buffer = (struct cb_buffer *)bo_id;
-	if (!buffer) {
-		clia_err("invalid buffer");
-		cb_client_agent_send_bo_commit_ack(client, (u64)(-1ULL));
+	if (!v) {
+		clia_err("invalid view");
+		cb_client_agent_send_bo_commit_ack(client, COMMIT_FAILED);
 		return;
 	}
 
-	cb_region_init_rect(&s->damage,
-			    info.bo_damage.pos.x,
-			    info.bo_damage.pos.y,
-			    info.bo_damage.w,
-			    info.bo_damage.h);
-
-	v->area.pos.x = info.view_x;
-	v->area.pos.y = info.view_y;
-	v->area.w = info.view_width;
-	v->area.h = info.view_height;
-
-	s->buffer_pending = buffer;
 	if (buffer->info.type == CB_BUF_TYPE_DMA) {
-		clia_debug("commit dmabuf");
-		s->use_renderer = false;
-		client->c->commit_dmabuf(client->c, s);
+		clia_debug("? buffer last = %lX", (u64)(s->buffer_last));
+		if (s->buffer_last) {
+			clia_warn("Replace last buffer %lX",
+				  (u64)(s->buffer_last));
+			printf("Replace last buffer %lX\n",
+				  (u64)(s->buffer_last));
+			buffer_last = s->buffer_last;
+			if (dma_buf_bo_commit_proc(client, &info) < 0) {
+				clia_err("failed to commit buffer 1");
+				printf("failed to commit buffer 1\n");
+				cb_client_agent_send_bo_commit_ack(client,
+								COMMIT_FAILED);
+				if (buffer) {
+					client->send_bo_complete(client,
+								 buffer);
+				}
+			} else {
+				clia_debug("send complete %lX", buffer_last);
+				printf("send complete %lX\n", (u64)buffer_last);
+				client->send_bo_complete(client, buffer_last);
+				cb_client_agent_send_bo_commit_ack(client,
+								   bo_id);
+				cb_client_agent_send_bo_commit_ack(client,
+								COMMIT_REPLACE);
+			}
+		} else {
+			if (dma_buf_bo_commit_proc(client, &info) < 0) {
+				clia_err("failed to commit buffer.");
+				printf("failed to commit buffer.\n");
+				cb_client_agent_send_bo_commit_ack(client,
+								COMMIT_FAILED);
+				if (buffer)
+					client->send_bo_complete(client,
+								 buffer);
+			} else {
+				cb_client_agent_send_bo_commit_ack(client,
+								   bo_id);
+			}
+		}
+	} else if (buffer->info.type == CB_BUF_TYPE_SHM) {
+		surface_bo_commit_proc(client, &info);
+		cb_client_agent_send_bo_commit_ack(client, bo_id);
 	} else {
-		clia_debug("commit surface");
-		s->use_renderer = true;
-		client->c->commit_surface(client->c, s);
+		clia_err("unknown buffer type. %d", buffer->info.type);
+		cb_client_agent_send_bo_commit_ack(client, COMMIT_FAILED);
 	}
-	cb_region_fini(&s->damage);
-
-	cb_client_agent_send_bo_commit_ack(client, bo_id);
 }
 
 static void surface_create_proc(struct cb_client_agent *client, u8 *buf)
