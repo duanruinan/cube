@@ -431,47 +431,6 @@ static void cb_client_agent_send_mc_commit_ack(struct cb_client_agent *client,
 	}
 }
 
-static void cb_client_agent_send_mc_flipped(struct cb_client_agent *client,
-					    void *bo)
-{
-	size_t length;
-	s32 ret;
-	u8 *p;
-
-	p = cb_dup_mc_flipped_cmd(client->mc_flipped_tx_cmd,
-				  client->mc_flipped_tx_cmd_t,
-				  client->mc_flipped_tx_len,
-				  (u64)bo);
-	if (!p) {
-		clia_err("failed to dup mc flipped");
-		return;
-	}
-
-	length = client->mc_flipped_tx_len;
-	do {
-		ret = cb_sendmsg(client->sock, (u8 *)&length, sizeof(size_t),
-				 NULL);
-	} while (ret == -EAGAIN);
-	clia_debug("send mc flipped length: %llu", length);
-	if (ret < 0) {
-		clia_err("failed to send mc flipped length. %s",
-			 strerror(errno));
-		client->c->rm_client(client->c, client);
-		return;
-	}
-
-	do {
-		ret = cb_sendmsg(client->sock, client->mc_flipped_tx_cmd,
-				 length, NULL);
-	} while (ret == -EAGAIN);
-	clia_debug("send mc flipped: %llu", length);
-	if (ret < 0) {
-		clia_err("failed to send mc flipped %p, %s", bo,
-			 strerror(errno));
-		client->c->rm_client(client->c, client);
-	}
-}
-
 static void cb_client_agent_get_and_send_edid(struct cb_client_agent *client,
 					      u64 output_index)
 {
@@ -721,10 +680,6 @@ void cb_client_agent_destroy(struct cb_client_agent *client)
 		client->sock = 0;
 	}
 
-	if (client->capability & CB_CLIENT_CAP_MC) {
-		cb_signal_rm(&client->mc_flipped_l);
-	}
-
 	if (client->surface_id_created_tx_cmd_t)
 		free(client->surface_id_created_tx_cmd_t);
 	if (client->surface_id_created_tx_cmd)
@@ -764,11 +719,6 @@ void cb_client_agent_destroy(struct cb_client_agent *client)
 		free(client->mc_commit_ack_tx_cmd_t);
 	if (client->mc_commit_ack_tx_cmd)
 		free(client->mc_commit_ack_tx_cmd);
-
-	if (client->mc_flipped_tx_cmd_t)
-		free(client->mc_flipped_tx_cmd_t);
-	if (client->mc_flipped_tx_cmd)
-		free(client->mc_flipped_tx_cmd);
 
 	if (client->shell_tx_cmd_t)
 		free(client->shell_tx_cmd_t);
@@ -1131,7 +1081,7 @@ static void mc_proc(struct cb_client_agent *client, u8 *buf)
 					info.cursor.w,
 					info.cursor.hot_x,
 					info.cursor.hot_y,
-					false);
+					info.alpha_src_pre_mul);
 		if (ret < 0) {
 			clia_err("failed to set cursor %d", ret);
 			cb_client_agent_send_mc_commit_ack(client,
@@ -1304,18 +1254,6 @@ static void shell_proc(struct cb_client_agent *client, u8 *buf)
 	}
 }
 
-static void mc_flipped_cb(struct cb_listener *listener, void *data)
-{
-	struct cb_client_agent *client = container_of(listener,
-						      struct cb_client_agent,
-						      mc_flipped_l);
-
-	if (!client)
-		return;
-
-	cb_client_agent_send_mc_flipped(client, NULL);
-}
-
 static void ipc_proc(struct cb_client_agent *client)
 {
 	u8 *buf;
@@ -1369,11 +1307,6 @@ static void ipc_proc(struct cb_client_agent *client)
 			clia_notice("receive set capability command. %016lX",
 				    cap);
 			client->capability = cap;
-			if (cap & CB_CLIENT_CAP_MC) {
-				client->mc_flipped_l.notify = mc_flipped_cb;
-				client->c->set_mouse_updated_notify(client->c,
-					&client->mc_flipped_l);
-			}
 		}
 		return;
 	case CB_TAG_GET_EDID:
@@ -1595,13 +1528,6 @@ struct cb_client_agent *cb_client_agent_create(s32 sock,
 	assert(client->mc_commit_ack_tx_cmd);
 	client->mc_commit_ack_tx_len = n;
 
-	client->mc_flipped_tx_cmd_t
-		= cb_server_create_mc_flipped_cmd(0, &n);
-	assert(client->mc_flipped_tx_cmd_t);
-	client->mc_flipped_tx_cmd = malloc(n);
-	assert(client->mc_flipped_tx_cmd);
-	client->mc_flipped_tx_len = n;
-
 	client->shell_tx_cmd_t = cb_create_shell_cmd(0, &n);
 	assert(client->shell_tx_cmd_t);
 	client->shell_tx_cmd = malloc(n);
@@ -1631,7 +1557,6 @@ struct cb_client_agent *cb_client_agent_create(s32 sock,
 	client->send_raw_input_evts = cb_client_agent_send_raw_input;
 	client->send_hpd_evt = cb_client_agent_send_hpd_evt;
 	client->send_mc_commit_ack = cb_client_agent_send_mc_commit_ack;
-	client->send_mc_flipped = cb_client_agent_send_mc_flipped;
 	client->send_shell_cmd = cb_client_agent_send_shell_cmd;
 	client->destroy_pending = cb_client_agent_destroy_pending;
 

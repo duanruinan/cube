@@ -175,9 +175,6 @@ struct client {
 	void *mc_commited_cb_userdata;
 	void (*mc_commited_cb)(bool success, void *userdata, u64 bo_id);
 
-	void *mc_flipped_cb_userdata;
-	void (*mc_flipped_cb)(void *userdata, u64 bo_id);
-
 	void *hpd_cb_userdata;
 	void (*hpd_cb)(void *userdata, struct cb_connector_info *info);
 
@@ -1310,20 +1307,6 @@ static s32 set_commit_mc_cb(struct cb_client *client, void *userdata,
 	return 0;
 }
 
-static s32 set_mc_flipped_cb(struct cb_client *client, void *userdata,
-			     void (*mc_flipped_cb)(
-			     		void *userdata, u64 bo_id))
-{
-	struct client *cli = to_client(client);
-
-	if (!client || !mc_flipped_cb)
-		return -EINVAL;
-
-	cli->mc_flipped_cb_userdata = userdata;
-	cli->mc_flipped_cb = mc_flipped_cb;
-	return 0;
-}
-
 s32 set_hpd_cb(struct cb_client *client, void *userdata,
 	       void (*hpd_cb)(void *userdata, struct cb_connector_info *info))
 {
@@ -1794,12 +1777,6 @@ static void client_ipc_proc(struct client *cli)
 				cli->mc_commited_cb_userdata, id);
 		}
 	}
-	if (flag & (1 << CB_CMD_MC_FLIPPED_SHIFT)) {
-		id = cb_client_parse_mc_flipped_cmd(buf);
-		if (cli->mc_flipped_cb) {
-			cli->mc_flipped_cb(cli->mc_flipped_cb_userdata, id);
-		}
-	}
 }
 
 static s32 sock_cb(s32 fd, u32 mask, void *data)
@@ -2096,7 +2073,6 @@ struct cb_client *cb_client_create(s32 seat)
 	cli->base.set_bo_completed_cb = set_bo_completed_cb;
 	cli->base.commit_mc = commit_mc;
 	cli->base.set_commit_mc_cb = set_commit_mc_cb;
-	cli->base.set_mc_flipped_cb = set_mc_flipped_cb;
 	cli->base.set_hpd_cb = set_hpd_cb;
 	cli->base.rm_handler = rm_handler;
 	cli->base.add_fd_handler = add_fd_handler;

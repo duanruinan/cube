@@ -52,7 +52,6 @@ struct cb_client_agent {
 	struct list_head buffers;
 
 	u64 capability;
-	struct cb_listener mc_flipped_l;
 	bool raw_input_en;
 
 	u8 *surface_id_created_tx_cmd_t;
@@ -87,10 +86,6 @@ struct cb_client_agent {
 	u8 *mc_commit_ack_tx_cmd;
 	u32 mc_commit_ack_tx_len;
 
-	u8 *mc_flipped_tx_cmd_t;
-	u8 *mc_flipped_tx_cmd;
-	u32 mc_flipped_tx_len;
-
 	u8 *shell_tx_cmd_t;
 	u8 *shell_tx_cmd;
 	u32 shell_tx_len;
@@ -115,7 +110,6 @@ struct cb_client_agent {
 	void (*send_hpd_evt)(struct cb_client_agent *client,
 			     struct cb_connector_info *conn_info);
 	void (*send_mc_commit_ack)(struct cb_client_agent *client, u64 result);
-	void (*send_mc_flipped)(struct cb_client_agent *client, void *bo);
 	void (*send_shell_cmd)(struct cb_client_agent *client,
 			       struct cb_shell_info *s);
 	void (*destroy_pending)(struct cb_client_agent *client);

@@ -114,10 +114,7 @@ enum cb_cmd_shift {
 	/* 20: server feeds back the result of mc command */
 	CB_CMD_MC_COMMIT_ACK_SHIFT,
 
-	/* 21: server notify client the mc bo flipped event. */
-	CB_CMD_MC_FLIPPED_SHIFT,
-
-	/* 22: */
+	/* 21: */
 	CB_CMD_LAST_SHIFT,
 };
 
@@ -601,6 +598,7 @@ enum mc_cmd_type {
 struct cb_mc_info {
 	enum mc_cmd_type type;
 	u64 bo_id; /* SHM BO, used when type is MC_CMD_TYPE_SET_CURSOR */
+	bool alpha_src_pre_mul; /* Display controller do alpha blending ? */
 	struct {
 		s32 hot_x, hot_y;
 		u32 w, h;
@@ -618,12 +616,6 @@ u8 *cb_server_create_mc_commit_ack_cmd(u64 ret, u32 *n);
 u8 *cb_dup_mc_commit_ack_cmd(u8 *dst, u8 *src, u32 n, u64 ret);
 /* client: parse mc commit ack */
 u64 cb_client_parse_mc_commit_ack_cmd(u8 *data);
-
-/* server: mc flipped notify */
-u8 *cb_server_create_mc_flipped_cmd(u64 ret, u32 *n);
-u8 *cb_dup_mc_flipped_cmd(u8 *dst, u8 *src, u32 n, u64 ret);
-/* client: parse mc flipped notify */
-u64 cb_client_parse_mc_flipped_cmd(u8 *data);
 
 /* client: create get E-EDID command */
 u8 *cb_client_create_get_edid_cmd(u64 pipe, u32 *n);

@@ -48,10 +48,6 @@
 
 /*
 #define MC_DEBUG 1
-#define MC_DEBUG_BO_COMPLETE 1
-*/
-/*
-#define MC_SINGLE_SYNC 1
 */
 #define DUMMY_WIDTH 640
 #define DUMMY_HEIGHT 480
@@ -212,6 +208,15 @@ struct cb_output {
 	struct cb_rect mc_view_port;
 	/* mouse cursor on screen or not */
 	bool mc_on_screen;
+	/* cursor buffers */
+	struct cb_buffer *mc_buf[2];
+	
+	/*
+	 * cursor buf current (prepare to be or already committed into kernel)
+	 * buffer index
+	 */
+	s32 mc_buf_cur;
+	bool mc_damaged;
 
 	/* scanout's output pageflip listener */
 	struct cb_listener output_flipped_l;
@@ -286,31 +291,14 @@ struct cb_compositor {
 	struct cb_pos mc_desktop_pos;
 	/* global coordinate mouse cursor's desktop position */
 	struct cb_pos mc_g_desktop_pos;
-	/* mouse cursor's hot point position */
-	struct cb_pos mc_hot_pos;
-	/* mouse cursor's alpha is blended or not */
-	bool mc_alpha_src_pre_mul;
 	/* hide cursor or not */
 	bool mc_hide;
-	/* cursor buffers */
-	struct cb_buffer *mc_buf[2];
-#ifdef MC_DEBUG_BO_COMPLETE
-	/* cursor buffer complete */
-	struct cb_listener mc_buf_l[2];
-#endif
+	/* mouse cursor's hot point position */
+	struct cb_pos mc_hot_pos;
 	/* cursor buffer source rect */
 	struct cb_rect mc_src;
-	/*
-	 * cursor buf current (prepare to be or already committed into kernel)
-	 * buffer index
-	 */
-	s32 mc_buf_cur;
-	/* mouse cursor update complete signal (committed into kernel) */
-	struct cb_signal mc_update_complete_signal;
-	/* mc flipped event listener */
-	struct cb_listener mc_flipped_l[2];
-	/* mouse cursor has been committed all outputs or not */
-	bool mc_update_pending;
+	/* mouse cursor's alpha is blended or not */
+	bool mc_alpha_src_pre_mul;
 
 	/* repaint timer */
 	struct cb_event_source *repaint_timer;
@@ -586,8 +574,13 @@ static void output_free_planes_prepare(struct cb_output *output)
 
 static void cb_output_destroy(struct cb_output *output)
 {
+	struct cb_compositor *c;
+	s32 i;
+
 	if (!output)
 		return;
+
+	c = output->c;
 
 	if (output->primary_vflipped_timer)
 		cb_event_source_remove(output->primary_vflipped_timer);
@@ -604,14 +597,19 @@ static void cb_output_destroy(struct cb_output *output)
 	if (output->disable_timer)
 		cb_event_source_remove(output->disable_timer);
 
-	if (output->dummy)
-		output->c->so->dumb_buffer_destroy(output->c->so,
-						   output->dummy);
+	if (output->dummy && c && c->so)
+		c->so->dumb_buffer_destroy(c->so, output->dummy);
+	for (i = 0; i < 2; i++) {
+		if (output->mc_buf[i] && c && c->so) {
+			comp_notice("destroy cursor bo");
+			c->so->cursor_bo_destroy(c->so, output->mc_buf[i]);
+		}
+	}
 
 	output_free_planes_finish(output);
 
-	if (output->output && output->c && output->c->so)
-		output->c->so->pipeline_destroy(output->c->so, output->output);
+	if (output->output && c && c->so)
+		output->c->so->pipeline_destroy(c->so, output->output);
 
 	free(output);
 }
@@ -883,17 +881,6 @@ static void cancel_so_tasks(struct cb_output *output)
 			   sot->buffer->dirty);
 		if (sot->buffer && (sot->buffer->dirty & (1U << output->pipe))){
 			sot->buffer->dirty &= (~(1U << output->pipe));
-			if (!sot->buffer->dirty) {
-				if (sot->plane == output->cursor_plane) {
-					if (c->mc_update_pending) {
-						c->mc_update_pending = false;
-						cb_signal_emit(
-						  &c->mc_update_complete_signal,
-						  NULL);
-					}
-				} else {
-				}
-			}
 		}
 		cb_cache_put(sot, c->so_task_cache);
 	}
@@ -1087,15 +1074,6 @@ static s32 cb_compositor_destroy(struct compositor *comp)
 		free(c->outputs);
 	}
 
-	cb_signal_fini(&c->mc_update_complete_signal);
-
-	for (i = 0; i < 2; i++) {
-		if (c->mc_buf[i]) {
-			comp_notice("destroy cursor bo");
-			c->so->cursor_bo_destroy(c->so, c->mc_buf[i]);
-		}
-	}
-
 	if (c->r)
 		c->r->destroy(c->r);
 
@@ -1210,10 +1188,10 @@ static void fill_dummy(u8 *data, u32 width, u32 height, u32 stride)
 	}
 }
 
-static void fill_cursor(struct cb_compositor *c,
+static void fill_cursor(struct cb_compositor *c, struct cb_buffer *b,
 			u8 *data, u32 width, u32 height, u32 stride)
 {
-	c->so->cursor_bo_update(c->so, c->mc_buf[1 - c->mc_buf_cur],
+	c->so->cursor_bo_update(c->so, b,
 				data, width, height, stride);
 }
 
@@ -1248,15 +1226,20 @@ static void show_dummy(struct cb_output *output)
 				   &output->dummy_src, &output->crtc_view_port,
 				   0, true);
 	if (!c->mc_hide && output->mc_on_screen) {
-		c->mc_update_pending = false;
-		comp_debug("Add FB dummy mc %p", c->mc_buf[c->mc_buf_cur]);
+		comp_debug("Add FB dummy mc %p",
+			   output->mc_buf[output->mc_buf_cur]);
+		if (output->mc_damaged) {
+			output->mc_buf_cur = 1 - output->mc_buf_cur;
+			output->mc_damaged = false;
+		}
 		scanout_commit_add_fb_info(commit,
-					   c->mc_buf[c->mc_buf_cur],
-					   output->output,
-					   output->cursor_plane,
-					   &c->mc_src,
-					   &output->mc_view_port, -1,
-					   c->mc_alpha_src_pre_mul);
+			output->mc_buf[output->mc_buf_cur],
+			output->output,
+			output->cursor_plane,
+			&c->mc_src,
+			&output->mc_view_port,
+			-1,
+			c->mc_alpha_src_pre_mul);
 #ifdef MC_DEBUG
 		printf("Commit MC []: %d\n", c->mc_buf_cur);
 		comp_debug("Commit MC []: %d", c->mc_buf_cur);
@@ -1268,40 +1251,6 @@ static void show_dummy(struct cb_output *output)
 	c->so->do_scanout(c->so, sd);
 	scanout_commit_info_free(commit);
 	output->repaint_status = REPAINT_WAIT_COMPLETION;
-}
-
-static void add_mc_buffer_to_task(struct cb_compositor *c,
-				  struct cb_buffer *buffer,
-				  u32 mask)
-{
-	s32 i;
-	struct cb_output *o;
-	struct scanout_task *sot;
-	bool find;
-
-	for (i = 0; i < c->count_outputs; i++) {
-		o = c->outputs[i];
-		if (!(mask & (1U << o->pipe)))
-			continue;
-		find = false;
-		list_for_each_entry(sot, &o->so_tasks, link) {
-			if (sot->plane == o->cursor_plane) {
-				sot->buffer = buffer;
-				find = true;
-				break;
-			}
-		}
-		if (!find) {
-			sot = cb_cache_get(c->so_task_cache, false);
-			sot->buffer = buffer;
-			sot->plane = o->cursor_plane;
-			sot->zpos = -1;
-			sot->src = &c->mc_src;
-			sot->dst = &o->mc_view_port;
-			sot->alpha_src_pre_mul = c->mc_alpha_src_pre_mul;
-			list_add_tail(&sot->link, &o->so_tasks);
-		}
-	}
 }
 
 static void disable_primary_renderer(struct cb_output *o)
@@ -1688,22 +1637,6 @@ static s32 get_primary_and_cursor_plane(struct cb_output *output)
 	return ret;
 }
 
-static void mc_flipped_cb(struct cb_listener *listener, void *data)
-{
-	struct cb_buffer *buffer = data;
-	s64 index = (s64)(buffer->userdata);
-	struct cb_compositor *c = container_of(listener, struct cb_compositor,
-					       mc_flipped_l[index]);
-
-#ifdef MC_DEBUG
-	printf("MC bo %ld flipped, dirty: %d\n", index, buffer->dirty);
-	comp_debug("MC bo %ld flipped", index);
-#endif
-	assert(!buffer->dirty);
-	c->mc_update_pending = false;
-	cb_signal_emit(&c->mc_update_complete_signal, NULL);
-}
-
 static void update_repaint_timer(struct cb_compositor *c)
 {
 	struct timespec now;
@@ -1865,7 +1798,7 @@ static struct cb_output *cb_output_create(struct cb_compositor *c,
 	struct cb_output *output = NULL;
 	struct scanout *so;
 	struct cb_buffer_info info;
-	s32 vid;
+	s32 vid, i;
 
 	if (!c || !pipecfg)
 		goto err;
@@ -1892,6 +1825,23 @@ static struct cb_output *cb_output_create(struct cb_compositor *c,
 	output_free_planes_prepare(output);
 	show_free_planes(output);
 	output->primary_occupied_by_renderer = false;
+
+	/* prepare mc buffer */
+	memset(&info, 0, sizeof(info));
+	info.pix_fmt = CB_PIX_FMT_ARGB8888;
+	info.width = MC_MAX_WIDTH;
+	info.height = MC_MAX_HEIGHT;
+	for (i = 0; i < 2; i++) {
+		output->mc_buf[i] = so->cursor_bo_create(so, &info);
+		if (!output->mc_buf[i])
+			goto err;
+
+		fill_cursor(c, output->mc_buf[i],
+			    DEF_MC_DAT, DEF_MC_WIDTH, DEF_MC_HEIGHT,
+			    (DEF_MC_WIDTH << 2));
+	}
+
+	output->mc_buf_cur = 0;
 
 	/* prepare dummy buffer */
 	memset(&info, 0, sizeof(info));
@@ -2634,39 +2584,6 @@ static void cb_compositor_set_desktop_layout(struct compositor *comp,
 	broadcast_layout_changed_event(c);
 }
 
-static void cancel_mc_buffer(struct cb_output *o)
-{
-	struct scanout_task *sot, *sot_next;
-	struct cb_compositor *c = o->c;
-
-	list_for_each_entry_safe(sot, sot_next, &o->so_tasks, link) {
-		if (sot->plane == o->cursor_plane) {
-			if (!sot->buffer)
-				continue;
-			if (sot->buffer->dirty & (1U << o->pipe)) {
-				list_del(&sot->link);
-				sot->buffer->dirty &= ~(1U << o->pipe);
-				printf("Cancel a mc buffer %08X pending %d\n",
-					sot->buffer->dirty,
-					c->mc_update_pending);
-				comp_debug("Cancel a mc buffer %08X pending %d",
-					   sot->buffer->dirty,
-					   c->mc_update_pending);
-				if (!sot->buffer->dirty) {
-					if (c->mc_update_pending) {
-						printf("Clear mouse cursor pending 4\n");
-						c->mc_update_pending = false;
-						cb_signal_emit(
-						  &c->mc_update_complete_signal,
-						  NULL);
-					}
-				}
-				cb_cache_put(sot, c->so_task_cache);
-			}
-		}
-	}
-}
-
 static s32 cb_compositor_set_mouse_cursor(struct compositor *comp,
 					  u8 *data, u32 width, u32 height,
 					  u32 stride,
@@ -2675,129 +2592,30 @@ static s32 cb_compositor_set_mouse_cursor(struct compositor *comp,
 {
 	struct cb_compositor *c = to_cb_c(comp);
 	struct cb_buffer *buffer;
-	bool dirty = false;
-	bool mc_on_screen;
-	s32 i;
-#ifdef MC_SINGLE_SYNC
-	bool sync_output_found;
-#endif
+	struct cb_output *o;
+	s32 i, work_index;
 
-#ifdef MC_DEBUG
-	printf("mc_hide: %d\n", c->mc_hide);
-	comp_debug("mc_hide: %d", c->mc_hide);
-#endif
 	if (!data || !width || width > MC_MAX_WIDTH || !height ||
 	    height > MC_MAX_HEIGHT || !stride || !comp) {
 		comp_err("illegal mc param");
 		return -EINVAL;
 	}
 
-	if (c->mc_update_pending) {
-		comp_warn("mc update pending");
-		return -EBUSY;
-	}
-
-	fill_cursor(c, data, width, height, stride);
-
 	c->mc_hot_pos.x = hot_x;
 	c->mc_hot_pos.y = hot_y;
 	c->mc_alpha_src_pre_mul = alpha_src_pre_mul;
-
-	/* if mouse is hide, just update cursor data */
-	if (c->mc_hide) {
-#ifdef MC_DEBUG
-		printf("cursor is hide\n");
-#endif
-		comp_warn("cursor is hide");
-		return -ENOENT;
-	}
-
-	buffer = c->mc_buf[1 - c->mc_buf_cur];
-
-	/* switch buffer index */
-	c->mc_buf_cur = 1 - c->mc_buf_cur;
-#ifdef MC_DEBUG
-	printf("Switch mc_buf_cur -> %d\n", c->mc_buf_cur);
-	comp_debug("Switch mc_buf_cur -> %d", c->mc_buf_cur);
-#endif
-
-	scanout_buffer_dirty_init(buffer);
 	for (i = 0; i < c->count_outputs; i++) {
-		/* if monitor is pluged out, do not set dirty bit */
-		if (!c->outputs[i]->enabled)
-			continue;
-#ifdef MC_SINGLE_SYNC
-		sync_output_found = false;
-#endif
-		/*
-		 * re-calculate mouse display position, because the hot point
-		 * may be changed.
-		 */
-		mc_on_screen = c->outputs[i]->mc_on_screen;
-		update_mc_view_port(c->outputs[i], false);
-		if (c->outputs[i]->mc_on_screen) {
-#ifdef MC_SINGLE_SYNC
-			if (!sync_output_found) {
-				sync_output_found = true;
-				scanout_set_buffer_dirty(buffer,
-							 c->outputs[i]->output);
-			}
-#else
-			scanout_set_buffer_dirty(buffer, c->outputs[i]->output);
-#endif
-		}
-		/* if mouse cursor is not on the screen (e.g. extended screen),
-		 * do not set dirty bit */
-		if (!c->outputs[i]->mc_on_screen) {
-			if (mc_on_screen) {
-				cancel_mc_buffer(c->outputs[i]);
-				add_mc_buffer_to_task(c, NULL,
-						1U << c->outputs[i]->pipe);
-			} else {
-				continue;
-			}
-		}
-
-		/****************************************************
-		 * repaint
-		 * sot = cb_cache_get(c->so_task_cache, false);
-		 * sot->buffer = c->mc_buf[c->mc_buf_cur];
-		 * sot->plane = c->outputs[i]->cursor_plane;
-		 * mask mouse cursor update pending
-		 ****************************************************/
-#ifdef MC_DEBUG
-		printf("add mc buffer (index: %d) to task\n", c->mc_buf_cur);
-		comp_debug("add mc buffer (index: %d) to task", c->mc_buf_cur);
-#endif
-		add_mc_buffer_to_task(c, c->mc_buf[c->mc_buf_cur],
-				      1U << c->outputs[i]->pipe);
-		cb_compositor_repaint_by_output(c->outputs[i]);
-		dirty = true;
-	}
-
-	if (dirty) {
-		c->mc_update_pending = true;
-	} else {
-		comp_warn("no dirty");
-		return -ENOENT;
+		o = c->outputs[i];
+		work_index = 1 - o->mc_buf_cur;
+		buffer = o->mc_buf[work_index];
+		scanout_buffer_dirty_init(buffer);
+		fill_cursor(c, buffer, data, width, height, stride);
+		o->mc_damaged = true;
+		update_mc_view_port(o, false);
+		cb_compositor_repaint_by_output(o);
 	}
 
 	return 0;
-}
-
-static bool cb_compositor_set_mouse_updated_notify(
-		struct compositor *comp, struct cb_listener *mc_updated_l)
-{
-	struct cb_compositor *c = to_cb_c(comp);
-
-	if (!c || !mc_updated_l)
-		return true;
-
-#ifdef MC_DEBUG
-	printf("add to mc update complete signal\n");
-#endif
-	cb_signal_add(&c->mc_update_complete_signal, mc_updated_l);
-	return c->mc_update_pending;
 }
 
 enum input_type {
@@ -2944,13 +2762,11 @@ static void reset_mouse_pos(struct cb_compositor *c)
 	c->mc_desktop_pos.x = c->mc_desktop_pos.y = 0;
 }
 
-static void refresh_mc_desktop_pos(struct cb_compositor *c, s32 dx, s32 dy,
-				   bool hide)
+static void refresh_mc_desktop_pos(struct cb_compositor *c, s32 dx, s32 dy)
 {
-	s32 i, cur_screen;
-	bool mc_on_screen;
+	s32 cur_screen, i;
 
-	comp_debug(">>> dx: %d, dy: %d, hide: %d", dx, dy, hide);
+	comp_debug(">>> dx: %d, dy: %d", dx, dy);
 	cur_screen = check_mouse_pos(c, c->mc_desktop_pos.x,
 				     c->mc_desktop_pos.y);
 	if (cur_screen < 0) {
@@ -2959,46 +2775,10 @@ static void refresh_mc_desktop_pos(struct cb_compositor *c, s32 dx, s32 dy,
 		normalize_mouse_pos(c, cur_screen, dx, dy);
 	}
 
-	/* mask mouse cursor update pending */
 	for (i = 0; i < c->count_outputs; i++) {
-		/* if monitor is pluged out, do not set dirty bit */
 		if (!c->outputs[i]->enabled)
 			continue;
-		mc_on_screen = c->outputs[i]->mc_on_screen;
 		update_mc_view_port(c->outputs[i], true);
-		if (c->mc_hide)
-			continue;
-
-		if (!c->mc_hide && hide) {
-			if (mc_on_screen) {
-				cancel_mc_buffer(c->outputs[i]);
-				add_mc_buffer_to_task(c, NULL,
-				      1U << c->outputs[i]->pipe);
-			}
-			continue;
-		}
-		if (!c->outputs[i]->mc_on_screen) {
-			if (mc_on_screen) {
-				cancel_mc_buffer(c->outputs[i]);
-				add_mc_buffer_to_task(c, NULL,
-				      1U << c->outputs[i]->pipe);
-			}
-			continue;
-		}
-#ifdef MC_DEBUG
-		printf("add mc buffer (index: %d) to task\n", c->mc_buf_cur);
-		comp_debug("add mc buffer (index: %d) to task", c->mc_buf_cur);
-#endif
-		add_mc_buffer_to_task(c, c->mc_buf[c->mc_buf_cur],
-				      1U << c->outputs[i]->pipe);
-	}
-
-	if (!c->mc_hide && hide) {
-#ifdef MC_DEBUG
-		printf("Set mc_hide: 1\n");
-		comp_debug("Set mc_hide: 1");
-#endif
-		c->mc_hide = true;
 	}
 
 	cb_compositor_repaint(c);
@@ -3008,7 +2788,8 @@ static s32 cb_compositor_hide_mouse_cursor(struct compositor *comp)
 {
 	struct cb_compositor *c = to_cb_c(comp);
 
-	refresh_mc_desktop_pos(c, 0, 0, true);
+	c->mc_hide = true;
+	refresh_mc_desktop_pos(c, 0, 0);
 
 	return 0;
 }
@@ -3018,7 +2799,7 @@ static s32 cb_compositor_show_mouse_cursor(struct compositor *comp)
 	struct cb_compositor *c = to_cb_c(comp);
 
 	c->mc_hide = false;
-	refresh_mc_desktop_pos(c, 0, 0, false);
+	refresh_mc_desktop_pos(c, 0, 0);
 
 	return 0;
 }
@@ -3044,7 +2825,7 @@ static void event_proc(struct cb_compositor *c, struct input_event *evts,
 				break;
 			if (dx || dy) {
 				cursor_accel_set(&dx, &dy, 2.0f);
-				refresh_mc_desktop_pos(c, dx, dy, false);
+				refresh_mc_desktop_pos(c, dx, dy);
 				tx_evt[dst].type = EV_ABS;
 				tx_evt[dst].code = ABS_X | ABS_Y;
 				tx_evt[dst].v.pos.x = c->mc_g_desktop_pos.x;
@@ -4188,13 +3969,18 @@ static s32 output_repaint_timer_handler(void *data)
 		}
 
 		if (!c->mc_hide && o->mc_on_screen) {
+			if (o->mc_damaged) {
+				o->mc_buf_cur = 1 - o->mc_buf_cur;
+				o->mc_damaged = false;
+			}
 			scanout_commit_add_fb_info(commit,
-						   c->mc_buf[c->mc_buf_cur],
-						   o->output,
-						   o->cursor_plane,
-						   &c->mc_src,
-						   &o->mc_view_port,
-						   -1, false);
+				   o->mc_buf[o->mc_buf_cur],
+				   o->output,
+				   o->cursor_plane,
+				   &c->mc_src,
+				   &o->mc_view_port,
+				   -1,
+				   c->mc_alpha_src_pre_mul);
 			output_empty = false;
 			empty = false;
 		}
@@ -4226,19 +4012,6 @@ out:
 	return 0;
 }
 
-#ifdef MC_DEBUG_BO_COMPLETE
-static void mc_buf_complete_cb(struct cb_listener *listener, void *data)
-{
-	struct cb_buffer *buffer = data;
-	s64 index = (s64)(buffer->userdata);
-
-	struct cb_compositor *c = container_of(listener, struct cb_compositor,
-					       mc_buf_l[index]);
-	printf("MC CUR: %u, MC BO %ld Complete.\n", c->mc_buf_cur, index);
-	comp_debug("MC CUR: %u, MC BO %ld Complete.", c->mc_buf_cur, index);
-}
-#endif
-
 static void cb_compositor_set_dbg_level(struct compositor *comp,
 					enum cb_log_level level)
 {
@@ -4269,7 +4042,6 @@ struct compositor *compositor_create(char *device_name,
 {
 	struct cb_compositor *c;
 	s32 i, vid;
-	struct cb_buffer_info info;
 
 	c = calloc(1, sizeof(*c));
 	if (!c)
@@ -4309,52 +4081,17 @@ struct compositor *compositor_create(char *device_name,
 	c->mc_desktop_pos.y = 0;
 	c->mc_hot_pos.x = DEF_MC_HOT_X;
 	c->mc_hot_pos.y = DEF_MC_HOT_Y;
-
-	/* create cursor bo */
-	memset(&info, 0, sizeof(info));
-	info.pix_fmt = CB_PIX_FMT_ARGB8888;
-	info.width = MC_MAX_WIDTH;
-	info.height = MC_MAX_HEIGHT;
-	for (i = 0; i < 2; i++) {
-		c->mc_buf[i] = c->so->cursor_bo_create(c->so, &info);
-		if (!c->mc_buf[i])
-			goto err;
-		c->mc_buf[i]->userdata = (void *)((s64)(i));
-#ifdef MC_DEBUG_BO_COMPLETE
-		c->mc_buf_l[i].notify = mc_buf_complete_cb;
-		c->so->add_buffer_complete_notify(c->so, c->mc_buf[i],
-						  &c->mc_buf_l[i]);
-#endif
-	}
-	c->mc_buf_cur = 1;
-	fill_cursor(c, DEF_MC_DAT, DEF_MC_WIDTH, DEF_MC_HEIGHT,
-		    (DEF_MC_WIDTH << 2));
-	c->mc_buf_cur = 0;
-
 	c->mc_src.pos.x = c->mc_src.pos.y = 0;
 	c->mc_src.w = MC_MAX_WIDTH;
 	c->mc_src.h = MC_MAX_HEIGHT;
 
 	c->mc_hide = false;
 
-	/* register mc page flip handler */
-	for (i = 0; i < 2; i++) {
-		INIT_LIST_HEAD(&c->mc_flipped_l[i].link);
-		c->mc_flipped_l[i].notify = mc_flipped_cb;
-		c->so->add_buffer_flip_notify(c->so, c->mc_buf[i],
-					      &c->mc_flipped_l[i]);
-	}
-
-	/* init mouse cursor committed signal */
-	cb_signal_init(&c->mc_update_complete_signal);
-
 	for (i = 0; i < count_outputs; i++) {
 		c->outputs[i] = cb_output_create(c, &pipecfgs[i]);
 		if (!c->outputs[i])
 			goto err;
 	}
-
-	scanout_buffer_dirty_init(c->mc_buf[c->mc_buf_cur]);
 
 	cb_signal_init(&c->ready_signal);
 
@@ -4412,8 +4149,6 @@ struct compositor *compositor_create(char *device_name,
 	c->base.set_mouse_cursor = cb_compositor_set_mouse_cursor;
 	c->base.add_client = cb_compositor_add_client;
 	c->base.rm_client = cb_compositor_rm_client;
-	c->base.set_mouse_updated_notify =
-			cb_compositor_set_mouse_updated_notify;
 	c->base.set_kbd_led_status = set_kbd_led_status;
 	c->base.get_kbd_led_status = get_kbd_led_status;
 	c->base.set_dbg_level = cb_compositor_set_dbg_level;

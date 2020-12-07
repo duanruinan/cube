@@ -47,22 +47,20 @@ struct mc_bo_info {
 struct cube_input {
 	char name[64];
 	struct cb_client *client;
-	s32 count_bos;
-	struct mc_bo_info bos[2];
-	s32 work_bo;
-	bool show_mc_pending;
-	bool hide_mc_pending;
-	bool update_mc_pending;
-	bool need_timeout_detect;
-	bool draw_mc_pending;
-	void *update_mc_timer;
-	void *delayed_timer;
-	void *timeout_timer;
-	void *show_hide_timer;
+	struct mc_bo_info bo;
+	
+	void *mc_repaint_timer;
 	void *update_led_timer;
 	bool capsl_led;
 	void *signal_handler;
 	bool shown;
+
+	s32 state;
+	s32 repaint_sleep_1;
+	s32 repaint_sleep_2;
+	s32 repaint_sleep_3;
+	s32 repaint_sleep_4;
+	bool loop;
 };
 
 static s32 signal_cb(s32 signal_number, void *userdata)
@@ -70,207 +68,167 @@ static s32 signal_cb(s32 signal_number, void *userdata)
 	struct cube_input *input = userdata;
 	struct cb_client *client = input->client;
 
-	printf("receive signal\n");
+	printf("[TEST_MC] receive signal\n");
 	client->stop(client);
 	return 0;
 }
 
 static void mc_commited_cb(bool success, void *userdata, u64 bo_id)
 {
-	struct cube_input *input = userdata;
-	struct cb_client *client = input->client;
-
 	if (!success) {
-		printf("failed to commit mc %ld\n", (s64)bo_id);
-		if (((s32)bo_id) == -ENOENT ||
-		    ((s32)bo_id) == -EBUSY) {
-			client->timer_update(client, input->delayed_timer,
-					     100, 0);
-		}
-	} else {
-		client->timer_update(client, input->delayed_timer, 0, 0);
-		if (!input->need_timeout_detect)
-			return;
-		printf("update timer\n");
-		client->timer_update(client, input->timeout_timer, 100, 0);
+		printf("[TEST_MC] failed to commit mc %ld\n", (s64)bo_id);
 	}
 }
 
-static void mc_idle_task(void *data)
+static s32 mc_repaint_cb(void *userdata)
 {
-	struct cube_input *input = data;
+	struct cube_input *input = userdata;
 	struct cb_client *client = input->client;
 	struct cb_mc_info mc_info;
-	s32 ret;
+	s32 ret, i;
+	u32 *pixel;
 
-	if (input->hide_mc_pending) {
-		printf("Hide mc cursor\n");
-		if (input->update_mc_pending) {
-			printf("Hide mc cursor delayed.\n");
-			return;
+	printf("[TEST_MC] mc repaint\n");
+
+	switch (input->state) {
+	case 0:
+		printf("[TEST_MC] mc repaint to red\n");
+		pixel = (u32 *)(input->bo.maps[0]);
+		for (i = 0; i < 64 * 64; i++) {
+			pixel[i] = 0x80FF0000;
 		}
-		input->hide_mc_pending = false;
-		mc_info.type = MC_CMD_TYPE_HIDE;
-		input->need_timeout_detect = false;
-		ret = client->commit_mc(client, &mc_info);
-		if (ret < 0) {
-			fprintf(stderr, "failed to hide cursor\n");
-		}
-		input->shown = false;
-	} else if (input->show_mc_pending) {
-		printf("Show mc cursor\n");
-		if (input->update_mc_pending) {
-			printf("Show mc cursor delayed.\n");
-			return;
-		}
-		input->show_mc_pending = false;
-		mc_info.type = MC_CMD_TYPE_SHOW;
-		input->need_timeout_detect = false;
-		ret = client->commit_mc(client, &mc_info);
-		if (ret < 0) {
-			fprintf(stderr, "failed to show cursor\n");
-		}
-		input->shown = true;
-		if (input->draw_mc_pending)
-			client->add_idle_task(client, input, mc_idle_task);
-	} else {
-		if (input->update_mc_pending)
-			return;
-		if (!input->draw_mc_pending)
-			return;
-		input->draw_mc_pending = false;
-		input->update_mc_pending = true;
 		mc_info.cursor.hot_x = 5;
 		mc_info.cursor.hot_y = 5;
 		mc_info.cursor.w = 64;
 		mc_info.cursor.h = 64;
 		mc_info.type = MC_CMD_TYPE_SET_CURSOR;
-		input->work_bo = 1 - input->work_bo;
-		mc_info.bo_id = input->bos[1 - input->work_bo].bo_id;
-		input->need_timeout_detect = true;
+		mc_info.bo_id = input->bo.bo_id;
+		mc_info.alpha_src_pre_mul = false;
 		ret = client->commit_mc(client, &mc_info);
 		if (ret < 0) {
-			fprintf(stderr, "failed to commit mc %s\n", __func__);
-			client->stop(client);
+			fprintf(stderr, "[TEST_MC] failed to commit rd mc\n");
 		}
+		if (!input->repaint_sleep_1)
+			return 0;
+		input->state = 1;
+		client->timer_update(client, input->mc_repaint_timer,
+					     input->repaint_sleep_1, 0);
+		break;
+	case 1:
+		printf("[TEST_MC] mc repaint to green\n");
+		pixel = (u32 *)(input->bo.maps[0]);
+		for (i = 0; i < 64 * 64; i++) {
+			pixel[i] = 0x8000FF00;
+		}
+		mc_info.cursor.hot_x = 5;
+		mc_info.cursor.hot_y = 5;
+		mc_info.cursor.w = 64;
+		mc_info.cursor.h = 64;
+		mc_info.type = MC_CMD_TYPE_SET_CURSOR;
+		mc_info.bo_id = input->bo.bo_id;
+		mc_info.alpha_src_pre_mul = false;
+		ret = client->commit_mc(client, &mc_info);
+		if (ret < 0) {
+			fprintf(stderr, "[TEST_MC] failed to commit gr mc\n");
+		}
+		if (!input->repaint_sleep_2)
+			return 0;
+		input->state = 2;
+		client->timer_update(client, input->mc_repaint_timer,
+					     input->repaint_sleep_2, 0);
+		break;
+	case 2:
+		printf("[TEST_MC] mc repaint to blue\n");
+		pixel = (u32 *)(input->bo.maps[0]);
+		for (i = 0; i < 64 * 64; i++) {
+			pixel[i] = 0x800000FF;
+		}
+		mc_info.cursor.hot_x = 5;
+		mc_info.cursor.hot_y = 5;
+		mc_info.cursor.w = 64;
+		mc_info.cursor.h = 64;
+		mc_info.type = MC_CMD_TYPE_SET_CURSOR;
+		mc_info.bo_id = input->bo.bo_id;
+		mc_info.alpha_src_pre_mul = false;
+		ret = client->commit_mc(client, &mc_info);
+		if (ret < 0) {
+			fprintf(stderr, "[TEST_MC] failed to commit bl mc\n");
+		}
+		if (!input->repaint_sleep_3)
+			return 0;
+		input->state = 3;
+		client->timer_update(client, input->mc_repaint_timer,
+					     input->repaint_sleep_3, 0);
+		break;
+	case 3:
+		if (input->shown) {
+			printf("Hide mc cursor\n");
+			mc_info.type = MC_CMD_TYPE_HIDE;
+			ret = client->commit_mc(client, &mc_info);
+			if (ret < 0) {
+				fprintf(stderr, "[TEST_MC] failed to hide "
+					"cursor\n");
+			}
+			input->shown = false;
+			if (!input->repaint_sleep_4)
+				return 0;
+			client->timer_update(client,
+					     input->mc_repaint_timer,
+					     input->repaint_sleep_4, 0);
+		} else {
+			printf("Show mc cursor\n");
+			mc_info.type = MC_CMD_TYPE_SHOW;
+			ret = client->commit_mc(client, &mc_info);
+			if (ret < 0) {
+				fprintf(stderr, "[TEST_MC] failed to show "
+					"cursor\n");
+			}
+			input->shown = true;
+			if (input->loop) {
+				input->state = 0;
+				client->timer_update(client,
+						     input->mc_repaint_timer,
+						     input->repaint_sleep_4, 0);
+			}
+		}
+		
+		break;
+	default:
+		fprintf(stderr, "[TEST_MC] unknown state %d\n", input->state);
+		break;
 	}
-}
 
-static void mc_flipped_cb(void *userdata, u64 bo_id)
-{
-	struct cube_input *input = userdata;
-	struct cb_client *client = input->client;
-
-	printf("flipped\n");
-	input->update_mc_pending = false;
-	client->timer_update(client, input->timeout_timer, 0, 0);
-	if (input->draw_mc_pending) {
-		client->add_idle_task(client, input, mc_idle_task);
-	}
+	return 0;
 }
 
 static void mc_bo_created_cb(bool success, void *userdata, u64 bo_id)
 {
 	struct cube_input *input = userdata;
 	struct cb_client *client = input->client;
-	struct mc_bo_info *bo_info;
-	char buf[64];
-	s32 ret, i;
-	u32 *pixel;
-	struct cb_mc_info mc_info;
 
 	if (!success) {
-		fprintf(stderr, "failed to create bo\n");
-err:
-		while (input->count_bos) {
-			cb_client_shm_bo_destroy(
-				input->bos[input->count_bos].bo);
-			input->count_bos--;
-		}
-		client->stop(client);
-		return;
+		fprintf(stderr, "[TEST_MC] failed to create bo\n");
+		exit(1);
 	}
 
-	bo_info = &input->bos[input->count_bos - 1];
-	printf("bo_id: %016lX\n", bo_id);
-	bo_info->bo_id = bo_id;
+	printf("[TEST_MC] bo_id: %016lX\n", bo_id);
+	input->bo.bo_id = bo_id;
 
-	if (input->count_bos == 2) {
-		printf("create bo complete.\n");
-		mc_info.cursor.hot_x = 5;
-		mc_info.cursor.hot_y = 5;
-		mc_info.cursor.w = 64;
-		mc_info.cursor.h = 64;
-		mc_info.type = MC_CMD_TYPE_SET_CURSOR;
-		// commit 1 work 0
-		mc_info.bo_id = input->bos[1 - input->work_bo].bo_id;
-		client->set_commit_mc_cb(client, input, mc_commited_cb);
-		client->set_mc_flipped_cb(client,
-					  input,
-					  mc_flipped_cb);
-		input->update_mc_pending = true;
-		input->need_timeout_detect = true;
-		ret = client->commit_mc(client, &mc_info);
-		if (ret < 0) {
-			fprintf(stderr, "failed to commit mc %s\n", __func__);
-			client->stop(client);
-		}
-		return;
-	}
+	printf("[TEST_MC] create mc bo complete.\n");
 
-	while (input->count_bos < 2) {
-		memset(buf, 0, 64);
-		sprintf(buf, "%s-%d", input->name, input->count_bos);
-		bo_info = &input->bos[input->count_bos];
-		bo_info->bo = cb_client_shm_bo_create(buf, CB_PIX_FMT_ARGB8888,
-						64, 64,
-						64, 64, &bo_info->planes,
-						bo_info->maps,
-						bo_info->pitches,
-						bo_info->offsets,
-						bo_info->sizes);
-		if (!bo_info->bo) {
-			fprintf(stderr, "failed to create shm mc bo\n");
-			goto err;
-		}
-		printf("maps: %p %p %p %p\n",
-			bo_info->maps[0],
-			bo_info->maps[1],
-			bo_info->maps[2],
-			bo_info->maps[3]);
-		printf("pitches: %u %u %u %u\n",
-			bo_info->pitches[0],
-			bo_info->pitches[1],
-			bo_info->pitches[2],
-			bo_info->pitches[3]);
-		printf("offsets: %u %u %u %u\n",
-			bo_info->offsets[0],
-			bo_info->offsets[1],
-			bo_info->offsets[2],
-			bo_info->offsets[3]);
-		printf("sizes: %u %u %u %u\n",
-			bo_info->sizes[0],
-			bo_info->sizes[1],
-			bo_info->sizes[2],
-			bo_info->sizes[3]);
-		ret = client->create_bo(client, bo_info->bo);
-		if (ret < 0) {
-			fprintf(stderr, "failed to create bo.\n");
-			goto err;
-		}
-		pixel = (u32 *)(bo_info->maps[0]);
-		for (i = 0; i < 64 * 64; i++) {
-			pixel[i] = 0x8000FF00;
-		}
-		input->count_bos++;
-	}
+	client->set_commit_mc_cb(client, input, mc_commited_cb);
+
+	client->timer_update(client, input->mc_repaint_timer, 100, 0);
+	input->state = 0;
+	
+	return;
 }
 
 static void set_caps_lock(struct cube_input *input)
 {
 	struct cb_client *client = input->client;
 
-	printf(">>> Set capslock on\n");
+	printf("[TEST_MC] >>> Set capslock on\n");
 	client->send_set_kbd_led_st(client, (1 << CB_KBD_LED_STATUS_CAPSL));
 	input->capsl_led = !input->capsl_led;
 }
@@ -281,16 +239,16 @@ static s32 update_led(void *userdata)
 	struct cb_client *client = input->client;
 
 	if (input->capsl_led) {
-		printf(">>> Set capslock on\n");
+		printf("[TEST_MC] >>> Set capslock on\n");
 		client->send_set_kbd_led_st(client,
 					    (1 << CB_KBD_LED_STATUS_CAPSL));
 	} else {
-		printf(">>> Set numlock on\n");
+		printf("[TEST_MC] >>> Set numlock on\n");
 		client->send_set_kbd_led_st(client,
 					    (1 << CB_KBD_LED_STATUS_NUML));
 	}
 	input->capsl_led = !input->capsl_led;
-	printf("<<< Get kbd led status\n");
+	printf("[TEST_MC] <<< Get kbd led status\n");
 	client->send_get_kbd_led_st(client);
 
 	return 0;
@@ -301,7 +259,7 @@ static void kbd_led_st_cb(void *userdata, u32 led_status)
 	struct cube_input *input = userdata;
 	struct cb_client *client = input->client;
 
-	printf("[READ] LED status: %08X\n", led_status);
+	printf("[TEST_MC][READ] LED status: %08X\n", led_status);
 	client->timer_update(client, input->update_led_timer, 2000, 0);
 }
 
@@ -321,8 +279,8 @@ static void ready_cb(void *userdata)
 
 	strcpy(input->name, "test_mc");
 	memset(buf, 0, 64);
-	sprintf(buf, "%s-%d", input->name, input->count_bos);
-	bo_info = &input->bos[input->count_bos];
+	sprintf(buf, "%s-%d", input->name, 0);
+	bo_info = &input->bo;
 	bo_info->bo = cb_client_shm_bo_create(buf, CB_PIX_FMT_ARGB8888, 64, 64,
 					      64, 64, &bo_info->planes,
 					      bo_info->maps,
@@ -330,26 +288,26 @@ static void ready_cb(void *userdata)
 					      bo_info->offsets,
 					      bo_info->sizes);
 	if (!bo_info->bo) {
-		fprintf(stderr, "failed to create shm mc bo\n");
+		fprintf(stderr, "[TEST_MC] failed to create shm mc bo\n");
 		client->stop(client);
 		return;
 	}
-	printf("maps: %p %p %p %p\n",
+	printf("[TEST_MC] maps: %p %p %p %p\n",
 		bo_info->maps[0],
 		bo_info->maps[1],
 		bo_info->maps[2],
 		bo_info->maps[3]);
-	printf("pitches: %u %u %u %u\n",
+	printf("[TEST_MC] pitches: %u %u %u %u\n",
 		bo_info->pitches[0],
 		bo_info->pitches[1],
 		bo_info->pitches[2],
 		bo_info->pitches[3]);
-	printf("offsets: %u %u %u %u\n",
+	printf("[TEST_MC] offsets: %u %u %u %u\n",
 		bo_info->offsets[0],
 		bo_info->offsets[1],
 		bo_info->offsets[2],
 		bo_info->offsets[3]);
-	printf("sizes: %u %u %u %u\n",
+	printf("[TEST_MC] sizes: %u %u %u %u\n",
 		bo_info->sizes[0],
 		bo_info->sizes[1],
 		bo_info->sizes[2],
@@ -357,9 +315,8 @@ static void ready_cb(void *userdata)
 	client->set_create_bo_cb(client, input, mc_bo_created_cb);
 	ret = client->create_bo(client, bo_info->bo);
 	if (ret < 0) {
-		fprintf(stderr, "failed to create bo.\n");
-		cb_client_shm_bo_destroy(input->bos[input->count_bos].bo);
-		input->count_bos = 0;
+		fprintf(stderr, "[TEST_MC] failed to create bo.\n");
+		cb_client_shm_bo_destroy(input->bo.bo);
 		client->stop(client);
 		return;
 	}
@@ -367,15 +324,10 @@ static void ready_cb(void *userdata)
 	for (i = 0; i < 64 * 64; i++) {
 		pixel[i] = 0x80FF0000;
 	}
-	input->count_bos++;
 	set_caps_lock(input);
 	client->set_kbd_led_st_cb(client, input, kbd_led_st_cb);
-	printf("<<< Get kbd led status\n");
+	printf("[TEST_MC] <<< Get kbd led status\n");
 	client->send_get_kbd_led_st(client);
-
-	input->show_mc_pending = true;
-	client->add_idle_task(client, input, mc_idle_task);
-	client->timer_update(client, input->update_mc_timer, 5, 0);
 }
 
 static void raw_input_evts_cb(void *userdata,
@@ -417,66 +369,16 @@ static void raw_input_evts_cb(void *userdata,
 	}
 }
 
-static s32 show_hide_cb(void *userdata)
-{
-	struct cube_input *input = userdata;
-	struct cb_client *client = input->client;
-
-	if (!input->shown) {
-		printf("Show mc cursor pending\n");
-		input->show_mc_pending = true;
-	} else {
-		printf("Hide mc cursor pending\n");
-		input->hide_mc_pending = true;
-	}
-	client->timer_update(client, input->show_hide_timer, 5000, 0);
-	client->add_idle_task(client, input, mc_idle_task);
-	return 0;
-}
-
-static s32 update_mc_cb(void *userdata)
-{
-	struct cube_input *input = userdata;
-	struct cb_client *client = input->client;
-
-	client->timer_update(client, input->update_mc_timer, 5, 0);
-	if (!input->draw_mc_pending) {
-		input->draw_mc_pending = true;
-		client->add_idle_task(client, input, mc_idle_task);
-	}
-	return 0;
-}
-
-static s32 timeout_cb(void *userdata)
-{
-	printf("MC timeout.\n");
-	return 0;
-}
-
-static s32 timer_cb(void *userdata)
-{
-	struct cube_input *input = userdata;
-	struct cb_client *client = input->client;
-	struct cb_mc_info mc_info;
-	s32 ret;
-
-	mc_info.cursor.hot_x = 5;
-	mc_info.cursor.hot_y = 5;
-	mc_info.cursor.w = 64;
-	mc_info.cursor.h = 64;
-	mc_info.type = MC_CMD_TYPE_SET_CURSOR;
-	mc_info.bo_id = input->bos[1 - input->work_bo].bo_id;
-	ret = client->commit_mc(client, &mc_info);
-	if (ret < 0) {
-		fprintf(stderr, "failed to commit mc %s\n", __func__);
-	}
-	return 0;
-}
-
 s32 main(s32 argc, char **argv)
 {
 	struct cube_input *input;
 	struct cb_client *client;
+
+	if (argc < 5) {
+		fprintf(stderr, "test_mc sleep1 sleep2 sleep3 sleep4 "
+			"loop_or_not\n");
+		return -1;
+	}
 
 	input = calloc(1, sizeof(*input));
 	if (!input)
@@ -488,42 +390,45 @@ s32 main(s32 argc, char **argv)
 
 	input->shown = true;
 
+	input->repaint_sleep_1 = atoi(argv[1]);
+	input->repaint_sleep_2 = atoi(argv[2]);
+	input->repaint_sleep_3 = atoi(argv[3]);
+	input->repaint_sleep_4 = atoi(argv[4]);
+	input->loop = false;
+	if (argc == 6) {
+		if (!strcmp(argv[5], "Y")) {
+			input->loop = true;
+		}
+	}
+
 	client = input->client;
 
-	input->update_mc_timer = client->add_timer_handler(client, input,
-							   update_mc_cb);
-	input->delayed_timer = client->add_timer_handler(client, input,
-							 timer_cb);
-	input->timeout_timer = client->add_timer_handler(client, input,
-							 timeout_cb);
-	input->show_hide_timer = client->add_timer_handler(client, input,
-							   show_hide_cb);
+	input->mc_repaint_timer = client->add_timer_handler(client, input,
+							    mc_repaint_cb);
+	if (!input->mc_repaint_timer)
+		goto out;
+
 	input->signal_handler = client->add_signal_handler(client, input,
 							   SIGINT,
 							   signal_cb);
 	input->update_led_timer = client->add_timer_handler(client, input,
 							    update_led);
+	if (!input->update_led_timer)
+		goto out;
+
 	input->capsl_led = true;
-	client->timer_update(client, input->show_hide_timer, 5000, 0);
 
 	client->set_ready_cb(client, input, ready_cb);
 	client->set_raw_input_evts_cb(client, input, raw_input_evts_cb);
 
-out:
 	if (input->client)
 		client->run(client);
-	client->rm_handler(client, input->update_mc_timer);
-	client->rm_handler(client, input->delayed_timer);
-	client->rm_handler(client, input->timeout_timer);
-	client->rm_handler(client, input->show_hide_timer);
+out:
+	client->rm_handler(client, input->mc_repaint_timer);
 	client->rm_handler(client, input->signal_handler);
 	client->rm_handler(client, input->update_led_timer);
-	while (input->count_bos) {
-		client->destroy_bo(client,
-				   input->bos[input->count_bos - 1].bo_id);
-		cb_client_shm_bo_destroy(input->bos[input->count_bos - 1].bo);
-		input->count_bos--;
-	}
+	client->destroy_bo(client, input->bo.bo_id);
+	cb_client_shm_bo_destroy(input->bo.bo);
 	client->destroy(client);
 	free(input);
 	return 0;

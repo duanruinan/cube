@@ -313,10 +313,6 @@ struct compositor {
 				s32 hot_x, s32 hot_y,
 				bool alpha_blended);
 
-	/* set mouse cursor update complete notify */
-	bool (*set_mouse_updated_notify)(struct compositor *c,
-					 struct cb_listener *mc_updated_l);
-
 	/* write keyboard led status */
 	void (*set_kbd_led_status)(struct compositor *c, u32 led_status);
 	

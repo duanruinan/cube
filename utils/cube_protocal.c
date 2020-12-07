@@ -1473,8 +1473,6 @@ void cb_cmd_dump(u8 *data)
 		printf("MC_COMMIT_CMD\n");
 	} else if (head & (1 << CB_CMD_MC_COMMIT_ACK_SHIFT)) {
 		printf("MC_COMMIT_ACK_CMD\n");
-	} else if (head & (1 << CB_CMD_MC_FLIPPED_SHIFT)) {
-		printf("MC_FLIPPED_CMD\n");
 	} else {
 		printf("unknown command 0x%08X\n", head);
 	}
@@ -1631,80 +1629,6 @@ u64 cb_client_parse_mc_commit_ack_cmd(u8 *data)
 		return 0;
 	tlv_result = (struct cb_tlv *)(data
 			+ map[CB_CMD_MC_COMMIT_ACK_SHIFT-CB_CMD_OFFSET]);
-	if (tlv_result->tag != CB_TAG_RESULT)
-		return 0;
-	if (tlv_result->length != sizeof(u64))
-		return 0;
-	return *((u64 *)(&tlv_result->payload[0]));
-}
-
-u8 *cb_server_create_mc_flipped_cmd(u64 ret, u32 *n)
-{
-	struct cb_tlv *tlv, *tlv_map, *tlv_result;
-	u32 size, size_result, size_map, *map, *head;
-	u8 *p;
-
-	size_map = CB_CMD_MAP_SIZE;
-	size_result = sizeof(*tlv) + sizeof(u64);
-	size = sizeof(*tlv) + size_map + size_result + sizeof(u32);
-	p = calloc(1, size);
-	if (!p)
-		return NULL;
-
-	head = (u32 *)p;
-	*head = (1 << CB_CMD_MC_FLIPPED_SHIFT);
-
-	tlv = (struct cb_tlv *)(p+sizeof(u32));
-	tlv->tag = CB_TAG_WIN;
-	tlv->length = size_result + size_map;
-	tlv_map = (struct cb_tlv *)(&tlv->payload[0]);
-	tlv_result = (struct cb_tlv *)(&tlv->payload[0] + size_map);
-	tlv_map->tag = CB_TAG_MAP;
-	tlv_map->length = CB_CMD_MAP_SIZE - sizeof(struct cb_tlv);
-	map = (u32 *)(&tlv_map->payload[0]);
-	map[CB_CMD_MC_FLIPPED_SHIFT - CB_CMD_OFFSET] = (u8 *)tlv_result - p;
-	tlv_result->tag = CB_TAG_RESULT;
-	tlv_result->length = sizeof(u64);
-	*((u64 *)(&tlv_result->payload[0])) = ret;
-	*n = size;
-
-	return p;
-}
-
-u8 *cb_dup_mc_flipped_cmd(u8 *dst, u8 *src, u32 n, u64 ret)
-{
-	struct cb_tlv *tlv, *tlv_map, *tlv_result;
-	u32 *map;
-
-	memcpy(dst, src, n);
-
-	tlv = (struct cb_tlv *)(dst+sizeof(u32));
-	tlv_map = (struct cb_tlv *)(&tlv->payload[0]);
-	map = (u32 *)(&tlv_map->payload[0]);
-	tlv_result = (struct cb_tlv *)(dst
-			+ map[CB_CMD_MC_FLIPPED_SHIFT-CB_CMD_OFFSET]);
-	*((u32 *)(&tlv_result->payload[0])) = ret;
-	return dst;
-}
-
-u64 cb_client_parse_mc_flipped_cmd(u8 *data)
-{
-	struct cb_tlv *tlv, *tlv_map, *tlv_result;
-	u32 size, *head, *map;
-
-	head = (u32 *)data;
-	if (!((*head) & (1 << CB_CMD_MC_FLIPPED_SHIFT)))
-		return 0;
-
-	tlv = (struct cb_tlv *)(data+sizeof(u32));
-	assert(tlv->tag == CB_TAG_WIN);
-	size = sizeof(*tlv) + sizeof(u32) + tlv->length;
-	tlv_map = (struct cb_tlv *)(&tlv->payload[0]);
-	map = (u32 *)(&tlv_map->payload[0]);
-	if (map[CB_CMD_MC_FLIPPED_SHIFT- CB_CMD_OFFSET] >= size)
-		return 0;
-	tlv_result = (struct cb_tlv *)(data
-			+ map[CB_CMD_MC_FLIPPED_SHIFT-CB_CMD_OFFSET]);
 	if (tlv_result->tag != CB_TAG_RESULT)
 		return 0;
 	if (tlv_result->length != sizeof(u64))

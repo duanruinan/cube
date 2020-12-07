@@ -212,7 +212,7 @@ static void put_free_bo(struct cube_client *client, struct bo_info *bo)
 static void bo_commited_cb(bool success, void *userdata, u64 bo_id)
 {
 	struct cube_client *client = userdata;
-	struct cb_client *cli = client->cli;
+	/* struct cb_client *cli = client->cli; */
 
 	if (bo_id == (u64)(-1)) {
 		printf("[TEST_CLIENT] failed to commit bo: %lX\n", bo_id);
@@ -319,7 +319,7 @@ static s32 repaint_cb(void *userdata)
 static void bo_flipped_cb(void *userdata, u64 bo_id)
 {
 	struct cube_client *client = userdata;
-	struct cb_client *cli = client->cli;
+	/* struct cb_client *cli = client->cli; */
 	struct timespec now;
 
 	clock_gettime(CLOCK_MONOTONIC, &now);

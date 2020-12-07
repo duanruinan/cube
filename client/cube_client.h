@@ -159,9 +159,6 @@ struct cb_client {
 	s32 (*set_commit_mc_cb)(struct cb_client *client, void *userdata,
 				void (*mc_commited_cb)(
 				    bool success, void *userdata, u64 bo_id));
-	s32 (*set_mc_flipped_cb)(struct cb_client *client, void *userdata,
-				 void (*mc_flipped_cb)(
-				 	void *userdata, u64 bo_id));
 
 	s32 (*set_hpd_cb)(struct cb_client *client,
 			  void *userdata,
