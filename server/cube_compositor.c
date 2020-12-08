@@ -46,9 +46,6 @@
 #include <cube_client_agent.h>
 #include <cube_def_cursor.h>
 
-/*
-#define MC_DEBUG 1
-*/
 #define DUMMY_WIDTH 640
 #define DUMMY_HEIGHT 480
 
@@ -1246,10 +1243,6 @@ static void show_dummy(struct cb_output *output)
 			&output->mc_view_port,
 			-1,
 			c->mc_alpha_src_pre_mul);
-#ifdef MC_DEBUG
-		printf("Commit MC []: %d\n", c->mc_buf_cur);
-		comp_debug("Commit MC []: %d", c->mc_buf_cur);
-#endif
 	}
 	sd = c->so->scanout_data_alloc(c->so);
 	c->so->fill_scanout_data(c->so, sd, commit);
@@ -3961,25 +3954,6 @@ static s32 output_repaint_timer_handler(void *data)
 			}
 			output_empty = false;
 			empty = false;
-#ifdef MC_DEBUG
-			if (o->cursor_plane == sot->plane) {
-				printf("Commit MC: %ld, cur %d\n",
-					(s64)(sot->buffer->userdata),
-					c->mc_buf_cur);
-				comp_debug("Commit MC: %ld, cur %d",
-					(s64)(sot->buffer->userdata),
-					c->mc_buf_cur);
-				printf("Commit Dirty: %08X\n",
-					sot->buffer->dirty);
-			}
-#endif
-			/*
-			printf("commit buffer for o: %d %ux%u, type: %d\n",
-				o->pipe,
-				sot->buffer->info.width,
-				sot->buffer->info.height,
-				sot->plane->type);
-			*/
 			scanout_commit_add_fb_info(commit,
 					   sot->buffer,
 					   o->output,
