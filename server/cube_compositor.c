@@ -1398,7 +1398,7 @@ static void dma_buf_flipped_cb(struct cb_listener *listener, void *data)
 
 	comp_debug("del dma buf flipped listener begin");
 	list_del(&listener->link);
-	client->send_bo_flipped(client, buffer);
+	client->send_bo_flipped(client, buffer, (u64)surface);
 	comp_debug("del dma buf flipped listener end");
 }
 
@@ -1410,7 +1410,7 @@ static void dma_buf_completed_cb(struct cb_listener *listener, void *data)
 
 	comp_debug("del dma buf complete listener begin");
 	list_del(&listener->link);
-	client->send_bo_complete(client, buffer);
+	client->send_bo_complete(client, buffer, (u64)surface);
 	buffer->completed_l_added = false;
 	comp_debug("del dma buf complete listener end");
 }
@@ -3385,7 +3385,7 @@ static void surface_flipped_cb(struct cb_listener *listener, void *data)
 	if (view->painted) {
 		view->painted = false;
 		cancel_renderer_surface(surface, true);
-		client->send_bo_flipped(client, NULL);
+		client->send_bo_flipped(client, NULL, (u64)surface);
 	}
 }
 
@@ -3481,7 +3481,7 @@ static void cb_compositor_commit_surface(struct compositor *comp,
 
 	set_renderable_buffer_changed(c, view, diff);
 
-	client->send_bo_complete(client, surface->buffer_pending);
+	client->send_bo_complete(client, surface->buffer_pending, (u64)surface);
 	surface->buffer_pending = NULL;
 }
 

@@ -189,7 +189,7 @@ static void cb_client_agent_send_bo_create_ack(struct cb_client_agent *client,
 }
 
 static void cb_client_agent_send_bo_commit_ack(struct cb_client_agent *client,
-					       u64 result)
+					       u64 result, u64 surface_id)
 {
 	size_t length;
 	s32 ret;
@@ -198,7 +198,7 @@ static void cb_client_agent_send_bo_commit_ack(struct cb_client_agent *client,
 	p = cb_dup_commit_ack_cmd(client->bo_commit_ack_tx_cmd,
 				  client->bo_commit_ack_tx_cmd_t,
 				  client->bo_commit_ack_tx_len,
-				  result);
+				  result, surface_id);
 	if (!p) {
 		clia_err("failed to dup bo commit ack");
 		return;
@@ -229,7 +229,7 @@ static void cb_client_agent_send_bo_commit_ack(struct cb_client_agent *client,
 }
 
 static void cb_client_agent_send_bo_flipped(struct cb_client_agent *client,
-					    void *bo)
+					    void *bo, u64 surface_id)
 {
 	size_t length;
 	s32 ret;
@@ -238,7 +238,7 @@ static void cb_client_agent_send_bo_flipped(struct cb_client_agent *client,
 	p = cb_dup_bo_flipped_cmd(client->bo_flipped_tx_cmd,
 				  client->bo_flipped_tx_cmd_t,
 				  client->bo_flipped_tx_len,
-				  (u64)bo);
+				  (u64)bo, surface_id);
 	if (!p) {
 		clia_err("failed to dup bo flipped");
 		return;
@@ -270,7 +270,7 @@ static void cb_client_agent_send_bo_flipped(struct cb_client_agent *client,
 }
 
 static void cb_client_agent_send_bo_complete(struct cb_client_agent *client,
-					     void *bo)
+					     void *bo, u64 surface_id)
 {
 	size_t length;
 	s32 ret;
@@ -279,7 +279,7 @@ static void cb_client_agent_send_bo_complete(struct cb_client_agent *client,
 	p = cb_dup_bo_complete_cmd(client->bo_complete_tx_cmd,
 				   client->bo_complete_tx_cmd_t,
 				   client->bo_complete_tx_len,
-				   (u64)bo);
+				   (u64)bo, surface_id);
 	if (!p) {
 		clia_err("failed to dup bo complete");
 		return;
@@ -850,7 +850,8 @@ static void bo_commit_proc(struct cb_client_agent *client, u8 *buf)
 
 	if (cb_server_parse_commit_req_cmd(buf, &info) < 0) {
 		clia_err("failed to parse bo commit.");
-		cb_client_agent_send_bo_commit_ack(client, COMMIT_FAILED);
+		cb_client_agent_send_bo_commit_ack(client, COMMIT_FAILED,
+						   info.surface_id);
 		return;
 	}
 
@@ -858,21 +859,24 @@ static void bo_commit_proc(struct cb_client_agent *client, u8 *buf)
 	buffer = (struct cb_buffer *)(bo_id);
 	if (!buffer) {
 		clia_err("invalid buffer");
-		cb_client_agent_send_bo_commit_ack(client, COMMIT_FAILED);
+		cb_client_agent_send_bo_commit_ack(client, COMMIT_FAILED,
+						   info.surface_id);
 		return;
 	}
 
 	s = (struct cb_surface *)(info.surface_id);
 	if (!s) {
 		clia_err("invalid surface");
-		cb_client_agent_send_bo_commit_ack(client, COMMIT_FAILED);
+		cb_client_agent_send_bo_commit_ack(client, COMMIT_FAILED,
+						   info.surface_id);
 		return;
 	}
 
 	v = s->view;
 	if (!v) {
 		clia_err("invalid view");
-		cb_client_agent_send_bo_commit_ack(client, COMMIT_FAILED);
+		cb_client_agent_send_bo_commit_ack(client, COMMIT_FAILED,
+						   info.surface_id);
 		return;
 	}
 
@@ -888,40 +892,50 @@ static void bo_commit_proc(struct cb_client_agent *client, u8 *buf)
 				clia_err("failed to commit buffer 1");
 				printf("failed to commit buffer 1\n");
 				cb_client_agent_send_bo_commit_ack(client,
-								COMMIT_FAILED);
+							COMMIT_FAILED,
+							info.surface_id);
 				if (buffer) {
 					client->send_bo_complete(client,
-								 buffer);
+								 buffer,
+							info.surface_id);
 				}
 			} else {
 				clia_debug("send complete %lX", buffer_last);
 				printf("send complete %lX\n", (u64)buffer_last);
-				client->send_bo_complete(client, buffer_last);
+				client->send_bo_complete(client, buffer_last,
+							 info.surface_id);
 				cb_client_agent_send_bo_commit_ack(client,
-								   bo_id);
+							bo_id,
+							info.surface_id);
 				cb_client_agent_send_bo_commit_ack(client,
-								COMMIT_REPLACE);
+							COMMIT_REPLACE,
+							info.surface_id);
 			}
 		} else {
 			if (dma_buf_bo_commit_proc(client, &info) < 0) {
 				clia_err("failed to commit buffer.");
 				printf("failed to commit buffer.\n");
 				cb_client_agent_send_bo_commit_ack(client,
-								COMMIT_FAILED);
+							COMMIT_FAILED,
+							info.surface_id);
 				if (buffer)
 					client->send_bo_complete(client,
-								 buffer);
+								 buffer,
+							info.surface_id);
 			} else {
 				cb_client_agent_send_bo_commit_ack(client,
-								   bo_id);
+							bo_id,
+							info.surface_id);
 			}
 		}
 	} else if (buffer->info.type == CB_BUF_TYPE_SHM) {
 		surface_bo_commit_proc(client, &info);
-		cb_client_agent_send_bo_commit_ack(client, bo_id);
+		cb_client_agent_send_bo_commit_ack(client, bo_id,
+						   info.surface_id);
 	} else {
 		clia_err("unknown buffer type. %d", buffer->info.type);
-		cb_client_agent_send_bo_commit_ack(client, COMMIT_FAILED);
+		cb_client_agent_send_bo_commit_ack(client, COMMIT_FAILED,
+						   info.surface_id);
 	}
 }
 
@@ -1496,21 +1510,21 @@ struct cb_client_agent *cb_client_agent_create(s32 sock,
 	client->bo_id_created_tx_len = n;
 
 	client->bo_commit_ack_tx_cmd_t
-		= cb_server_create_commit_ack_cmd(0, &n);
+		= cb_server_create_commit_ack_cmd(0, 0ULL, &n);
 	assert(client->bo_commit_ack_tx_cmd_t);
 	client->bo_commit_ack_tx_cmd = malloc(n);
 	assert(client->bo_commit_ack_tx_cmd);
 	client->bo_commit_ack_tx_len = n;
 
 	client->bo_flipped_tx_cmd_t
-		= cb_server_create_bo_flipped_cmd(0, &n);
+		= cb_server_create_bo_flipped_cmd(0, 0ULL, &n);
 	assert(client->bo_flipped_tx_cmd_t);
 	client->bo_flipped_tx_cmd = malloc(n);
 	assert(client->bo_flipped_tx_cmd);
 	client->bo_flipped_tx_len = n;
 
 	client->bo_complete_tx_cmd_t
-		= cb_server_create_bo_complete_cmd(0, &n);
+		= cb_server_create_bo_complete_cmd(0, 0ULL, &n);
 	assert(client->bo_complete_tx_cmd_t);
 	client->bo_complete_tx_cmd = malloc(n);
 	assert(client->bo_complete_tx_cmd);

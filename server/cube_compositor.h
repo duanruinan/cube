@@ -40,8 +40,6 @@ struct cb_buffer {
 	/* scanout backend emit complete signal when display do not use buffer
 	 * any more */
 	struct cb_signal complete_signal;
-	/* userdata is set by compositor, and it is used in listener. */
-	void *userdata;
 	/*
 	 * 'dirty' is the outputs' bitmap. it indicates which output the buffer
 	 * should be displayed on.

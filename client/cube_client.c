@@ -164,13 +164,14 @@ struct client {
 	void (*bo_created_cb)(bool success, void *userdata, u64 bo_id);
 
 	void *bo_commited_cb_userdata;
-	void (*bo_commited_cb)(bool success, void *userdata, u64 bo_id);
+	void (*bo_commited_cb)(bool success, void *userdata, u64 bo_id,
+			       u64 surface_id);
 
 	void *bo_flipped_cb_userdata;
-	void (*bo_flipped_cb)(void *userdata, u64 bo_id);
+	void (*bo_flipped_cb)(void *userdata, u64 bo_id, u64 surface_id);
 
 	void *bo_completed_cb_userdata;
-	void (*bo_completed_cb)(void *userdata, u64 bo_id);
+	void (*bo_completed_cb)(void *userdata, u64 bo_id, u64 surface_id);
 
 	void *mc_commited_cb_userdata;
 	void (*mc_commited_cb)(bool success, void *userdata, u64 bo_id);
@@ -1206,7 +1207,8 @@ static s32 commit_bo(struct cb_client *client, struct cb_commit_info *c)
 
 static s32 set_commit_bo_cb(struct cb_client *client, void *userdata,
 			    void (*bo_commited_cb)(
-			    	bool success, void *userdata, u64 bo_id))
+			    	bool success, void *userdata, u64 bo_id,
+			    	u64 surface_id))
 {
 	struct client *cli = to_client(client);
 
@@ -1220,7 +1222,8 @@ static s32 set_commit_bo_cb(struct cb_client *client, void *userdata,
 
 static s32 set_bo_flipped_cb(struct cb_client *client, void *userdata,
 			     void (*bo_flipped_cb)(
-			     		void *userdata, u64 bo_id))
+			     		void *userdata, u64 bo_id,
+			     		u64 surface_id))
 {
 	struct client *cli = to_client(client);
 
@@ -1234,7 +1237,8 @@ static s32 set_bo_flipped_cb(struct cb_client *client, void *userdata,
 
 static s32 set_bo_completed_cb(struct cb_client *client, void *userdata,
 			       void (*bo_completed_cb)(
-			       		void *userdata, u64 bo_id))
+			       		void *userdata, u64 bo_id,
+			       		u64 surface_id))
 {
 	struct client *cli = to_client(client);
 
@@ -1575,6 +1579,7 @@ static void client_ipc_proc(struct client *cli)
 	u64 id;
 	struct cb_raw_input_event *evts;
 	u32 count_evts, led_status;
+	u64 surface_id;
 
 	if (!cli)
 		return;
@@ -1691,36 +1696,39 @@ static void client_ipc_proc(struct client *cli)
 		}
 	}
 	if (flag & (1 << CB_CMD_COMMIT_ACK_SHIFT)) {
-		id = cb_client_parse_commit_ack_cmd(buf);
+		id = cb_client_parse_commit_ack_cmd(buf, &surface_id);
 		if (cli->bo_commited_cb) {
 			if (id == (u64)(-1)) {
 				fprintf(stderr, "failed to commit bo.\n");
 				cli->bo_commited_cb(false,
-					cli->bo_commited_cb_userdata, (u64)-1);
+					cli->bo_commited_cb_userdata, (u64)-1,
+					surface_id);
 				return;
 			}
 			cli->bo_commited_cb(true,
-				cli->bo_commited_cb_userdata, id);
+				cli->bo_commited_cb_userdata, id, surface_id);
 		}
 	}
 	if (flag & (1 << CB_CMD_BO_FLIPPED_SHIFT)) {
-		id = cb_client_parse_bo_flipped_cmd(buf);
+		id = cb_client_parse_bo_flipped_cmd(buf, &surface_id);
 		if (cli->bo_flipped_cb) {
 			if (id == (u64)(-1)) {
 				fprintf(stderr, "Unknown bo flipped.\n");
 				return;
 			}
-			cli->bo_flipped_cb(cli->bo_flipped_cb_userdata, id);
+			cli->bo_flipped_cb(cli->bo_flipped_cb_userdata, id,
+					   surface_id);
 		}
 	}
 	if (flag & (1 << CB_CMD_BO_COMPLETE_SHIFT)) {
-		id = cb_client_parse_bo_complete_cmd(buf);
+		id = cb_client_parse_bo_complete_cmd(buf, &surface_id);
 		if (cli->bo_completed_cb) {
 			if (id == (u64)(-1)) {
 				fprintf(stderr, "Unknown bo completed.\n");
 				return;
 			}
-			cli->bo_completed_cb(cli->bo_completed_cb_userdata, id);
+			cli->bo_completed_cb(cli->bo_completed_cb_userdata,
+					     id, surface_id);
 		}
 	}
 	if (flag & (1 << CB_CMD_DESTROY_ACK_SHIFT)) {

@@ -147,13 +147,16 @@ struct cb_client {
 	s32 (*commit_bo)(struct cb_client *client, struct cb_commit_info *c);
 	s32 (*set_commit_bo_cb)(struct cb_client *client, void *userdata,
 				void (*bo_commited_cb)(
-				    bool success, void *userdata, u64 bo_id));
+				    bool success, void *userdata, u64 bo_id,
+				    u64 surface_id));
 	s32 (*set_bo_flipped_cb)(struct cb_client *client, void *userdata,
 				 void (*bo_flipped_cb)(
-				 	void *userdata, u64 bo_id));
+				 	void *userdata, u64 bo_id,
+				 	u64 surface_id));
 	s32 (*set_bo_completed_cb)(struct cb_client *client, void *userdata,
 				   void (*bo_completed_cb)(
-				   	void *userdata, u64 bo_id));
+				   	void *userdata, u64 bo_id,
+				   	u64 surface_id));
 
 	s32 (*commit_mc)(struct cb_client *client, struct cb_mc_info *c);
 	s32 (*set_commit_mc_cb)(struct cb_client *client, void *userdata,

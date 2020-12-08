@@ -495,25 +495,25 @@ u8 *cb_dup_commit_req_cmd(u8 *dst, u8 *src, u32 n, struct cb_commit_info *c);
 s32 cb_server_parse_commit_req_cmd(u8 *data, struct cb_commit_info *c);
 
 /* server: bo commit ack */
-u8 *cb_server_create_commit_ack_cmd(u64 ret, u32 *n);
-u8 *cb_dup_commit_ack_cmd(u8 *dst, u8 *src, u32 n, u64 ret);
+u8 *cb_server_create_commit_ack_cmd(u64 ret, u64 surface_id, u32 *n);
+u8 *cb_dup_commit_ack_cmd(u8 *dst, u8 *src, u32 n, u64 ret, u64 surface_id);
 /* client: parse bo commit ack */
-u64 cb_client_parse_commit_ack_cmd(u8 *data);
+u64 cb_client_parse_commit_ack_cmd(u8 *data, u64 *surface_id);
 
 #define COMMIT_REPLACE 0
 #define COMMIT_FAILED ((u64)(-1ULL))
 
 /* server: bo flipped notify */
-u8 *cb_server_create_bo_flipped_cmd(u64 ret, u32 *n);
-u8 *cb_dup_bo_flipped_cmd(u8 *dst, u8 *src, u32 n, u64 ret);
+u8 *cb_server_create_bo_flipped_cmd(u64 ret, u64 surface_id, u32 *n);
+u8 *cb_dup_bo_flipped_cmd(u8 *dst, u8 *src, u32 n, u64 ret, u64 surface_id);
 /* client: parse bo flipped notify */
-u64 cb_client_parse_bo_flipped_cmd(u8 *data);
+u64 cb_client_parse_bo_flipped_cmd(u8 *data, u64 *surface_id);
 
 /* server: bo complete notify */
-u8 *cb_server_create_bo_complete_cmd(u64 ret, u32 *n);
-u8 *cb_dup_bo_complete_cmd(u8 *dst, u8 *src, u32 n, u64 ret);
+u8 *cb_server_create_bo_complete_cmd(u64 ret, u64 surface_id, u32 *n);
+u8 *cb_dup_bo_complete_cmd(u8 *dst, u8 *src, u32 n, u64 ret, u64 surface_id);
 /* client: parse bo complete notify */
-u64 cb_client_parse_bo_complete_cmd(u8 *data);
+u64 cb_client_parse_bo_complete_cmd(u8 *data, u64 *surface_id);
 
 /* client / server: shell cmd */
 u8 *cb_create_shell_cmd(struct cb_shell_info *s, u32 *n);

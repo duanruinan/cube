@@ -712,14 +712,14 @@ s32 cb_server_parse_commit_req_cmd(u8 *data, struct cb_commit_info *c)
 	return 0;
 }
 
-u8 *cb_server_create_commit_ack_cmd(u64 ret, u32 *n)
+u8 *cb_server_create_commit_ack_cmd(u64 ret, u64 surface_id, u32 *n)
 {
 	struct cb_tlv *tlv, *tlv_map, *tlv_result;
 	u32 size, size_result, size_map, *map, *head;
 	u8 *p;
 
 	size_map = CB_CMD_MAP_SIZE;
-	size_result = sizeof(*tlv) + sizeof(u64);
+	size_result = sizeof(*tlv) + sizeof(u64) + sizeof(u64);
 	size = sizeof(*tlv) + size_map + size_result + sizeof(u32);
 	p = calloc(1, size);
 	if (!p)
@@ -738,14 +738,15 @@ u8 *cb_server_create_commit_ack_cmd(u64 ret, u32 *n)
 	map = (u32 *)(&tlv_map->payload[0]);
 	map[CB_CMD_COMMIT_ACK_SHIFT - CB_CMD_OFFSET] = (u8 *)tlv_result - p;
 	tlv_result->tag = CB_TAG_RESULT;
-	tlv_result->length = sizeof(u64);
+	tlv_result->length = sizeof(u64) + sizeof(u64);
 	*((u64 *)(&tlv_result->payload[0])) = ret;
+	*(((u64 *)(&tlv_result->payload[0])) + 1) = surface_id;
 	*n = size;
 
 	return p;
 }
 
-u8 *cb_dup_commit_ack_cmd(u8 *dst, u8 *src, u32 n, u64 ret)
+u8 *cb_dup_commit_ack_cmd(u8 *dst, u8 *src, u32 n, u64 ret, u64 surface_id)
 {
 	struct cb_tlv *tlv, *tlv_map, *tlv_result;
 	u32 *map;
@@ -758,10 +759,11 @@ u8 *cb_dup_commit_ack_cmd(u8 *dst, u8 *src, u32 n, u64 ret)
 	tlv_result = (struct cb_tlv *)(dst
 			+ map[CB_CMD_COMMIT_ACK_SHIFT-CB_CMD_OFFSET]);
 	*((u64 *)(&tlv_result->payload[0])) = ret;
+	*(((u64 *)(&tlv_result->payload[0])) + 1) = surface_id;
 	return dst;
 }
 
-u64 cb_client_parse_commit_ack_cmd(u8 *data)
+u64 cb_client_parse_commit_ack_cmd(u8 *data, u64 *surface_id)
 {
 	struct cb_tlv *tlv, *tlv_map, *tlv_result;
 	u32 size, *head, *map;
@@ -781,19 +783,20 @@ u64 cb_client_parse_commit_ack_cmd(u8 *data)
 			+ map[CB_CMD_COMMIT_ACK_SHIFT-CB_CMD_OFFSET]);
 	if (tlv_result->tag != CB_TAG_RESULT)
 		return 0;
-	if (tlv_result->length != sizeof(u64))
+	if (tlv_result->length != (sizeof(u64) + sizeof(u64)))
 		return 0;
+	*surface_id = *(((u64 *)(&tlv_result->payload[0])) + 1);
 	return *((u64 *)(&tlv_result->payload[0]));
 }
 
-u8 *cb_server_create_bo_complete_cmd(u64 ret, u32 *n)
+u8 *cb_server_create_bo_complete_cmd(u64 ret, u64 surface_id, u32 *n)
 {
 	struct cb_tlv *tlv, *tlv_map, *tlv_result;
 	u32 size, size_result, size_map, *map, *head;
 	u8 *p;
 
 	size_map = CB_CMD_MAP_SIZE;
-	size_result = sizeof(*tlv) + sizeof(u64);
+	size_result = sizeof(*tlv) + sizeof(u64) + sizeof(u64);
 	size = sizeof(*tlv) + size_map + size_result + sizeof(u32);
 	p = calloc(1, size);
 	if (!p)
@@ -812,14 +815,15 @@ u8 *cb_server_create_bo_complete_cmd(u64 ret, u32 *n)
 	map = (u32 *)(&tlv_map->payload[0]);
 	map[CB_CMD_BO_COMPLETE_SHIFT - CB_CMD_OFFSET] = (u8 *)tlv_result - p;
 	tlv_result->tag = CB_TAG_RESULT;
-	tlv_result->length = sizeof(u64);
+	tlv_result->length = sizeof(u64) + sizeof(u64);
 	*((u64 *)(&tlv_result->payload[0])) = ret;
+	*(((u64 *)(&tlv_result->payload[0])) + 1) = surface_id;
 	*n = size;
 
 	return p;
 }
 
-u8 *cb_dup_bo_complete_cmd(u8 *dst, u8 *src, u32 n, u64 ret)
+u8 *cb_dup_bo_complete_cmd(u8 *dst, u8 *src, u32 n, u64 ret, u64 surface_id)
 {
 	struct cb_tlv *tlv, *tlv_map, *tlv_result;
 	u32 *map;
@@ -832,10 +836,11 @@ u8 *cb_dup_bo_complete_cmd(u8 *dst, u8 *src, u32 n, u64 ret)
 	tlv_result = (struct cb_tlv *)(dst
 			+ map[CB_CMD_BO_COMPLETE_SHIFT-CB_CMD_OFFSET]);
 	*((u64 *)(&tlv_result->payload[0])) = ret;
+	*(((u64 *)(&tlv_result->payload[0])) + 1) = surface_id;
 	return dst;
 }
 
-u64 cb_client_parse_bo_complete_cmd(u8 *data)
+u64 cb_client_parse_bo_complete_cmd(u8 *data, u64 *surface_id)
 {
 	struct cb_tlv *tlv, *tlv_map, *tlv_result;
 	u32 size, *head, *map;
@@ -855,19 +860,20 @@ u64 cb_client_parse_bo_complete_cmd(u8 *data)
 			+ map[CB_CMD_BO_COMPLETE_SHIFT-CB_CMD_OFFSET]);
 	if (tlv_result->tag != CB_TAG_RESULT)
 		return 0;
-	if (tlv_result->length != sizeof(u64))
+	if (tlv_result->length != (sizeof(u64) + sizeof(u64)))
 		return 0;
+	*surface_id = *(((u64 *)(&tlv_result->payload[0])) + 1);
 	return *((u64 *)(&tlv_result->payload[0]));
 }
 
-u8 *cb_server_create_bo_flipped_cmd(u64 ret, u32 *n)
+u8 *cb_server_create_bo_flipped_cmd(u64 ret, u64 surface_id, u32 *n)
 {
 	struct cb_tlv *tlv, *tlv_map, *tlv_result;
 	u32 size, size_result, size_map, *map, *head;
 	u8 *p;
 
 	size_map = CB_CMD_MAP_SIZE;
-	size_result = sizeof(*tlv) + sizeof(u64);
+	size_result = sizeof(*tlv) + sizeof(u64) + sizeof(u64);
 	size = sizeof(*tlv) + size_map + size_result + sizeof(u32);
 	p = calloc(1, size);
 	if (!p)
@@ -886,14 +892,15 @@ u8 *cb_server_create_bo_flipped_cmd(u64 ret, u32 *n)
 	map = (u32 *)(&tlv_map->payload[0]);
 	map[CB_CMD_BO_FLIPPED_SHIFT - CB_CMD_OFFSET] = (u8 *)tlv_result - p;
 	tlv_result->tag = CB_TAG_RESULT;
-	tlv_result->length = sizeof(u64);
+	tlv_result->length = sizeof(u64) + sizeof(u64);
 	*((u64 *)(&tlv_result->payload[0])) = ret;
+	*(((u64 *)(&tlv_result->payload[0])) + 1) = surface_id;
 	*n = size;
 
 	return p;
 }
 
-u8 *cb_dup_bo_flipped_cmd(u8 *dst, u8 *src, u32 n, u64 ret)
+u8 *cb_dup_bo_flipped_cmd(u8 *dst, u8 *src, u32 n, u64 ret, u64 surface_id)
 {
 	struct cb_tlv *tlv, *tlv_map, *tlv_result;
 	u32 *map;
@@ -906,10 +913,11 @@ u8 *cb_dup_bo_flipped_cmd(u8 *dst, u8 *src, u32 n, u64 ret)
 	tlv_result = (struct cb_tlv *)(dst
 			+ map[CB_CMD_BO_FLIPPED_SHIFT-CB_CMD_OFFSET]);
 	*((u64 *)(&tlv_result->payload[0])) = ret;
+	*(((u64 *)(&tlv_result->payload[0])) + 1) = surface_id;
 	return dst;
 }
 
-u64 cb_client_parse_bo_flipped_cmd(u8 *data)
+u64 cb_client_parse_bo_flipped_cmd(u8 *data, u64 *surface_id)
 {
 	struct cb_tlv *tlv, *tlv_map, *tlv_result;
 	u32 size, *head, *map;
@@ -929,8 +937,9 @@ u64 cb_client_parse_bo_flipped_cmd(u8 *data)
 			+ map[CB_CMD_BO_FLIPPED_SHIFT-CB_CMD_OFFSET]);
 	if (tlv_result->tag != CB_TAG_RESULT)
 		return 0;
-	if (tlv_result->length != sizeof(u64))
+	if (tlv_result->length != (sizeof(u64) + sizeof(u64)))
 		return 0;
+	*surface_id = *(((u64 *)(&tlv_result->payload[0])) + 1);
 	return *((u64 *)(&tlv_result->payload[0]));
 }
 

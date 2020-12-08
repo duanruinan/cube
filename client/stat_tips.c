@@ -127,7 +127,6 @@ struct cube_client {
 
 	s32 sock, client_sock;
 	void *sock_source;
-	void *timeout_timer;
 	void *repaint_timer;
 	void *slide_into_timer;
 
@@ -343,16 +342,16 @@ static void view_info_init(struct cube_client *client)
 	client->v.area.h = client->height;
 }
 
-static void bo_commited_cb(bool success, void *userdata, u64 bo_id)
+static void bo_commited_cb(bool success, void *userdata, u64 bo_id,
+			   u64 surface_id)
 {
 	struct cube_client *client = userdata;
 	struct cb_client *cli = client->cli;
 
+	assert(surface_id == client->s.surface_id);
 	if (bo_id == (u64)(-1)) {
 		printf("failed to commit bo\n");
 		cli->stop(cli);
-	} else {
-		cli->timer_update(cli, client->timeout_timer, 500, 0);
 	}
 }
 
@@ -437,7 +436,6 @@ static void client_state_fsm(struct cube_client *client)
 		case CLI_ST_SLIDING_IN_TIMER_LAUNCHED:
 			client->state = CLI_ST_SLIDING_IN_TIMER_LAUNCHED;
 			client->delta = 0;
-//			printf("--- keep slide in scheded til timeout\n");
 			break;
 		case CLI_ST_PREPARE_SLIDING_IN:
 			client->state = CLI_ST_SLIDING_IN;
@@ -508,7 +506,6 @@ static s32 repaint_cb(void *userdata)
 	c.view_height = client->height;
 	c.pipe_locked = 0;
 
-	cli->timer_update(cli, client->timeout_timer, 500, 0);
 	ret = cli->commit_bo(cli, &c);
 	if (ret < 0) {
 		fprintf(stderr, "failed to commit bo %s\n", __func__);
@@ -518,56 +515,12 @@ static s32 repaint_cb(void *userdata)
 	return 0;
 }
 
-static s32 timeout_cb(void *userdata)
-{
-	struct cube_client *client = userdata;
-	struct cb_client *cli = client->cli;
-	struct cb_commit_info c;
-	s32 ret;
-
-	syslog(LOG_ERR, "[stat_tips] timeout!!! recommit bo[%d]\n",
-		client->work_bo);
-	return 0;
-	if (client->bo_switched) {
-		printf("[stat_tips] timeout, recommit bo[%d]\n",
-			1 - client->work_bo);
-
-		c.bo_id = client->bos[1 - client->work_bo].bo_id;
-	} else {
-		printf("[stat_tips] timeout, recommit bo[%d]\n",
-			client->work_bo);
-
-		c.bo_id = client->bos[client->work_bo].bo_id;
-	}
-	c.surface_id = client->s.surface_id;
-
-	c.bo_damage.pos.x = 0;
-	c.bo_damage.pos.y = 0;
-	c.bo_damage.w = client->width;
-	c.bo_damage.h = client->height;
-
-	c.view_x = client->x;
-	c.view_y = client->y;
-	c.view_width = client->width;
-	c.view_height = client->height;
-	c.pipe_locked = 0;
-
-	ret = cli->commit_bo(cli, &c);
-	if (ret < 0) {
-		fprintf(stderr, "failed to commit bo %s\n", __func__);
-		cli->stop(cli);
-	}
-
-	return 0;
-}
-
-static void bo_flipped_cb(void *userdata, u64 bo_id)
+static void bo_flipped_cb(void *userdata, u64 bo_id, u64 surface_id)
 {
 	struct cube_client *client = userdata;
 	struct cb_client *cli = client->cli;
 
-	cli->timer_update(cli, client->timeout_timer, 0, 0);
-
+	assert(surface_id == client->s.surface_id);
 	if (bo_id == client->bos[0].bo_id) {
 		/* printf("[stat_tips] bo[0] flipped.\n"); */
 	} else if (bo_id == client->bos[1].bo_id) {
@@ -580,12 +533,13 @@ static void bo_flipped_cb(void *userdata, u64 bo_id)
 	client->bo_switched = false;
 }
 
-static void bo_completed_cb(void *userdata, u64 bo_id)
+static void bo_completed_cb(void *userdata, u64 bo_id, u64 surface_id)
 {
 	struct cube_client *client = userdata;
 	struct bo_info *bo_info;
 	s32 bo_index_prev = client->work_bo;
 
+	assert(surface_id == client->s.surface_id);
 	/* printf("[stat_tips] work_bo: %d\n", bo_index_prev); */
 	if (bo_id == client->bos[0].bo_id) {
 		/* printf("[stat_tips] bo[0] completed.\n"); */
@@ -1398,8 +1352,6 @@ static s32 client_init(struct cube_client *client)
 	client->signal_handler = cli->add_signal_handler(cli, client,
 							 SIGTERM,
 							 signal_cb);
-	client->timeout_timer = cli->add_timer_handler(cli, client,
-						       timeout_cb);
 	client->repaint_timer = cli->add_timer_handler(cli, client,
 						       repaint_cb);
 	client->slide_into_timer = cli->add_timer_handler(cli, client,
@@ -1468,7 +1420,6 @@ static void client_fini(struct cube_client *client)
 	cli->rm_handler(cli, client->repaint_timer);
 	cli->rm_handler(cli, client->slide_into_timer);
 	cli->rm_handler(cli, client->signal_handler);
-	cli->rm_handler(cli, client->timeout_timer);
 	cli->rm_handler(cli, client->sock_source);
 
 	cli->destroy(cli);

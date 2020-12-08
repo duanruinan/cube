@@ -94,6 +94,8 @@ struct cube_client {
 
 	s32 zpos;
 
+	bool commit_ack_received ;
+
 	s32 pipe_locked;
 
 	void *signal_handler;
@@ -213,15 +215,18 @@ static void put_free_bo(struct cube_client *client, struct bo_info *bo)
 	list_add_tail(&bo->link, &client->free_bos);
 }
 
-static void bo_commited_cb(bool success, void *userdata, u64 bo_id)
+static void bo_commited_cb(bool success, void *userdata, u64 bo_id,
+			   u64 surface_id)
 {
 	struct cube_client *client = userdata;
 	/* struct cb_client *cli = client->cli; */
 
+	assert(surface_id == client->s.surface_id);
 	if (bo_id == (u64)(-1)) {
-		printf("[TEST_CLIENT] failed to commit bo: %lX\n", bo_id);
+		printf("[TEST_CLIENT][commit] failed to commit bo: %lX\n", bo_id);
+		client->commit_ack_received = true;
 	} else if (bo_id == COMMIT_REPLACE) {
-		printf("[TEST_CLIENT] commit replace last buffer\n");
+		printf("[TEST_CLIENT][commit] replace last buffer\n");
 		client->drop_cnt++;
 		client->replace_flag = true;
 		/* wait 2 flipped
@@ -229,8 +234,9 @@ static void bo_commited_cb(bool success, void *userdata, u64 bo_id)
 		client->sync_cnt = 2;
 		*/
 	} else {
-		printf("[TEST_CLIENT] ok\n");
+		printf("[TEST_CLIENT][commit] ok\n");
 		client->replace_flag = false;
+		client->commit_ack_received = true;
 	}
 }
 
@@ -263,9 +269,15 @@ static s32 repaint_cb(void *userdata)
 	else
 		return 0;
 #endif
+	if (!client->commit_ack_received) {
+		/* not received ack yet. */
+		cli->timer_update(cli, client->repaint_timer, 2, 0);
+		return 0;
+	}
+
 	bo_info = get_free_bo(client);
 	if (!bo_info) {
-		cli->timer_update(cli, client->repaint_timer, 16, 0);
+		cli->timer_update(cli, client->repaint_timer, 16, 667);
 		return -EINVAL;
 	}
 
@@ -311,6 +323,7 @@ static s32 repaint_cb(void *userdata)
 	clock_gettime(CLOCK_MONOTONIC, &now);
 	printf("[TEST_CLIENT][%05lu:%06lu] commit bo: %lX\n",
 	       now.tv_sec % 86400l, now.tv_nsec / 1000l, c.bo_id);
+	client->commit_ack_received = false;
 	ret = cli->commit_bo(cli, &c);
 	if (ret < 0) {
 		fprintf(stderr, "[TEST_CLIENT] failed to commit bo: %lX, "
@@ -321,12 +334,13 @@ static s32 repaint_cb(void *userdata)
 	return 0;
 }
 
-static void bo_flipped_cb(void *userdata, u64 bo_id)
+static void bo_flipped_cb(void *userdata, u64 bo_id, u64 surface_id)
 {
 	struct cube_client *client = userdata;
 	/* struct cb_client *cli = client->cli; */
 	struct timespec now;
 
+	assert(surface_id == client->s.surface_id);
 	clock_gettime(CLOCK_MONOTONIC, &now);
 	printf("[TEST_CLIENT][%05lu:%06lu] receive bo flipped: %lX\n",
 		now.tv_sec % 86400l, now.tv_nsec / 1000l, bo_id);
@@ -341,13 +355,15 @@ static void bo_flipped_cb(void *userdata, u64 bo_id)
 */
 }
 
-static void bo_completed_cb(void *userdata, u64 bo_id)
+static void bo_completed_cb(void *userdata, u64 bo_id, u64 surface_id)
 {
 	struct bo_info *bo;
 	struct cube_client *client = userdata;
 	s32 i;
 
-	printf("[TEST_CLIENT] receive bo complete: %lX\n", bo_id);
+	printf("[TEST_CLIENT] receive bo complete: %lX surface %lX\n", bo_id,
+								surface_id);
+	assert(surface_id == client->s.surface_id);
 	for (i = 0; i < BO_NR; i++) {
 		bo = &client->bos[i];
 		if (bo_id == bo->bo_id) {
@@ -393,6 +409,7 @@ static void view_created_cb(bool success, void *userdata, u64 view_id)
 		c.view_y = client->y;
 		c.view_width = client->width;
 		c.view_height = client->height;
+		c.pipe_locked = client->pipe_locked;
 
 		clock_gettime(CLOCK_MONOTONIC, &now);
 		printf("[TEST_CLIENT][%05lu:%06lu] commit bo: %lX\n",

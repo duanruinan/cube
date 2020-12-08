@@ -101,9 +101,12 @@ struct cb_client_agent {
 	void (*send_surface_ack)(struct cb_client_agent *client, void *s);
 	void (*send_view_ack)(struct cb_client_agent *client, void *v);
 	void (*send_bo_create_ack)(struct cb_client_agent *client, void *bo);
-	void (*send_bo_commit_ack)(struct cb_client_agent *client, u64 result);
-	void (*send_bo_flipped)(struct cb_client_agent *client, void *bo);
-	void (*send_bo_complete)(struct cb_client_agent *client, void *bo);
+	void (*send_bo_commit_ack)(struct cb_client_agent *client, u64 result,
+				   u64 surface_id);
+	void (*send_bo_flipped)(struct cb_client_agent *client, void *bo,
+				u64 surface_id);
+	void (*send_bo_complete)(struct cb_client_agent *client, void *bo,
+				 u64 surface_id);
 	void (*send_raw_input_evts)(struct cb_client_agent *client,
 				    u8 *evts,
 				    u32 count_evts);
