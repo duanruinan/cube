@@ -303,6 +303,7 @@ struct cb_commit_info {
 
 	s32 view_x, view_y;
 	u32 view_width, view_height;
+	s32 pipe_locked;
 
 	/* 0: z order no change / 1: bring to top / -1: falling down */
 	s32 delta_z;

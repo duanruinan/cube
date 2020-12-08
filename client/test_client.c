@@ -45,7 +45,8 @@ static void usage(void)
 	fprintf(stderr, "test_client --type dma/shm --x x_pos --y y_pos "
 			"--width w --height h "
 			"--hstride hs --vstride vs --pixel-fmt fourcc "
-			"--dmabuf-zpos zpos\n");
+			"--dmabuf-zpos zpos "
+			"--pipe-locked pipe\n");
 }
 
 static struct option options[] = {
@@ -58,10 +59,11 @@ static struct option options[] = {
 	{"vstride", 1, NULL, 'v'},
 	{"pixel-fmt", 1, NULL, 'f'},
 	{"dmabuf-zpos", 1, NULL, 'z'},
+	{"pipe-locked", 1, NULL, 'l'},
 	{NULL, 0, NULL, 0},
 };
 
-static char short_options[] = "t:x:y:w:h:p:v:f:z:";
+static char short_options[] = "t:x:y:w:h:p:v:f:z:l:";
 
 struct bo_info {
 	void *bo;
@@ -91,6 +93,8 @@ struct cube_client {
 	s32 dev_fd;
 
 	s32 zpos;
+
+	s32 pipe_locked;
 
 	void *signal_handler;
 
@@ -300,6 +304,7 @@ static s32 repaint_cb(void *userdata)
 	}
 	c.view_x = client->x;
 	c.view_y = client->y;
+	c.pipe_locked = client->pipe_locked;
 	c.view_width = client->width;
 	c.view_height = client->height;
 
@@ -754,6 +759,7 @@ s32 main(s32 argc, char **argv)
 		return -ENOMEM;
 
 	client->zpos = -1;
+	client->pipe_locked = -1;
 	while ((ch = getopt_long(argc, argv, short_options,
 				 options, NULL)) != -1) {
 		switch (ch) {
@@ -792,6 +798,9 @@ s32 main(s32 argc, char **argv)
 		case 'z':
 			client->zpos = atoi(optarg);
 			break;
+		case 'l':
+			client->pipe_locked = atoi(optarg);
+			break;
 		default:
 			usage();
 			free(client);
@@ -807,6 +816,8 @@ s32 main(s32 argc, char **argv)
 	printf("Size %ux%u %ux%u\n", client->width, client->height,
 		client->hstride, client->vstride);
 	printf("ZPOS: %d\n", client->zpos);
+	printf("Pipe locked: %c [%d]\n", client->pipe_locked == -1 ? 'N' : 'Y',
+			client->pipe_locked);
 
 	if (client_init(client) < 0)
 		goto out;

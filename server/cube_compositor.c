@@ -812,11 +812,17 @@ static struct cb_output *find_surface_main_output(struct cb_surface *surface,
 {
 	struct cb_output *o, *max_o = NULL;
 	struct cb_compositor *c = surface->c;
+	struct cb_view *v;
 	u32 max_refresh_nsec = 0;
 	s32 i;
 
+	v = surface->view;
 	for (i = 0; i < c->count_outputs; i++) {
 		o = c->outputs[i];
+		if (v && v->pipe_locked && o->pipe == v->pipe_locked) {
+			return o;
+		}
+
 		if ((mask & (1U << o->pipe)) &&
 		    (o->output->refresh_nsec > max_refresh_nsec)) {
 			max_refresh_nsec = o->output->refresh_nsec;
@@ -1279,13 +1285,18 @@ static bool prepare_dma_buf_planes(struct cb_surface *surface,
 	struct cb_output *o;
 	struct plane *plane;
 	u32 mask = view->output_mask;
-	s32 i, pipe;
+	s32 i, pipe, pipe_locked;
+	bool lock_pipe;
 
+	pipe_locked = view->pipe_locked;
+	lock_pipe = (pipe_locked == -1 ? false : true);
 	for (i = 0; i < c->count_outputs; i++) {
 		o = c->outputs[i];
 
 		/* keep plane info when connector is disconnected */
 		if (!o->enabled)
+			continue;
+		if (lock_pipe && o->pipe != pipe_locked)
 			continue;
 		
 		pipe = o->pipe;
@@ -3281,12 +3292,19 @@ static bool setup_view_output_mask(struct cb_view *view,
 	struct cb_output *o;
 	s32 i, pipe;
 	struct cb_region view_area, output_area;
+	bool lock_pipe;
 
+	if (!view)
+		return false;
+
+	lock_pipe = (view->pipe_locked == -1 ? false : true);
 	view->output_mask = 0;
 	for (i = 0; i < c->count_outputs; i++) {
 		o = c->outputs[i];
 		pipe = o->pipe;
 		if (!o->enabled)
+			continue;
+		if (lock_pipe && o->pipe != view->pipe_locked)
 			continue;
 		cb_region_init_rect(&view_area,
 				    view->area.pos.x,
@@ -3531,9 +3549,9 @@ static s32 cb_compositor_commit_dma_buf(struct compositor *comp,
 	struct cb_buffer *buffer;
 	struct cb_output *o;
 	u32 mask, diff;
-	s32 i, pipe;
+	s32 i, pipe, pipe_locked;
 	struct plane *plane;
-	bool empty;
+	bool empty, lock_pipe;
 
 	comp_debug("commit DMA-BUF direct show surface %p's buffer %p",
 		   surface, surface->buffer_pending);
@@ -3572,6 +3590,8 @@ static s32 cb_compositor_commit_dma_buf(struct compositor *comp,
 			}
 		}
 	} else {
+		pipe_locked = view->pipe_locked;
+		lock_pipe = (pipe_locked == -1 ? false : true);
 		surface->buffer_pending->surface = surface;
 		surface->width = surface->buffer_pending->info.width;
 		surface->height = surface->buffer_pending->info.height;
@@ -3589,6 +3609,8 @@ static s32 cb_compositor_commit_dma_buf(struct compositor *comp,
 		for (i = 0; i < c->count_outputs; i++) {
 			o = c->outputs[i];
 			if (!o->enabled)
+				continue;
+			if (lock_pipe && o->pipe != pipe_locked)
 				continue;
 			comp_debug("view->output_mask: %08X",view->output_mask);
 			if (view->output_mask & (1U << o->pipe)) {
@@ -3611,8 +3633,9 @@ static s32 cb_compositor_commit_dma_buf(struct compositor *comp,
 		}
 
 		if (empty) {
-			comp_warn("commit DMA-BUF %p for surface %p deferred",
-				  surface->buffer_pending, surface);
+			comp_warn("commit DMA-BUF %lX failed. (ENOENT).",
+				  (u64)(surface->buffer_pending));
+			comp_warn("pipe locked: %d", view->pipe_locked);
 			surface->buffer_pending = NULL;
 			surface->buffer_cur = NULL;
 			return -ENOENT;

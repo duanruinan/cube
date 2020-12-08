@@ -150,6 +150,8 @@ struct cb_view {
 
 	s32 zpos; /* zpos */
 
+	s32 pipe_locked;
+
 	/* use this field to do alpha blending in renderer */
 	float alpha;
 

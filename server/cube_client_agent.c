@@ -796,6 +796,7 @@ static s32 dma_buf_bo_commit_proc(struct cb_client_agent *client,
 	v->area.pos.y = info->view_y;
 	v->area.w = info->view_width;
 	v->area.h = info->view_height;
+	v->pipe_locked = info->pipe_locked;
 
 	s->buffer_pending = buffer;
 	clia_debug("commit dmabuf");
@@ -830,6 +831,7 @@ static void surface_bo_commit_proc(struct cb_client_agent *client,
 	v->area.pos.y = info->view_y;
 	v->area.w = info->view_width;
 	v->area.h = info->view_height;
+	v->pipe_locked = info->pipe_locked;
 
 	s->buffer_pending = buffer;
 	clia_debug("commit surface");

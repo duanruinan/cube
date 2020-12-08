@@ -506,6 +506,7 @@ static s32 repaint_cb(void *userdata)
 	c.view_y = client->y;
 	c.view_width = client->width;
 	c.view_height = client->height;
+	c.pipe_locked = 0;
 
 	cli->timer_update(cli, client->timeout_timer, 500, 0);
 	ret = cli->commit_bo(cli, &c);
@@ -549,6 +550,7 @@ static s32 timeout_cb(void *userdata)
 	c.view_y = client->y;
 	c.view_width = client->width;
 	c.view_height = client->height;
+	c.pipe_locked = 0;
 
 	ret = cli->commit_bo(cli, &c);
 	if (ret < 0) {
@@ -629,6 +631,7 @@ static void view_created_cb(bool success, void *userdata, u64 view_id)
 		c.view_y = client->y;
 		c.view_width = client->width;
 		c.view_height = client->height;
+		c.pipe_locked = 0;
 
 		bo_info = &client->bos[client->work_bo];
 		client->render_needed = 2;
