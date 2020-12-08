@@ -631,7 +631,10 @@ static void destroy_bo(struct cb_client_agent *client, struct cb_buffer *buffer)
 		clia_warn("release dma-buf");
 		list_del(&buffer->dma_buf_flipped_l.link);
 		list_del(&buffer->dma_buf_completed_l.link);
-		client->c->release_so_dmabuf(client->c, buffer);
+		if (!buffer->info.composed)
+			client->c->release_so_dmabuf(client->c, buffer);
+		else
+			client->c->release_rd_dmabuf(client->c, buffer);
 		break;
 	default:
 		break;
@@ -880,7 +883,7 @@ static void bo_commit_proc(struct cb_client_agent *client, u8 *buf)
 		return;
 	}
 
-	if (buffer->info.type == CB_BUF_TYPE_DMA) {
+	if (buffer->info.type == CB_BUF_TYPE_DMA && !buffer->info.composed) {
 		clia_debug("? buffer last = %lX", (u64)(s->buffer_last));
 		if (s->buffer_last) {
 			clia_warn("Replace last buffer %lX",
@@ -928,7 +931,9 @@ static void bo_commit_proc(struct cb_client_agent *client, u8 *buf)
 							info.surface_id);
 			}
 		}
-	} else if (buffer->info.type == CB_BUF_TYPE_SHM) {
+	} else if (buffer->info.type == CB_BUF_TYPE_SHM ||
+		   (buffer->info.type == CB_BUF_TYPE_DMA &&
+		    buffer->info.composed)) {
 		surface_bo_commit_proc(client, &info);
 		cb_client_agent_send_bo_commit_ack(client, bo_id,
 						   info.surface_id);
@@ -1053,7 +1058,13 @@ static void bo_create_proc(struct cb_client_agent *client, u8 *buf)
 		}
 		client->ipc_fds.count = 0;
 
-		buffer = client->c->import_so_dmabuf(client->c, &buffer_info);
+		if (!buffer_info.composed) {
+			buffer = client->c->import_so_dmabuf(client->c,
+							     &buffer_info);
+		} else {
+			buffer = client->c->import_rd_dmabuf(client->c,
+							     &buffer_info);
+		}
 		if (!buffer)
 			goto err;
 		break;

@@ -198,10 +198,6 @@ struct cb_surface_info {
 
 struct cb_view_info {
 	u64 view_id;
-	/*
-	 * Cannot be composed with other views except the top view
-	 */
-	bool full_screen;
 	bool top_level;
 	u32 output_mask;
 	u32 primary_output;
@@ -292,6 +288,7 @@ struct cb_buffer_info {
 	s32 planes;
 	char shm_name[CB_SHM_NM_MAX_LEN];
 	u32 shm_size;
+	bool composed;  /* for DMA-BUF used (to be composed or not) */
 };
 
 struct cb_commit_info {

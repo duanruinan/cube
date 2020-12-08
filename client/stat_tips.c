@@ -1322,7 +1322,8 @@ static s32 client_init(struct cube_client *client)
 					&bo_info->count_fds,
 					&bo_info->count_planes,
 					bo_info->strides,
-					bo_info->fds);
+					bo_info->fds,
+					false);
 		if (!bo_info->bo) {
 			fprintf(stderr, "failed to create dmabuf bo\n");
 			goto err_buf_alloc;

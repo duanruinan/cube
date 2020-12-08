@@ -2135,7 +2135,8 @@ void *cb_client_gbm_bo_create(s32 drmfd,
 			      s32 *count_fds, /* output */
 			      s32 *count_planes, /* output */
 			      u32 strides[4], /* output */
-			      s32 fds[4] /* output */)
+			      s32 fds[4], /* output */
+			      bool composed)
 {
 	struct client_buffer *buffer;
 
@@ -2211,6 +2212,7 @@ void *cb_client_gbm_bo_create(s32 drmfd,
 	buffer->info.type = CB_BUF_TYPE_DMA;
 	buffer->info.width = width;
 	buffer->info.height = height;
+	buffer->info.composed = composed;
 
 	buffer->client_bo = gbm_bo_create(gbm, buffer->info.width,
 					  buffer->info.height,
@@ -2267,7 +2269,8 @@ void *cb_client_dma_buf_bo_create(s32 drmfd,
 				  s32 fds[4], /* output */
 				  void *maps[4], /* output */
 				  u32 pitches[4], /* output */
-				  u32 offsets[4])
+				  u32 offsets[4],
+				  bool composed)
 {
 	struct client_buffer *buffer;
 	s32 ret, i;
@@ -2428,6 +2431,7 @@ void *cb_client_dma_buf_bo_create(s32 drmfd,
 	buffer->info.type = CB_BUF_TYPE_DMA;
 	buffer->info.width = width;
 	buffer->info.height = height;
+	buffer->info.composed = composed;
 	if (buffer->info.pix_fmt == CB_PIX_FMT_NV12 ||
 	    buffer->info.pix_fmt == CB_PIX_FMT_NV16 ||
 	    buffer->info.pix_fmt == CB_PIX_FMT_NV24) {

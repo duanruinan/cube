@@ -46,7 +46,8 @@ static void usage(void)
 			"--width w --height h "
 			"--hstride hs --vstride vs --pixel-fmt fourcc "
 			"--dmabuf-zpos zpos "
-			"--pipe-locked pipe\n");
+			"--pipe-locked pipe "
+			"--composed Y/N\n");
 }
 
 static struct option options[] = {
@@ -60,10 +61,11 @@ static struct option options[] = {
 	{"pixel-fmt", 1, NULL, 'f'},
 	{"dmabuf-zpos", 1, NULL, 'z'},
 	{"pipe-locked", 1, NULL, 'l'},
+	{"composed", 1, NULL, 'c'},
 	{NULL, 0, NULL, 0},
 };
 
-static char short_options[] = "t:x:y:w:h:p:v:f:z:l:";
+static char short_options[] = "t:x:y:w:h:p:v:f:z:l:c:";
 
 struct bo_info {
 	void *bo;
@@ -85,6 +87,7 @@ struct cube_client {
 	struct bo_info bos[BO_NR];
 
 	bool use_dmabuf;
+	bool composed;
 	s32 x, y;
 	u32 width, height;
 	u32 hstride, vstride;
@@ -188,6 +191,34 @@ static void fill_argb_colorbar_m(u8 *data, u32 width, u32 height, u32 stride)
 		delta = 0;
 }
 
+static void fill_nv12(u8 *data, u32 width, u32 height, u32 hstride, u32 vstride)
+{
+	static bool green = true;
+	if (green) {
+		memset(data, 0x00, hstride * height);
+		memset(data + hstride * vstride, 0x00, hstride * height / 2);
+		green = false;
+	} else {
+		memset(data, 0x7F, hstride * height);
+		memset(data + hstride * vstride, 0x7F, hstride * height / 2);
+		green = true;
+	}
+}
+
+static void fill_nv16(u8 *data, u32 width, u32 height, u32 hstride, u32 vstride)
+{
+	static bool green = true;
+	if (green) {
+		memset(data, 0x00, hstride * height);
+		memset(data + hstride * vstride, 0x00, hstride * height);
+		green = false;
+	} else {
+		memset(data, 0x7F, hstride * height);
+		memset(data + hstride * vstride, 0x7F, hstride * height);
+		green = true;
+	}
+}
+
 static struct bo_info *get_free_bo(struct cube_client *client)
 {
 	struct bo_info *bo, *bo_next;
@@ -288,17 +319,35 @@ static s32 repaint_cb(void *userdata)
 	if (client->use_dmabuf) {
 		cb_client_dma_buf_bo_sync_begin(bo_info->bo);
 
-		fill_argb_colorbar(bo_info->maps[0],
-			   bo_info->width,
-			   bo_info->height,
-			   bo_info->pitches[0]);
+		if (client->pix_fmt == CB_PIX_FMT_ARGB8888 ||
+		    client->pix_fmt == CB_PIX_FMT_XRGB8888) {
+			fill_argb_colorbar(bo_info->maps[0],
+				   bo_info->width,
+				   bo_info->height,
+				   bo_info->pitches[0]);
+		} else if (client->pix_fmt == CB_PIX_FMT_NV12) {
+			fill_nv12(bo_info->maps[0],
+				  bo_info->width,
+				  bo_info->height,
+				  bo_info->pitches[0],
+				  bo_info->offsets[1] / bo_info->pitches[0]);
+		} else if (client->pix_fmt == CB_PIX_FMT_NV16) {
+			fill_nv16(bo_info->maps[0],
+				  bo_info->width,
+				  bo_info->height,
+				  bo_info->pitches[0],
+				  bo_info->offsets[1] / bo_info->pitches[0]);
+		}
 
 		cb_client_dma_buf_bo_sync_end(bo_info->bo);
 	} else {
-		fill_argb_colorbar_m(bo_info->maps[0],
-			   bo_info->width,
-			   bo_info->height,
-			   bo_info->pitches[0]);
+		if (client->pix_fmt == CB_PIX_FMT_ARGB8888 ||
+		    client->pix_fmt == CB_PIX_FMT_XRGB8888) {
+			fill_argb_colorbar_m(bo_info->maps[0],
+				   bo_info->width,
+				   bo_info->height,
+				   bo_info->pitches[0]);
+		}
 	}
 
 	c.bo_id = bo_info->bo_id;
@@ -630,7 +679,8 @@ static s32 client_init(struct cube_client *client)
 						bo_info->fds,
 						bo_info->maps,
 						bo_info->pitches,
-						bo_info->offsets);
+						bo_info->offsets,
+						client->composed);
 			if (!bo_info->bo) {
 				fprintf(stderr, "failed to create dmabuf bo\n");
 				goto err_buf_alloc;
@@ -777,6 +827,7 @@ s32 main(s32 argc, char **argv)
 
 	client->zpos = -1;
 	client->pipe_locked = -1;
+	client->composed = false;
 	while ((ch = getopt_long(argc, argv, short_options,
 				 options, NULL)) != -1) {
 		switch (ch) {
@@ -818,6 +869,12 @@ s32 main(s32 argc, char **argv)
 		case 'l':
 			client->pipe_locked = atoi(optarg);
 			break;
+		case 'c':
+			if (!strcmp(optarg, "Y"))
+				client->composed = true;
+			else
+				client->composed = false;
+			break;
 		default:
 			usage();
 			free(client);
@@ -835,6 +892,7 @@ s32 main(s32 argc, char **argv)
 	printf("ZPOS: %d\n", client->zpos);
 	printf("Pipe locked: %c [%d]\n", client->pipe_locked == -1 ? 'N' : 'Y',
 			client->pipe_locked);
+	printf("Composed: %c\n", client->composed ? 'Y' : 'N');
 
 	if (client_init(client) < 0)
 		goto out;

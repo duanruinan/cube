@@ -218,7 +218,8 @@ void *cb_client_dma_buf_bo_create(s32 drmfd,
 				  s32 fds[4], /* output */
 				  void *maps[4], /* output */
 				  u32 pitches[4], /* output */
-				  u32 offsets[4]);
+				  u32 offsets[4],
+				  bool composed);
 
 /*
  * If the bo is mapped to cpu, and software will change the bo's content,
@@ -260,7 +261,8 @@ void *cb_client_gbm_bo_create(s32 drmfd,
 			      s32 *count_fds, /* output */
 			      s32 *count_planes, /* output */
 			      u32 strides[4], /* output */
-			      s32 fds[4] /* output */);
+			      s32 fds[4], /* output */
+			      bool composed);
 void cb_client_gbm_bo_destroy(void *bo);
 void *cb_gbm_open(s32 drmfd);
 void cb_gbm_close(void *gbm);

@@ -946,12 +946,12 @@ static void gl_release_dmabuf(struct renderer *renderer,
 		return;
 
 	if (dma_buf->image != EGL_NO_IMAGE_KHR) {
-		egl_info("destroy egl image");
+		egl_notice("destroy egl image");
 		r->destroy_image(r->egl_display, dma_buf->image);
 		dma_buf->image = EGL_NO_IMAGE_KHR;
 	}
 
-	egl_info("close fd %d", buffer->info.fd[0]);
+	egl_notice("close fd %d", buffer->info.fd[0]);
 	// TODO free GEM
 	close(buffer->info.fd[0]);
 	list_del(&dma_buf->link);
