@@ -1590,6 +1590,8 @@ static void client_ipc_proc(struct client *cli)
 	tlv = (struct cb_tlv *)(buf + sizeof(u32));
 	assert(ipc_sz == (tlv->length + sizeof(*tlv) + sizeof(flag)));
 	assert(tlv->tag == CB_TAG_WIN || tlv->tag == CB_TAG_RAW_INPUT ||
+		tlv->tag == CB_TAG_RAW_TOUCH ||
+		tlv->tag == CB_TAG_RAW_JOYSTICK ||
 		tlv->tag == CB_TAG_GET_KBD_LED_STATUS_ACK ||
 		tlv->tag == CB_TAG_GET_EDID_ACK);
 
@@ -1603,6 +1605,16 @@ static void client_ipc_proc(struct client *cli)
 			cli->raw_input_evts_cb(cli->raw_input_evts_cb_userdata,
 					       evts, count_evts);
 		}
+		return;
+	}
+
+	if (tlv->tag == CB_TAG_RAW_TOUCH) {
+		/* TODO */
+		return;
+	}
+
+	if (tlv->tag == CB_TAG_RAW_JOYSTICK) {
+		/* TODO */
 		return;
 	}
 

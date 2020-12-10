@@ -1173,8 +1173,10 @@ struct cb_raw_input_event *cb_client_parse_raw_input_evt_cmd(u8 *data,
 	struct cb_tlv *tlv;
 
 	tlv = (struct cb_tlv *)(data+sizeof(u32));
+
 	if (tlv->tag != CB_TAG_RAW_INPUT)
 		return NULL;
+
 	assert(!(tlv->length % sizeof(struct cb_raw_input_event)));
 	*count_evts = tlv->length / sizeof(struct cb_raw_input_event);
 	return (struct cb_raw_input_event *)(&tlv->payload[0]);

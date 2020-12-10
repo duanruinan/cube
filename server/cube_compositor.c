@@ -2627,6 +2627,8 @@ enum input_type {
 	INPUT_TYPE_MOUSE,
 	INPUT_TYPE_KBD,
 	INPUT_TYPE_KBD_LED_VDEV,
+	INPUT_TYPE_TOUCH,
+	INPUT_TYPE_JOYSTICK,
 };
 
 struct input_device {
