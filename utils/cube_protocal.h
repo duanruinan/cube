@@ -268,8 +268,6 @@ enum cb_pix_fmt {
 	CB_PIX_FMT_YUV444,
 };
 
-#define CB_BUFFER_NAME_LEN 32
-
 enum cb_buffer_type {
 	CB_BUF_TYPE_UNKNOWN = 0,
 	CB_BUF_TYPE_SHM,
@@ -280,7 +278,6 @@ enum cb_buffer_type {
 struct cb_buffer_info {
 	enum cb_pix_fmt pix_fmt;
 	enum cb_buffer_type type;
-	struct cb_shm shm;
 	u32 width, height;
 	u32 strides[4];
 	u32 offsets[4];
@@ -288,8 +285,6 @@ struct cb_buffer_info {
 	size_t sizes[4];
 	void *maps[4];
 	s32 planes;
-	char shm_name[CB_SHM_NM_MAX_LEN];
-	u32 shm_size;
 	bool composed;  /* for DMA-BUF used (to be composed or not) */
 };
 

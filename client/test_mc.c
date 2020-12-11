@@ -37,7 +37,9 @@
 struct mc_bo_info {
 	void *bo;
 	u64 bo_id;
+	s32 count_fds;
 	s32 planes;
+	s32 fds[4];
 	void *maps[4];
 	u32 pitches[4];
 	u32 offsets[4];
@@ -45,7 +47,6 @@ struct mc_bo_info {
 };
 
 struct cube_input {
-	char name[64];
 	struct cb_client *client;
 	struct mc_bo_info bo;
 	
@@ -267,7 +268,6 @@ static void ready_cb(void *userdata)
 {
 	struct cube_input *input = userdata;
 	struct cb_client *client = input->client;
-	char buf[64];
 	struct mc_bo_info *bo_info;
 	s32 ret, i;
 	u32 *pixel;
@@ -277,12 +277,12 @@ static void ready_cb(void *userdata)
 			       CB_CLIENT_CAP_MC);
 	client->set_raw_input_en(client, true);
 
-	strcpy(input->name, "test_mc");
-	memset(buf, 0, 64);
-	sprintf(buf, "%s-%d", input->name, 0);
 	bo_info = &input->bo;
-	bo_info->bo = cb_client_shm_bo_create(buf, CB_PIX_FMT_ARGB8888, 64, 64,
-					      64, 64, &bo_info->planes,
+	bo_info->bo = cb_client_shm_bo_create(CB_PIX_FMT_ARGB8888, 64, 64,
+					      64, 64,
+					      &bo_info->count_fds,
+					      &bo_info->planes,
+					      bo_info->fds,
 					      bo_info->maps,
 					      bo_info->pitches,
 					      bo_info->offsets,

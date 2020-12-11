@@ -604,7 +604,6 @@ static void view_info_init(struct cube_client *client)
 static s32 client_init(struct cube_client *client)
 {
 	struct cb_client *cli;
-	char name[64];
 	struct bo_info *bo_info;
 	s32 i, j;
 
@@ -614,17 +613,17 @@ static s32 client_init(struct cube_client *client)
 
 	if (!client->use_dmabuf) {
 		for (i = 0; i < BO_NR; i++) {
-			sprintf(name, "test_client-%d-%d", getpid(), i);
 			bo_info = &client->bos[i];
 			printf("create shm buffer\n");
 			bo_info->bo = cb_client_shm_bo_create(
-						name,
 						client->pix_fmt,
 						client->width,
 						client->height,
 						client->hstride,
 						client->vstride,
+						&bo_info->count_fds,
 						&bo_info->count_planes,
+						bo_info->fds,
 						bo_info->maps,
 						bo_info->pitches,
 						bo_info->offsets,
@@ -639,6 +638,8 @@ static s32 client_init(struct cube_client *client)
 					   bo_info->width,
 					   bo_info->height,
 					   bo_info->pitches[0]);
+			printf("count fds: %d\n", bo_info->count_fds);
+			printf("fds[0]: %d\n", bo_info->fds[0]);
 			printf("maps: %p %p %p %p\n",
 				bo_info->maps[0],
 				bo_info->maps[1],

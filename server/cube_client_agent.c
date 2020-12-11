@@ -585,10 +585,11 @@ static struct cb_buffer *import_shm_buf(struct cb_buffer_info *buffer_info)
 
 	memcpy(&shm_buf->base.info, buffer_info, sizeof(*buffer_info));
 
-	if (cb_shm_init(&shm_buf->shm, buffer_info->shm_name,
-			buffer_info->shm_size, 0) < 0) {
-		clia_err("failed to init share memory buffer. %s",
-			 buffer_info->shm_name);
+	shm_buf->shm.fd = buffer_info->fd[0];
+
+	if (cb_shm_import(&shm_buf->shm, buffer_info->sizes[0],
+			  buffer_info->fd[0]) < 0) {
+		clia_err("failed to init share memory buffer.");
 		return NULL;
 	}
 
@@ -605,7 +606,7 @@ static void release_shm_buf(struct cb_buffer *buffer)
 		return;
 	}
 
-	clia_notice("destroy shm bo %s", shm_buf->shm.name);
+	clia_notice("destroy shm bo");
 	cb_shm_release(&shm_buf->shm);
 	free(shm_buf);
 }
@@ -1042,9 +1043,24 @@ static void bo_create_proc(struct cb_client_agent *client, u8 *buf)
 
 	switch (buffer_info.type) {
 	case CB_BUF_TYPE_SHM:
+		/* copy fds */
+		for (i = 0; i < 4; i++) {
+			if (i < client->ipc_fds.count) {
+				buffer_info.fd[i] = client->ipc_fds.fds[i];
+				client->ipc_fds.fds[i] = 0;
+			} else {
+				buffer_info.fd[i] = 0;
+			}
+		}
+		client->ipc_fds.count = 0;
+
+		printf("received shm bo fd: %d, import.\n", buffer_info.fd[0]);
 		buffer = import_shm_buf(&buffer_info);
-		if (!buffer)
+		if (!buffer) {
+			printf("failed to import shm bo.\n");
 			goto err;
+		}
+		printf("import shm bo ok.\n");
 		break;
 	case CB_BUF_TYPE_DMA:
 		/* copy fds */

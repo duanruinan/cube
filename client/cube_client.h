@@ -239,13 +239,14 @@ void cb_client_dma_buf_bo_sync_end(void *bo);
 
 void cb_client_dma_buf_bo_destroy(void *bo);
 
-void *cb_client_shm_bo_create(const char *name,
-			      enum cb_pix_fmt pix_fmt,
+void *cb_client_shm_bo_create(enum cb_pix_fmt pix_fmt,
 			      u32 width,
 			      u32 height,
 			      u32 hstride,
 			      u32 vstride,
+			      s32 *count_fds, /* output */
 			      s32 *count_planes, /* output */
+			      s32 fds[4], /* output */
 			      void *maps[4], /* output */
 			      u32 pitches[4], /* output */
 			      u32 offsets[4],

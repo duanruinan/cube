@@ -22,23 +22,22 @@
 #ifndef CUBE_SHM_H
 #define CUBE_SHM_H
 
+#include <stdbool.h>
 #include <cube_utils.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define CB_SHM_NM_MAX_LEN 128
-
 struct cb_shm {
-	char name[CB_SHM_NM_MAX_LEN];
 	s32 fd;
 	void *map;
-	u32 sz;
-	s32 creator;
+	size_t sz;
+	bool creator;
 };
 
-s32 cb_shm_init(struct cb_shm *shm, const char *shm_id, u32 size, s32 creator);
+s32 cb_shm_import(struct cb_shm *shm, size_t size, s32 fd);
+s32 cb_shm_init(struct cb_shm *shm, size_t size);
 void cb_shm_release(struct cb_shm *shm);
 
 #ifdef __cplusplus

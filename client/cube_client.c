@@ -190,6 +190,7 @@ struct client_buffer {
 	s32 count_fds;
 	u32 handles[4];
 	s32 drmfd;
+	struct cb_shm shm;
 	struct gbm_bo *client_bo;
 };
 
@@ -314,7 +315,6 @@ static void stop(struct cb_client *client)
 {
 	struct client *cli = to_client(client);
 
-	printf("client exit.\n");
 	cli->exit = true;
 }
 
@@ -1043,13 +1043,10 @@ static s32 create_bo(struct cb_client *client, void *bo)
 	u8 *p;
 	s32 ret, i;
 	struct cb_fds fds;
-	bool send_fd = false;
 
 	if (!client || !bo)
 		return -EINVAL;
 
-	if (buffer->info.type == CB_BUF_TYPE_DMA)
-		send_fd = true;
 	p = cb_dup_create_bo_cmd(cli->create_bo_tx_cmd,
 				 cli->create_bo_tx_cmd_t,
 				 cli->create_bo_tx_len,
@@ -1073,19 +1070,11 @@ static s32 create_bo(struct cb_client *client, void *bo)
 	}
 
 	do {
-		if (send_fd) {
-			fds.count = buffer->count_fds;
-			printf("count fds: %d\n", fds.count);
-			for (i = 0; i < fds.count; i++) {
-				fds.fds[i] = buffer->info.fd[i];
-				printf("fd: %d\n", fds.fds[i]);
-			}
-			ret = cb_sendmsg(cli->sock, cli->create_bo_tx_cmd,
-					 length, &fds);
-		} else {
-			ret = cb_sendmsg(cli->sock, cli->create_bo_tx_cmd,
-					 length, NULL);
+		fds.count = buffer->count_fds;
+		for (i = 0; i < fds.count; i++) {
+			fds.fds[i] = buffer->info.fd[i];
 		}
+		ret = cb_sendmsg(cli->sock, cli->create_bo_tx_cmd,length, &fds);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
 		fprintf(stderr, "failed to send create bo cmd. %s\n",
@@ -1373,7 +1362,6 @@ static s32 shell_proc(struct client *cli, u8 *buf)
 					disp->enabled = true;
 			}
 			if (cli->layout_changed_cb) {
-				printf("layout changed notify\n");
 				cli->layout_changed_cb(
 					cli->layout_changed_cb_userdata);
 			}
@@ -1416,7 +1404,6 @@ static s32 shell_proc(struct client *cli, u8 *buf)
 			}
 		}
 		if (cli->layout_changed_cb) {
-			printf("layout changed notify\n");
 			cli->layout_changed_cb(
 				cli->layout_changed_cb_userdata);
 		}
@@ -1456,7 +1443,6 @@ static s32 shell_proc(struct client *cli, u8 *buf)
 					disp->enabled = true;
 			}
 			if (cli->layout_query_cb) {
-				printf("layout query notify\n");
 				cli->layout_query_cb(
 					cli->layout_query_cb_userdata);
 			}
@@ -1499,7 +1485,6 @@ static s32 shell_proc(struct client *cli, u8 *buf)
 			}
 		}
 		if (cli->layout_query_cb) {
-			printf("layout query notify\n");
 			cli->layout_query_cb(cli->layout_query_cb_userdata);
 		}
 		
@@ -1552,7 +1537,6 @@ static s32 shell_proc(struct client *cli, u8 *buf)
 					cli->mode_created_cb_userdata);
 			}
 		} else {
-			printf("create cust mode ok.\n");
 			cli->base.displays[i].mode_custom =
 				cli->shell.value.new_mode_handle;
 			if (cli->mode_created_cb) {
@@ -1658,13 +1642,11 @@ static void client_ipc_proc(struct client *cli)
 	if (flag & (1 << CB_CMD_LINK_ID_ACK_SHIFT)) {
 		id = cb_client_parse_link_id(buf);
 		cli->link_id = id;
-		printf("link_id: 0x%08lX\n", cli->link_id);
 		if (cli->ready_cb) {
 			cli->ready_cb(cli->ready_cb_userdata);
 		}
 	}
 	if (flag & (1 << CB_CMD_CREATE_SURFACE_ACK_SHIFT)) {
-		printf("receive create surface ack\n");
 		id = cb_client_parse_surface_id(buf);
 		cli->s.surface_id = id;
 		if (cli->surface_created_cb) {
@@ -1679,7 +1661,6 @@ static void client_ipc_proc(struct client *cli)
 		}
 	}
 	if (flag & (1 << CB_CMD_CREATE_VIEW_ACK_SHIFT)) {
-		printf("receive create view ack\n");
 		id = cb_client_parse_view_id(buf);
 		cli->v.view_id = id;
 		if (cli->view_created_cb) {
@@ -1694,7 +1675,6 @@ static void client_ipc_proc(struct client *cli)
 		}
 	}
 	if (flag & (1 << CB_CMD_CREATE_BO_ACK_SHIFT)) {
-		printf("receive create bo ack\n");
 		id = cb_client_parse_bo_id(buf);
 		if (cli->bo_created_cb) {
 			if (!id) {
@@ -1744,7 +1724,6 @@ static void client_ipc_proc(struct client *cli)
 		}
 	}
 	if (flag & (1 << CB_CMD_DESTROY_ACK_SHIFT)) {
-		printf("receive destroy ack\n");
 		cb_server_parse_destroy_bo_cmd(buf);
 		if (cli->destroyed_cb)
 			cli->destroyed_cb(cli->destroyed_cb_userdata);
@@ -1758,7 +1737,6 @@ static void client_ipc_proc(struct client *cli)
 		s32 i;
 		struct cb_connector_info conn_info;
 
-		printf("receive hpd cmd\n");
 		id = cb_client_parse_hpd_cmd(buf, &conn_info);
 		if (id) {
 			fprintf(stderr, "unknown hotplug message.\n");
@@ -1872,10 +1850,10 @@ static s32 sock_cb(s32 fd, u32 mask, void *data)
 		printf("proc ipc message: %p, %lu\n",
 			&cli->ipc_buf[0] + sizeof(size_t), cli->ipc_sz);
 		printf("ipc received %d fds.\n", cli->ipc_fds.count);
-		*/
 		for (i = 0; i < cli->ipc_fds.count; i++) {
 			printf("fds[%d]: %d\n", i, cli->ipc_fds.fds[i]);
 		}
+		*/
 		client_ipc_proc(cli);
 		cli->ipc_fds.count = 0;
 	}
@@ -2326,7 +2304,6 @@ void *cb_client_dma_buf_bo_create(s32 drmfd,
 	 * 32-bit XRGB format. B [7:0]  G [15:8]  R [23:16] X [31:24]
 	 */
 	case CB_PIX_FMT_XRGB8888:
-		printf("XR24\n");
 		buffer->fourcc = mk_fourcc('X', 'R', '2', '4');
 		create_arg.bpp = 32;
 		if (!hstride)
@@ -2611,13 +2588,14 @@ void cb_client_dma_buf_bo_destroy(void *bo)
 	free(buffer);
 }
 
-void *cb_client_shm_bo_create(const char *name,
-			      enum cb_pix_fmt pix_fmt,
+void *cb_client_shm_bo_create(enum cb_pix_fmt pix_fmt,
 			      u32 width,
 			      u32 height,
 			      u32 hstride,
 			      u32 vstride,
+			      s32 *count_fds, /* output */
 			      s32 *count_planes, /* output */
+			      s32 fds[4], /* output */
 			      void *maps[4], /* output */
 			      u32 pitches[4], /* output */
 			      u32 offsets[4],
@@ -2773,16 +2751,17 @@ void *cb_client_shm_bo_create(const char *name,
 	buffer->info.width = width;
 	buffer->info.height = height;
 
-	ret = cb_shm_init(&buffer->info.shm, name, size, 1);
+	ret = cb_shm_init(&buffer->shm, size);
 	if (ret < 0) {
-		fprintf(stderr, "failed to create shm buffer %s.\n", name);
+		fprintf(stderr, "failed to create shm buffer.\n");
 		goto err;
 	}
+	*count_fds = 1;
+	buffer->count_fds = 1;
+	fds[0] = buffer->info.fd[0] = buffer->shm.fd;
 
-	buffer->info.shm_size = size;
-	sizes[0] = size;
-	maps[0] = buffer->info.shm.map;
-	strncpy(buffer->info.shm_name, name, CB_SHM_NM_MAX_LEN - 1);
+	sizes[0] = (u32)size;
+	maps[0] = buffer->shm.map;
 
 	if (buffer->info.pix_fmt == CB_PIX_FMT_NV12 ||
 	    buffer->info.pix_fmt == CB_PIX_FMT_NV16 ||
@@ -2866,7 +2845,7 @@ void cb_client_shm_bo_destroy(void *bo)
 {
 	struct client_buffer *buffer = bo;
 
-	cb_shm_release(&buffer->info.shm);
+	cb_shm_release(&buffer->shm);
 	free(buffer);
 }
 
