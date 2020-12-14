@@ -115,6 +115,8 @@ struct cube_client {
 	struct list_head free_bos;
 
 	bool replace_flag;
+
+	bool run_background;
 };
 
 static s32 signal_cb(s32 signal_number, void *userdata)
@@ -314,7 +316,8 @@ static s32 repaint_cb(void *userdata)
 
 	if (client->replace_flag)
 		usleep(7000);
-	cli->timer_update(cli, client->repaint_timer, 16, 667);
+	if (!client->run_background)
+		cli->timer_update(cli, client->repaint_timer, 16, 667);
 	
 	if (client->use_dmabuf) {
 		cb_client_dma_buf_bo_sync_begin(bo_info->bo);
@@ -477,8 +480,17 @@ static void view_created_cb(bool success, void *userdata, u64 view_id)
 
 static void view_focus_chg_cb(void *userdata, u64 view_id, bool on)
 {
-	printf("[TEST_CLIENT] View %16lX Focus %s\n", view_id,
+	struct cube_client *client = userdata;
+	struct cb_client *cli = client->cli;
+
+	printf("[TEST_CLIENT] ------- View %16lX Focus %s --------\n", view_id,
 		on ? "On" : "Lost");
+	if (on) {
+		client->run_background = false;
+		cli->timer_update(cli, client->repaint_timer, 16, 667);
+	} else {
+		client->run_background = true;
+	}
 }
 
 static void surface_created_cb(bool success, void *userdata, u64 surface_id)
@@ -744,6 +756,7 @@ static s32 client_init(struct cube_client *client)
 	client->collect_timer = cli->add_timer_handler(cli, client,
 						       collect_cb);
 	cli->timer_update(cli, client->collect_timer, 1000, 0);
+	client->run_background = false;
 	cli->timer_update(cli, client->repaint_timer, 35, 0);
 	cli->set_ready_cb(cli, client, ready_cb);
 

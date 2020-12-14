@@ -1597,7 +1597,8 @@ static void client_ipc_proc(struct client *cli)
 		tlv->tag == CB_TAG_RAW_TOUCH ||
 		tlv->tag == CB_TAG_RAW_JOYSTICK ||
 		tlv->tag == CB_TAG_GET_KBD_LED_STATUS_ACK ||
-		tlv->tag == CB_TAG_GET_EDID_ACK);
+		tlv->tag == CB_TAG_GET_EDID_ACK ||
+		tlv->tag == CB_TAG_VIEW_FOCUS_CHG);
 
 	if (tlv->tag == CB_TAG_RAW_INPUT) {
 		evts = cb_client_parse_raw_input_evt_cmd(buf, &count_evts);
