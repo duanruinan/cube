@@ -391,6 +391,47 @@ static void cb_client_agent_send_hpd_evt(struct cb_client_agent *client,
 	}
 }
 
+static void cb_client_agent_send_view_focus_cfg(struct cb_client_agent *client,
+						void *v, bool on)
+{
+	size_t length;
+	s32 ret;
+	u8 *p;
+
+	p = cb_dup_view_focus_chg_cmd(client->view_focus_chg_cmd,
+				      client->view_focus_chg_cmd_t,
+				      client->view_focus_chg_len,
+				      (u64)v, on);
+	if (!p) {
+		clia_err("failed to dup view focus chg command");
+		return;
+	}
+
+	length = client->view_focus_chg_len;
+	do {
+		ret = cb_sendmsg(client->sock, (u8 *)&length, sizeof(size_t),
+				 NULL);
+	} while (ret == -EAGAIN);
+	clia_debug("send view focus chg command length: %llu", length);
+	if (ret < 0) {
+		clia_err("failed to send view focus chg command length. %s",
+			 strerror(errno));
+		client->c->rm_client(client->c, client);
+		return;
+	}
+
+	do {
+		ret = cb_sendmsg(client->sock, client->view_focus_chg_cmd,
+				 length, NULL);
+	} while (ret == -EAGAIN);
+	clia_debug("send view focus chg command: %llu", length);
+	if (ret < 0) {
+		clia_err("failed to send view focus chg command. %s",
+			 strerror(errno));
+		client->c->rm_client(client->c, client);
+	}
+}
+
 static void cb_client_agent_send_mc_commit_ack(struct cb_client_agent *client,
 					       u64 result)
 {
@@ -726,7 +767,7 @@ void cb_client_agent_destroy(struct cb_client_agent *client)
 
 	if (client->shell_tx_cmd_t)
 		free(client->shell_tx_cmd_t);
-	if (client->shell_tx_cmd);
+	if (client->shell_tx_cmd)
 		free(client->shell_tx_cmd);
 
 	if (client->kbd_led_status_ack_cmd_t)
@@ -738,6 +779,11 @@ void cb_client_agent_destroy(struct cb_client_agent *client)
 		free(client->get_edid_ack_cmd_t);
 	if (client->get_edid_ack_cmd)
 		free(client->get_edid_ack_cmd);
+
+	if (client->view_focus_chg_cmd_t)
+		free(client->view_focus_chg_cmd_t);
+	if (client->view_focus_chg_cmd)
+		free(client->view_focus_chg_cmd);
 
 	free(client);
 }
@@ -1016,6 +1062,7 @@ static void view_create_proc(struct cb_client_agent *client, u8 *buf)
 	v->surface = s;
 	s->view = v;
 	v->zpos = vinfo.zpos;
+	v->float_view = vinfo.float_view;
 
 	memcpy(&v->area, &vinfo.area, sizeof(struct cb_rect));
 
@@ -1591,6 +1638,13 @@ struct cb_client_agent *cb_client_agent_create(s32 sock,
 	assert(client->get_edid_ack_cmd);
 	client->get_edid_ack_len = n;
 
+	client->view_focus_chg_cmd_t =
+		cb_server_create_view_focus_chg_cmd(0ULL, false, &n);
+	assert(client->view_focus_chg_cmd_t);
+	client->view_focus_chg_cmd = malloc(n);
+	assert(client->view_focus_chg_cmd);
+	client->view_focus_chg_len = n;
+
 	client->send_surface_ack = cb_client_agent_send_surface_ack;
 	client->send_view_ack = cb_client_agent_send_view_ack;
 	client->send_bo_create_ack = cb_client_agent_send_bo_create_ack;
@@ -1602,6 +1656,7 @@ struct cb_client_agent *cb_client_agent_create(s32 sock,
 	client->send_mc_commit_ack = cb_client_agent_send_mc_commit_ack;
 	client->send_shell_cmd = cb_client_agent_send_shell_cmd;
 	client->destroy_pending = cb_client_agent_destroy_pending;
+	client->send_view_focus_chg = cb_client_agent_send_view_focus_cfg;
 
 	/* init surface list */
 	INIT_LIST_HEAD(&client->surfaces);

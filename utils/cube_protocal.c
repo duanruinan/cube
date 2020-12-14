@@ -1839,3 +1839,61 @@ s32 cb_client_parse_get_edid_ack_cmd(u8 *data, u64 *pipe, u8 *edid, u64 *sz)
 	return 0;
 }
 
+u8 *cb_server_create_view_focus_chg_cmd(u64 view_id, bool on, u32 *n)
+{
+	struct cb_tlv *tlv;
+	u32 size, *head;
+	u8 *p;
+
+	size = sizeof(*tlv) + sizeof(u32) + sizeof(u64) + sizeof(u64);
+	p = calloc(1, size);
+	if (!p)
+		return NULL;
+
+	head = (u32 *)p;
+	*head = 0xFD;
+
+	tlv = (struct cb_tlv *)(p+sizeof(u32));
+	tlv->tag = CB_TAG_VIEW_FOCUS_CHG;
+	tlv->length = sizeof(u64) + sizeof(u64);
+	*((u64 *)(&tlv->payload[0])) = view_id;
+	*(((u64 *)(&tlv->payload[0])) + 1) = (u64)on;
+	*n = size;
+
+	return p;
+}
+
+u8 *cb_dup_view_focus_chg_cmd(u8 *dst, u8 *src, u32 n, u64 view_id, bool on)
+{
+	struct cb_tlv *tlv;
+	u64 *p;
+
+	if (!dst || !src)
+		return NULL;
+
+	memcpy(dst, src, n);
+
+	tlv = (struct cb_tlv *)(dst+sizeof(u32));
+	p = (u64 *)(&tlv->payload[0]);
+	*p = view_id;
+	*(p + 1) = (u64)on;
+
+	return dst;
+}
+
+s32 cb_client_parse_view_focus_chg_cmd(u8 *data, u64 *view_id, bool *on)
+{
+	struct cb_tlv *tlv;
+
+	if (!view_id || !on)
+		return -EINVAL;
+
+	tlv = (struct cb_tlv *)(data+sizeof(u32));
+	if (tlv->tag != CB_TAG_VIEW_FOCUS_CHG)
+		return -EINVAL;
+
+	*view_id = *((u64 *)(&tlv->payload[0]));
+	*on = *(((s64 *)(&tlv->payload[0])) + 1);
+	return 0;
+}
+

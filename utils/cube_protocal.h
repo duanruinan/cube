@@ -153,6 +153,7 @@ enum cb_tag {
 	CB_TAG_COMMIT_INFO, /* cb_commit_info */
 	CB_TAG_SHELL, /* cb_shell_info */
 	CB_TAG_DESTROY, /* destroy all */
+	CB_TAG_VIEW_FOCUS_CHG, /* view focus on / lost */
 	CB_TAG_MC_COMMIT_INFO, /* mouse cursor */
 };
 
@@ -200,7 +201,8 @@ struct cb_surface_info {
 
 struct cb_view_info {
 	u64 view_id;
-	bool top_level;
+	/* for float view: server do not send focus on / lost message */
+	bool float_view;
 	u32 output_mask;
 	u32 primary_output;
 
@@ -631,6 +633,12 @@ u8 *cb_dup_get_edid_ack_cmd(u8 *dst, u8 *src, u32 n, u64 pipe, u8 *edid,
  *            -ENOENT: E-EDID not available.
  */
 s32 cb_client_parse_get_edid_ack_cmd(u8 *data, u64 *pipe, u8 *edid, u64 *sz);
+
+/* server: view focus change notify */
+u8 *cb_server_create_view_focus_chg_cmd(u64 view_id, bool on, u32 *n);
+u8 *cb_dup_view_focus_chg_cmd(u8 *dst, u8 *src, u32 n, u64 view_id, bool on);
+/* client: parse view focus change notify */
+s32 cb_client_parse_view_focus_chg_cmd(u8 *data, u64 *view_id, bool *on);
 
 #pragma pack(pop)
 

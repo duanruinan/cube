@@ -475,6 +475,12 @@ static void view_created_cb(bool success, void *userdata, u64 view_id)
 	}
 }
 
+static void view_focus_chg_cb(void *userdata, u64 view_id, bool on)
+{
+	printf("[TEST_CLIENT] View %16lX Focus %s\n", view_id,
+		on ? "On" : "Lost");
+}
+
 static void surface_created_cb(bool success, void *userdata, u64 surface_id)
 {
 	struct cube_client *client = userdata;
@@ -485,13 +491,14 @@ static void surface_created_cb(bool success, void *userdata, u64 surface_id)
 		printf("create surface succesfull\n");
 		client->s.surface_id = surface_id;
 		client->v.surface_id = surface_id;
+		cli->set_view_focus_chg_cb(cli, client, view_focus_chg_cb);
+		cli->set_create_view_cb(cli, client, view_created_cb);
 		ret = cli->create_view(cli, &client->v);
 		if (ret < 0) {
 			fprintf(stderr, "failed to create view.\n");
 			cli->stop(cli);
 			return;
 		}
-		cli->set_create_view_cb(cli, client, view_created_cb);
 	} else {
 		fprintf(stderr, "failed to create surface.\n");
 		cli->stop(cli);
@@ -517,13 +524,13 @@ static void bo_created_cb(bool success, void *userdata, u64 bo_id)
 
 	if (client->count_bos == BO_NR) {
 		printf("create bo complete. <<<\n");
+		cli->set_create_surface_cb(cli, client, surface_created_cb);
 		ret = cli->create_surface(cli, &client->s);
 		if (ret < 0) {
 			fprintf(stderr, "failed to create surface.\n");
 			cli->stop(cli);
 			return;
 		}
-		cli->set_create_surface_cb(cli, client, surface_created_cb);
 	} else {
 		bo_info = &client->bos[client->count_bos];
 		printf("[TEST_CLIENT] create bo\n");
@@ -599,6 +606,7 @@ static void view_info_init(struct cube_client *client)
 	client->v.area.pos.y = client->y;
 	client->v.area.w = client->width;
 	client->v.area.h = client->height;
+	client->v.float_view = false;
 }
 
 static s32 client_init(struct cube_client *client)

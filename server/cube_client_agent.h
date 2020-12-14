@@ -98,6 +98,13 @@ struct cb_client_agent {
 	u8 *get_edid_ack_cmd;
 	u32 get_edid_ack_len;
 
+	u8 *view_focus_chg_cmd_t;
+	u8 *view_focus_chg_cmd;
+	u32 view_focus_chg_len;
+
+	void (*send_view_focus_chg)(struct cb_client_agent *client, void *v,
+				    bool on);
+
 	void (*send_surface_ack)(struct cb_client_agent *client, void *s);
 	void (*send_view_ack)(struct cb_client_agent *client, void *v);
 	void (*send_bo_create_ack)(struct cb_client_agent *client, void *bo);

@@ -340,6 +340,7 @@ static void view_info_init(struct cube_client *client)
 	client->v.area.pos.y = client->y;
 	client->v.area.w = client->width;
 	client->v.area.h = client->height;
+	client->v.float_view = true;
 }
 
 static void bo_commited_cb(bool success, void *userdata, u64 bo_id,

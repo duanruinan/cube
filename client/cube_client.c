@@ -181,6 +181,9 @@ struct client {
 
 	void *kbd_led_st_cb_userdata;
 	void (*kbd_led_st_cb)(void *userdata, u32 led_status);
+
+	void *view_focus_chg_userdata;
+	void (*view_focus_chg_cb)(void *userdata, u64 view_id, bool on);
 };
 
 struct client_buffer {
@@ -281,10 +284,10 @@ static void destroy(struct cb_client *client)
 		if (cli->create_view_tx_cmd)
 			free(cli->create_view_tx_cmd);
 
-		if (cli->create_surface_tx_cmd_t);
+		if (cli->create_surface_tx_cmd_t)
 			free(cli->create_surface_tx_cmd_t);
 
-		if (cli->create_surface_tx_cmd);
+		if (cli->create_surface_tx_cmd)
 			free(cli->create_surface_tx_cmd);
 
 		if (cli->sock_source)
@@ -403,6 +406,22 @@ static s32 set_kbd_led_st_cb(struct cb_client *client, void *userdata,
 
 	cli->kbd_led_st_cb_userdata = userdata;
 	cli->kbd_led_st_cb = kbd_led_st_cb;
+
+	return 0;
+}
+
+static s32 set_view_focus_chg_cb(struct cb_client *client, void *userdata,
+				 void (*view_focus_chg_cb)(void *userdata,
+				 			   u64 view_id,
+				 			   bool on))
+{
+	struct client *cli = to_client(client);
+
+	if (!view_focus_chg_cb || !client)
+		return -EINVAL;
+
+	cli->view_focus_chg_userdata = userdata;
+	cli->view_focus_chg_cb = view_focus_chg_cb;
 
 	return 0;
 }
@@ -1563,7 +1582,8 @@ static void client_ipc_proc(struct client *cli)
 	u64 id;
 	struct cb_raw_input_event *evts;
 	u32 count_evts, led_status;
-	u64 surface_id;
+	u64 surface_id, view_id;
+	bool focus_on;
 
 	if (!cli)
 		return;
@@ -1599,6 +1619,23 @@ static void client_ipc_proc(struct client *cli)
 
 	if (tlv->tag == CB_TAG_RAW_JOYSTICK) {
 		/* TODO */
+		return;
+	}
+
+	if (tlv->tag == CB_TAG_VIEW_FOCUS_CHG) {
+		ret = cb_client_parse_view_focus_chg_cmd(buf, &view_id,
+							 &focus_on);
+		if (ret < 0) {
+			fprintf(stderr, "failed to parse view focus chg "
+				"message. ret = %d", ret);
+		} else {
+			if (cli->view_focus_chg_cb) {
+				cli->view_focus_chg_cb(
+					cli->view_focus_chg_userdata,
+					view_id,
+					focus_on);
+			}
+		}
 		return;
 	}
 
@@ -2050,6 +2087,7 @@ struct cb_client *cb_client_create(s32 seat)
 	cli->base.send_set_kbd_led_st = send_set_kbd_led_st;
 	cli->base.send_get_kbd_led_st = send_get_kbd_led_st;
 	cli->base.set_kbd_led_st_cb = set_kbd_led_st_cb;
+	cli->base.set_view_focus_chg_cb = set_view_focus_chg_cb;
 	cli->base.enumerate_mode = enumerate_mode;
 	cli->base.set_enumerate_mode_cb = set_enumerate_mode_cb;
 	cli->base.query_layout = query_layout;

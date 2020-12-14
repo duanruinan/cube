@@ -171,6 +171,11 @@ struct cb_view {
 	struct cb_rect src_areas[MAX_NR_OUTPUTS];
 
 	bool painted;
+
+	/* for float view: server do not send focus on / lost message */
+	bool float_view;
+
+	bool focus_on;
 };
 
 struct compositor {

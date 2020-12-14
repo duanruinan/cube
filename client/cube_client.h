@@ -168,6 +168,12 @@ struct cb_client {
 			  void (*hpd_cb)(void *userdata,
 					 struct cb_connector_info *info));
 
+	s32 (*set_view_focus_chg_cb)(struct cb_client *client,
+				     void *userdata,
+				     void (*view_focus_chg_cb)(void *userdata,
+				     			       u64 view_id,
+				     			       bool on));
+
 	void (*add_idle_task)(struct cb_client *client, void *userdata,
 			      void (*idle_task)(void *data));
 

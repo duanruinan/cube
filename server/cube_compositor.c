@@ -275,6 +275,8 @@ struct cb_compositor {
 	/* views in z-order from top to bottom */
 	struct list_head views;
 
+	struct cb_view *top_view;
+
 	/* disable all outputs pending */
 	s32 disable_all_pending;
 	/* timer for suspend (asynchronous progress) */
@@ -796,8 +798,6 @@ static void update_crtc_view_port(struct cb_output *output)
 	update_mc_view_port(output, true);
 }
 
-static void cb_compositor_commit_surface(struct compositor *comp,
-					 struct cb_surface *surface);
 static void cb_compositor_repaint_by_output(struct cb_output *output);
 static void cb_compositor_repaint(struct cb_compositor *c);
 static bool setup_view_output_mask(struct cb_view *view,
@@ -3372,9 +3372,6 @@ static bool setup_view_output_mask(struct cb_view *view,
 
 	return (view->output_mask != 0);
 }
-
-static void cb_compositor_commit_surface(struct compositor *comp,
-					struct cb_surface *surface);
 
 static void surface_flipped_cb(struct cb_listener *listener, void *data)
 {
