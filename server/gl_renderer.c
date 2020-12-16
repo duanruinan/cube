@@ -848,7 +848,7 @@ static struct cb_buffer *gl_import_dmabuf(struct renderer *renderer,
 	}
 
 	if (info->pix_fmt != CB_PIX_FMT_ARGB8888
-	    && info->pix_fmt != CB_PIX_FMT_ARGB8888
+	    && info->pix_fmt != CB_PIX_FMT_XRGB8888
 	    && info->pix_fmt != CB_PIX_FMT_NV12
 	    && info->pix_fmt != CB_PIX_FMT_NV16) {
 		egl_err("cannot support pixel fmt %u", info->pix_fmt);
@@ -874,7 +874,7 @@ static struct cb_buffer *gl_import_dmabuf(struct renderer *renderer,
 		attribs[attrib++] = EGL_DMA_BUF_PLANE0_OFFSET_EXT;
 		attribs[attrib++] = info->offsets[0];
 		attribs[attrib++] = EGL_DMA_BUF_PLANE0_PITCH_EXT;
-		attribs[attrib++] = info->strides[0] / 4;
+		attribs[attrib++] = info->strides[0];
 		attribs[attrib++] = EGL_NONE;
 		egl_info("w = %u h = %u fd = %d pixel_fmt = %u stride = %u\n",
 			 info->width, info->height, info->fd[0],
@@ -1511,6 +1511,7 @@ static bool draw_view(struct cb_view *v, struct gl_output_state *go,
 		glEnable(GL_BLEND);
 		repaint_region(r, v, &view_area, &surface_blend,
 			       &go->render_area.pos);
+		repainted = true;
 	}
 
 	cb_region_fini(&surface_blend);
@@ -1740,7 +1741,7 @@ static void gl_attach_dma_buffer(struct gl_renderer *r,
 	if (buffer->info.pix_fmt == CB_PIX_FMT_XRGB8888) {
 		gs->target = GL_TEXTURE_2D;
 		surface->is_opaque = true;
-		gs->shader = &r->texture_shader_rgba;
+		gs->shader = &r->texture_shader_rgbx;
 		gs->pitch = buffer->info.strides[0] / 4;
 	} else if (buffer->info.pix_fmt == CB_PIX_FMT_ARGB8888) {
 		gs->target = GL_TEXTURE_2D;
