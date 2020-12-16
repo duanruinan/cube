@@ -3399,6 +3399,32 @@ static void set_renderable_buffer_changed(struct cb_compositor *c,
 	}
 }
 
+static void update_top_view_according_to_rm(struct cb_compositor *c,
+					    struct cb_view *v)
+{
+	struct cb_view *view_prev, *top_view;
+	struct cb_client_agent *client;
+
+	if (v == c->top_view) {
+		comp_notice("rm top view %lX", (u64)v);
+		client = v->surface->client_agent;
+		client->send_view_focus_chg(client, v, false);
+		top_view = NULL;
+		list_for_each_entry(view_prev, &c->views, link) {
+			if (view_prev->float_view)
+				continue;
+			top_view = view_prev;
+			break;
+		}
+		c->top_view = top_view;
+		if (top_view) {
+			client = top_view->surface->client_agent;
+			client->send_view_focus_chg(client, top_view, true);
+		}
+		comp_notice("New top view: %lX -> %lX", (u64)v, (u64)top_view);
+	}
+}
+
 static void cb_compositor_commit_surface(struct compositor *comp,
 					 struct cb_surface *surface)
 {
@@ -3707,7 +3733,7 @@ static void cb_compositor_release_so_dmabuf(struct compositor *comp,
 static void cb_compositor_add_view(struct compositor *comp, struct cb_view *v)
 {
 	struct cb_compositor *c = to_cb_c(comp);
-	struct cb_view *top_view;
+	struct cb_view *top_view, *fv, *first_normal_view;
 	struct cb_client_agent *client;
 
 	if (!comp)
@@ -3719,9 +3745,21 @@ static void cb_compositor_add_view(struct compositor *comp, struct cb_view *v)
 	if (v->float_view) {
 		list_add(&v->link, &c->views);
 		return;
+	} else {
+		first_normal_view = NULL;
+		list_for_each_entry(fv, &c->views, link) {
+			if (!fv->float_view) {
+				first_normal_view = fv;
+				break;
+			}
+		}
+		if (first_normal_view) {
+			list_add(&v->link, first_normal_view->link.prev);
+		} else {
+			list_add_tail(&v->link, &c->views);
+		}
 	}
 
-	list_add_tail(&v->link, &c->views);
 	top_view = c->top_view;
 	c->top_view = v;
 	if (top_view != c->top_view) {
@@ -3739,35 +3777,13 @@ static void cb_compositor_add_view(struct compositor *comp, struct cb_view *v)
 static void cb_compositor_rm_view(struct compositor *comp, struct cb_view *v)
 {
 	struct cb_compositor *c = to_cb_c(comp);
-	struct cb_view *view_prev, *top_view;
-	struct cb_client_agent *client;
 
 	if (!comp)
 		return;
 
 	if (v) {
 		list_del(&v->link);
-		if (v == c->top_view) {
-			comp_notice("rm top view %lX", (u64)v);
-			client = v->surface->client_agent;
-			client->send_view_focus_chg(client, v, false);
-			top_view = NULL;
-			list_for_each_entry_reverse(view_prev, &c->views, link){
-				if (view_prev->float_view) {
-					continue;
-				}
-				top_view = view_prev;
-				break;
-			}
-			c->top_view = top_view;
-			if (top_view) {
-				client = top_view->surface->client_agent;
-				client->send_view_focus_chg(client, top_view,
-							    true);
-			}
-			comp_notice("New top view: %lX -> %lX", (u64)v,
-				    (u64)top_view);
-		}
+		update_top_view_according_to_rm(c, v);
 	}
 
 	v->surface->buffer_pending = NULL;
@@ -3897,7 +3913,7 @@ static void do_dma_buf_repaint(struct cb_output *o)
 	if (list_empty(&c->views))
 		return;
 
-	list_for_each_entry(view, &c->views, link) {
+	list_for_each_entry_reverse(view, &c->views, link) {
 		if (!view->direct_show)
 			continue;
 		surface = view->surface;

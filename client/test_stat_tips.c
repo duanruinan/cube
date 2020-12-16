@@ -31,16 +31,25 @@ s32 main(s32 argc, char **argv)
 {
 	struct dashboard_info dash;
 	u16 i = 0;
+	u32 r, l;
+	char rate[16];
+	char latency[16];
 
 	dashboard_connect();
 	do {
+		memset(rate, 0, 16);
+		memset(latency, 0, 16);
+		r = rand();
+		sprintf(rate, "%d bps", r);
+		l = rand();
+		sprintf(latency, "%d ms", l);
 		i++;
 		sprintf(dash.ip, "%015u", i);
-		strcpy(dash.deployment_site, "abc");
-		strcpy(dash.rate, "11111111");
-		strcpy(dash.latency, "33");
+		strcpy(dash.deployment_site, "abcdef");
+		strcpy(dash.rate, rate);
+		strcpy(dash.latency, latency);
 		set_dashboard(&dash);
-		usleep(16667);
+		sleep(1);
 	} while (1);
 	dashboard_disconnect();
 	return 0;

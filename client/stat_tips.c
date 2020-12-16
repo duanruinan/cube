@@ -26,6 +26,7 @@
 #include <getopt.h>
 #include <syslog.h>
 #include <signal.h>
+#include <time.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include <linux/input.h>
@@ -48,6 +49,10 @@
 #include <cube_client.h>
 #include "stat_tips.h"
 
+#define DMABUF_TEXTURE 1
+#define LOCK_SCREEN 0
+#define DELTA_MOVE 2
+
 struct bo_info {
 	void *bo;
 	u64 bo_id;
@@ -60,6 +65,9 @@ struct bo_info {
 	EGLImageKHR image;
 	GLuint gl_texture;
 	GLuint gl_fbo;
+
+	struct list_head link;
+	bool render_needed;
 };
 
 struct character {
@@ -88,11 +96,14 @@ enum client_state {
 	CLI_ST_SLIDING_OUT,
 };
 
+#define BO_NR 4
+
 struct cube_client {
 	struct cb_client *cli;
 	s32 count_bos;
-	struct bo_info bos[2];
-	s32 work_bo;
+	struct bo_info bos[BO_NR];
+	struct list_head free_bos;
+	bool commit_ack_received;
 
 	struct dashboard_info dashboard;
 
@@ -133,8 +144,6 @@ struct cube_client {
 	enum client_state state;
 	s32 delta;
 
-	bool bo_switched;
-
 	struct list_head ipc_clients;
 	u32 ipc_clients_cnt;
 
@@ -144,7 +153,7 @@ struct cube_client {
 	u32 font_sz;
 	struct character ch[128];
 
-	s32 render_needed;
+	bool replace_flag;
 };
 
 static void usage(void)
@@ -163,6 +172,33 @@ static struct option options[] = {
 };
 
 static char short_options[] = "w:h:z:f:";
+
+static struct bo_info *get_free_bo(struct cube_client *client)
+{
+	struct bo_info *bo, *bo_next;
+
+	if (!client)
+		return NULL;
+
+	list_for_each_entry_safe(bo, bo_next, &client->free_bos, link) {
+		list_del(&bo->link);
+		return bo;
+	}
+
+	printf("[TEST_CLIENT] cannot find a free bo!!!!!\n");
+	return NULL;
+}
+
+static void put_free_bo(struct cube_client *client, struct bo_info *bo)
+{
+	if (!client)
+		return;
+
+	if (!bo)
+		return;
+
+	list_add_tail(&bo->link, &client->free_bos);
+}
 
 static void render_text(struct cube_client *client, float color[3],
 			char *string, s32 x, s32 y, float scale)
@@ -204,7 +240,6 @@ static void render_text(struct cube_client *client, float color[3],
 		glDrawArrays(GL_TRIANGLE_FAN, 0, 6);
 		x += (ch->advance >> 6) * scale;
 	} while (c);
-
 	glBindTexture(GL_TEXTURE_2D, 0);
 }
 
@@ -214,9 +249,6 @@ static void render_gpu(struct cube_client *client, struct bo_info *bo_info)
 	float color[3] = {0.0f, 0.0f, 0.0f};
 	float scale = 0.72f;
 	char msg[64];
-
-	if (!client->render_needed)
-		return;
 
 	x = client->font_sz * scale;
 	y = client->height - client->font_sz * scale * 1.5f;
@@ -279,8 +311,6 @@ static void render_gpu(struct cube_client *client, struct bo_info *bo_info)
 	y -= client->font_sz * scale * 1.5f;
 
 	glFinish();
-
-	client->render_needed--;
 }
 
 static s32 signal_cb(s32 signal_number, void *userdata)
@@ -308,15 +338,15 @@ static void surface_info_init(struct cube_client *client)
 		return;
 
 	client->s.surface_id = 0;
-	client->s.is_opaque = true;
+	client->s.is_opaque = false;
 	client->s.damage.pos.x = 0;
 	client->s.damage.pos.y = 0;
 	client->s.damage.w = client->width;
 	client->s.damage.h = client->height;
 	client->s.opaque.pos.x = 0;
 	client->s.opaque.pos.y = 0;
-	client->s.opaque.w = client->width;
-	client->s.opaque.h = client->height;
+	client->s.opaque.w = 0;
+	client->s.opaque.h = 0;
 	client->s.width = client->width;
 	client->s.height = client->height;
 }
@@ -334,12 +364,13 @@ static void view_info_init(struct cube_client *client)
 		return;
 
 	client->v.view_id = 0;
-	client->v.alpha = 0.5f;
+	client->v.alpha = 1.0f;
 	client->v.zpos = client->zpos;
 	client->v.area.pos.x = client->x;
 	client->v.area.pos.y = client->y;
 	client->v.area.w = client->width;
 	client->v.area.h = client->height;
+	/* float window */
 	client->v.float_view = true;
 }
 
@@ -347,12 +378,17 @@ static void bo_commited_cb(bool success, void *userdata, u64 bo_id,
 			   u64 surface_id)
 {
 	struct cube_client *client = userdata;
-	struct cb_client *cli = client->cli;
 
 	assert(surface_id == client->s.surface_id);
 	if (bo_id == (u64)(-1)) {
-		printf("failed to commit bo\n");
-		cli->stop(cli);
+		printf("[STAT_TIPS][commit] failed to commit bo\n");
+		client->commit_ack_received = true;
+	} else if (bo_id == COMMIT_REPLACE) {
+		printf("[STAT_TIPS][commit] replace last buffer\n");
+		client->replace_flag = true;
+	} else {
+		client->commit_ack_received = true;
+		client->replace_flag = false;
 	}
 }
 
@@ -390,7 +426,7 @@ static void client_state_fsm(struct cube_client *client)
 		case CLI_ST_SLIDING_IN:
 			/* turn from slide in into slide out */
 			client->state = CLI_ST_SLIDING_OUT;
-			client->delta = 2;
+			client->delta = DELTA_MOVE;
 //			printf("--- slide in -> out ---\n");
 			cli->timer_update(cli,
 					  client->slide_into_timer,
@@ -399,7 +435,7 @@ static void client_state_fsm(struct cube_client *client)
 		case CLI_ST_HIDE:
 			/* begin to slide out */
 			client->state = CLI_ST_SLIDING_OUT;
-			client->delta = 2;
+			client->delta = DELTA_MOVE;
 //			printf("--- hide -> slide out ---\n");
 			cli->timer_update(cli,
 					  client->slide_into_timer,
@@ -416,7 +452,7 @@ static void client_state_fsm(struct cube_client *client)
 //				printf("--- slide out -> shown\n");
 			} else {
 				client->state = CLI_ST_SLIDING_OUT;
-				client->delta = 2;
+				client->delta = DELTA_MOVE;
 //				printf("continue to slide out\n");
 			}
 			break;
@@ -440,7 +476,7 @@ static void client_state_fsm(struct cube_client *client)
 			break;
 		case CLI_ST_PREPARE_SLIDING_IN:
 			client->state = CLI_ST_SLIDING_IN;
-			client->delta = -2;
+			client->delta = -DELTA_MOVE;
 //			printf("--- prepare sliding in -> sliding in\n");
 			break;
 		case CLI_ST_SLIDING_IN:
@@ -450,7 +486,7 @@ static void client_state_fsm(struct cube_client *client)
 //				printf("--- sliding in -> hide\n");
 			} else {
 				client->state = CLI_ST_SLIDING_IN;
-				client->delta = -2;
+				client->delta = -DELTA_MOVE;
 //				printf("--- keep sliding in\n");
 			}
 			break;
@@ -465,7 +501,7 @@ static void client_state_fsm(struct cube_client *client)
 				client->delta = 0;
 			} else {
 				client->state = CLI_ST_SLIDING_OUT;
-				client->delta = 2;
+				client->delta = DELTA_MOVE;
 //				printf("--- keep sliding out til shown\n");
 			}
 			break;
@@ -480,10 +516,30 @@ static s32 repaint_cb(void *userdata)
 	struct cube_client *client = userdata;
 	struct cb_client *cli = client->cli;
 	struct cb_commit_info c;
+	struct bo_info *bo_info;
 	s32 ret;
 
-	/* syslog(LOG_ERR, "[stat_tips] commit bo[%d]\n", client->work_bo); */
-	c.bo_id = client->bos[client->work_bo].bo_id;
+	if (!client->commit_ack_received) {
+		/* not received ack yet. */
+		cli->timer_update(cli, client->repaint_timer, 2, 0);
+		return 0;
+	}
+	bo_info = get_free_bo(client);
+	if (!bo_info) {
+		cli->timer_update(cli, client->repaint_timer, 16, 667);
+		return -EINVAL;
+	}
+	if (client->replace_flag)
+		usleep(7000);
+	cli->timer_update(cli, client->repaint_timer, 16, 666);
+
+	/* if repaint is needed, render text. */
+	if (bo_info->render_needed) {
+		render_gpu(client, bo_info);
+		bo_info->render_needed = false;
+	}
+
+	c.bo_id = bo_info->bo_id;
 	c.surface_id = client->s.surface_id;
 
 	c.bo_damage.pos.x = 0;
@@ -505,8 +561,10 @@ static s32 repaint_cb(void *userdata)
 	c.view_y = client->y;
 	c.view_width = client->width;
 	c.view_height = client->height;
-	c.pipe_locked = 0;
+	c.pipe_locked = LOCK_SCREEN;
 
+	client->commit_ack_received = false;
+	/* printf("[STAT_TIPS] commit %lX\n", c.bo_id); */
 	ret = cli->commit_bo(cli, &c);
 	if (ret < 0) {
 		fprintf(stderr, "failed to commit bo %s\n", __func__);
@@ -519,45 +577,26 @@ static s32 repaint_cb(void *userdata)
 static void bo_flipped_cb(void *userdata, u64 bo_id, u64 surface_id)
 {
 	struct cube_client *client = userdata;
-	struct cb_client *cli = client->cli;
 
 	assert(surface_id == client->s.surface_id);
-	if (bo_id == client->bos[0].bo_id) {
-		/* printf("[stat_tips] bo[0] flipped.\n"); */
-	} else if (bo_id == client->bos[1].bo_id) {
-		/* printf("[stat_tips] bo[1] flipped.\n"); */
-	} else {
-		fprintf(stderr, "unknown buffer flipped.\n");
-	}
-
-	cli->timer_update(cli, client->repaint_timer, 5, 0);
-	client->bo_switched = false;
 }
 
 static void bo_completed_cb(void *userdata, u64 bo_id, u64 surface_id)
 {
 	struct cube_client *client = userdata;
-	struct bo_info *bo_info;
-	s32 bo_index_prev = client->work_bo;
+	struct bo_info *bo;
+	s32 i;
 
 	assert(surface_id == client->s.surface_id);
-	/* printf("[stat_tips] work_bo: %d\n", bo_index_prev); */
-	if (bo_id == client->bos[0].bo_id) {
-		/* printf("[stat_tips] bo[0] completed.\n"); */
-		client->work_bo = 0;
-	} else if (bo_id == client->bos[1].bo_id) {
-		/* printf("[stat_tips] bo[1] completed.\n"); */
-		client->work_bo = 1;
-	} else {
-		fprintf(stderr, "unknown bo completed.\n");
+	for (i = 0; i < BO_NR; i++) {
+		bo = &client->bos[i];
+		if (bo_id == bo->bo_id) {
+			put_free_bo(client, bo);
+			return;
+		}
 	}
-
-	if (bo_index_prev != client->work_bo) {
-		client->bo_switched = true;
-		/* printf("[stat_tips] render bo[%d]\n", client->work_bo); */
-		bo_info = &client->bos[client->work_bo];
-		render_gpu(client, bo_info);
-	}
+	printf("[STAT_TIPS] failed to find bo %lX\n", bo_id);
+	exit(1);
 }
 
 static void view_created_cb(bool success, void *userdata, u64 view_id)
@@ -571,12 +610,18 @@ static void view_created_cb(bool success, void *userdata, u64 view_id)
 	if (success) {
 		printf("create view succesfull\n");
 		client->v.view_id = view_id;
-		client->work_bo = 0;
 		cli->set_commit_bo_cb(cli, client, bo_commited_cb);
 		cli->set_bo_flipped_cb(cli, client, bo_flipped_cb);
 		cli->set_bo_completed_cb(cli, client, bo_completed_cb);
 
-		c.bo_id = client->bos[client->work_bo].bo_id;
+		bo_info = get_free_bo(client);
+		if (!bo_info) {
+			fprintf(stderr, "[STAT_TIPS] failed to get free bo.\n");
+			cli->stop(cli);
+			return;
+		}
+
+		c.bo_id = bo_info->bo_id;
 		c.surface_id = client->s.surface_id;
 		c.bo_damage.pos.x = 0;
 		c.bo_damage.pos.y = 0;
@@ -586,20 +631,15 @@ static void view_created_cb(bool success, void *userdata, u64 view_id)
 		c.view_y = client->y;
 		c.view_width = client->width;
 		c.view_height = client->height;
-		c.pipe_locked = 0;
+		c.pipe_locked = LOCK_SCREEN;
 
-		bo_info = &client->bos[client->work_bo];
-		client->render_needed = 2;
-		render_gpu(client, bo_info);
-		bo_info = &client->bos[1 - client->work_bo];
-		render_gpu(client, bo_info);
-		printf("commit 0\n");
+		printf("[STAT_TIPS] commit %lX\n", c.bo_id);
 		ret = cli->commit_bo(cli, &c);
-		client->work_bo = 1;
 		if (ret < 0) {
 			fprintf(stderr, "failed to commit bo %s\n", __func__);
 			cli->stop(cli);
 		}
+		cli->timer_update(cli, client->repaint_timer, 67, 0);
 	} else {
 		fprintf(stderr, "failed to create view.\n");
 		cli->stop(cli);
@@ -645,27 +685,28 @@ static void bo_created_cb(bool success, void *userdata, u64 bo_id)
 	bo_info = &client->bos[client->count_bos - 1];
 	printf("bo_id: %016lX\n", bo_id);
 	bo_info->bo_id = bo_id;
+	printf("render into %lX\n", bo_info->bo_id);
+	render_gpu(client, bo_info);
 
-	if (client->count_bos == 2) {
+	if (client->count_bos == BO_NR) {
 		printf("create bo complete.\n");
+		cli->set_create_surface_cb(cli, client, surface_created_cb);
 		ret = cli->create_surface(cli, &client->s);
 		if (ret < 0) {
 			fprintf(stderr, "failed to create surface.\n");
 			cli->stop(cli);
 			return;
 		}
-		cli->set_create_surface_cb(cli, client, surface_created_cb);
 	} else {
-		while (client->count_bos < 2) {
-			bo_info = &client->bos[client->count_bos];
-			ret = cli->create_bo(cli, bo_info->bo);
-			if (ret < 0) {
-				fprintf(stderr, "failed to create bo.\n");
-				cli->stop(cli);
-				return;
-			}
-			client->count_bos++;
+		bo_info = &client->bos[client->count_bos];
+		printf("[STAT_TIPS] create bo\n");
+		ret = cli->create_bo(cli, bo_info->bo);
+		if (ret < 0) {
+			fprintf(stderr, "failed to create bo.\n");
+			cli->stop(cli);
+			return;
 		}
+		client->count_bos++;
 	}
 }
 
@@ -719,6 +760,7 @@ static void ready_cb(void *userdata)
 	cli->set_client_cap(cli, CB_CLIENT_CAP_RAW_INPUT);
 	cli->set_raw_input_en(cli, true);
 	cli->set_create_bo_cb(cli, client, bo_created_cb);
+	printf("[STAT_TIPS] create bo\n");
 	ret = cli->create_bo(cli, bo_info->bo);
 	if (ret < 0) {
 		fprintf(stderr, "failed to create bo.\n");
@@ -1129,8 +1171,7 @@ static s32 client_sock_cb(s32 fd, u32 mask, void *data)
 	struct cube_client *client = ipc_client->client;
 	struct cb_client *cli = client->cli;
 	struct dashboard_info *dashboard;
-
-	s32 ret;
+	s32 ret, i;
 	size_t byts_rd;
 	s32 flag; /* 0: length not received, 1: length received. */
 
@@ -1196,7 +1237,10 @@ static s32 client_sock_cb(s32 fd, u32 mask, void *data)
 			(struct dashboard_info *)(ipc_client->ipc_buf
 							+ sizeof(size_t));
 		memcpy(&client->dashboard, dashboard, sizeof(*dashboard));
-		client->render_needed = 2;
+		/* mark all buffers as repaint needed */
+		for (i = 0; i < BO_NR; i++) {
+			client->bos[i].render_needed = true;
+		}
 	}
 
 	return 0;
@@ -1311,7 +1355,9 @@ static s32 client_init(struct cube_client *client)
 		(void *)eglGetProcAddress("glEGLImageTargetTexture2DOES");
 	assert(client->egl.image_target_texture_2d);
 
-	for (i = 0; i < 2; i++) {
+	strcpy(client->dashboard.ip, "127.0.0.1");
+	INIT_LIST_HEAD(&client->free_bos);
+	for (i = 0; i < BO_NR; i++) {
 		printf("create dma buffer\n");
 		bo_info = &client->bos[i];
 		bo_info->bo = cb_client_gbm_bo_create(
@@ -1324,7 +1370,12 @@ static s32 client_init(struct cube_client *client)
 					&bo_info->count_planes,
 					bo_info->strides,
 					bo_info->fds,
-					false);
+#ifdef DMABUF_TEXTURE
+					true
+#else
+					false
+#endif
+					);
 		if (!bo_info->bo) {
 			fprintf(stderr, "failed to create dmabuf bo\n");
 			goto err_buf_alloc;
@@ -1336,6 +1387,7 @@ static s32 client_init(struct cube_client *client)
 			bo_info->fds[3]);
 		bo_info->width = client->width;
 		bo_info->height = client->height;
+		list_add_tail(&bo_info->link, &client->free_bos);
 
 		if (create_fbo_for_buffer(client, bo_info) < 0) {
 			fprintf(stderr, "failed to create fbo for buffer\n");
@@ -1379,13 +1431,9 @@ static s32 client_init(struct cube_client *client)
 	client->x = 0;
 	client->y = 0;
 
-	strcpy(client->dashboard.ip, "127.0.0.1");
-
 	INIT_LIST_HEAD(&client->ipc_clients);
 
 	client->state = CLI_ST_SHOWN;
-
-	client->render_needed = 2;
 
 	return 0;
 
@@ -1414,6 +1462,7 @@ static void client_fini(struct cube_client *client)
 
 	while (client->count_bos) {
 		printf("destroy bo\n");
+		list_del(&client->bos[client->count_bos - 1].link);
 		cli->destroy_bo(cli,
 				client->bos[client->count_bos - 1].bo_id);
 		client->count_bos--;
@@ -1429,7 +1478,7 @@ static void client_fini(struct cube_client *client)
 	surface_info_fini(client);
 	view_info_fini(client);
 
-	for (i = 0; i < 2; i++) {
+	for (i = 0; i < BO_NR; i++) {
 		bo_info = &client->bos[i];
 		destroy_fbo_for_buffer(client, bo_info);
 		if (bo_info->bo)
@@ -1456,7 +1505,7 @@ s32 main(s32 argc, char **argv)
 	struct cube_client *client;
 	struct cb_client *cli;
 	u32 w, h;
-	s32 zpos;
+	s32 zpos = -1;
 	char font_path[256] = {0};
 
 	w = 450;

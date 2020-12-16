@@ -586,7 +586,7 @@ static void surface_info_init(struct cube_client *client)
 		return;
 
 	client->s.surface_id = 0;
-	client->s.is_opaque = true;
+	client->s.is_opaque = false;
 	client->s.damage.pos.x = 0;
 	client->s.damage.pos.y = 0;
 	client->s.damage.w = client->width;

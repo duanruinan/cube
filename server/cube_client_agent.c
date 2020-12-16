@@ -1014,8 +1014,8 @@ static void surface_create_proc(struct cb_client_agent *client, u8 *buf)
 	s->is_opaque = sinfo.is_opaque;
 	cb_region_init_rect(&s->damage, sinfo.damage.pos.x, sinfo.damage.pos.y,
 			    sinfo.damage.w, sinfo.damage.h);
-	cb_region_init_rect(&s->opaque, sinfo.opaque.pos.x, sinfo.opaque.pos.y,
-			    sinfo.opaque.w, sinfo.opaque.h);
+	cb_region_init_rect(&s->opaque, sinfo.opaque.pos.x,
+			    sinfo.opaque.pos.y, sinfo.opaque.w, sinfo.opaque.h);
 	s->width = sinfo.width;
 	s->height = sinfo.height;
 	cb_signal_init(&s->destroy_signal);

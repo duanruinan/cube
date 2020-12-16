@@ -1461,7 +1461,11 @@ static bool draw_view(struct cb_view *v, struct gl_output_state *go,
 			   boxes[i].p2.x, boxes[i].p2.y);
 	}
 	*/
-	cb_region_subtract(damage, damage, &view_area);
+	/*
+	 * do not substract damaged area, otherwise blended area cannot be
+	 * drawed.
+	 * cb_region_subtract(damage, damage, &view_area);
+	 */
 
 	/*
 	gles_debug("damage area left:");
