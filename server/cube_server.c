@@ -595,7 +595,10 @@ s32 main(s32 argc, char **argv)
 	char *p;
 	char touch_pipe_s[MAIN_ARG_MAX_LEN];
 	char mc_accel_s[MAIN_ARG_MAX_LEN];
+	char processdir[MAIN_ARG_MAX_LEN];
 
+	memset(processdir, 0, MAIN_ARG_MAX_LEN);
+	readlink("/proc/self/exe", processdir, MAIN_ARG_MAX_LEN - 1);
 	while ((ch = getopt_long(argc, argv, short_options,
 				 long_options, NULL)) != -1) {
 		switch (ch) {
@@ -624,7 +627,7 @@ s32 main(s32 argc, char **argv)
 	}
 
 	if (run_as_background) {
-		strcpy(log_argv0, argv[0]);
+		strcpy(log_argv0, processdir);
 		p = strstr(log_argv0, "cube_server");
 		*p = '\0';
 		strcat(p, "cube_log");
@@ -633,7 +636,7 @@ s32 main(s32 argc, char **argv)
 		log_argv[1] = "-s";
 		log_argv[2] = log_argv2;
 		log_argv[3] = NULL;
-		server_argv[0] = argv[0];
+		server_argv[0] = processdir;
 		server_argv[1] = "-s";
 		server_argv[2] = log_argv2;
 		server_argv[3] = "-d";
