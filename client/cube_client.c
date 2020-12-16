@@ -44,10 +44,18 @@
 #define CB_IPC_BUF_MAX_LEN (1 << 19)
 #endif
 
+#define client_debug(client, fmt, ...) do { \
+	cb_client_tlog((client)->pid_name, (client)->log_handle, \
+			"[CLI ][DEBUG ] "fmt, ##__VA_ARGS__); \
+} while (0);
+
 struct client {
 	struct cb_client base;
 
 	struct cb_event_loop *loop;
+
+	void *log_handle;
+	char pid_name[9];
 
 	struct cb_surface_info s;
 	struct cb_view_info v;
@@ -300,6 +308,11 @@ static void destroy(struct cb_client *client)
 			close(cli->sock);
 
 		cb_event_loop_destroy(cli->loop);
+	}
+
+	if (cli->log_handle) {
+		cb_client_log_fini(cli->log_handle);
+		cli->log_handle = NULL;
 	}
 
 	free(cli);
@@ -1969,6 +1982,18 @@ struct cb_client *cb_client_create(s32 seat)
 	cli = calloc(1, sizeof(*cli));
 	if (!cli)
 		return NULL;
+
+	memset(cli->pid_name, 0, 9);
+	sprintf(cli->pid_name, "%08X", getpid());
+
+	memset(name, 0, 64);
+	snprintf(name, 64, "%s/%s-%d", LOG_SERVER_NAME_PREFIX,
+		 LOG_SERVER_SOCK_NAME, seat);
+	cli->log_handle = cb_client_log_init(name);
+	if (!cli->log_handle)
+		goto err;
+
+	client_debug(cli, "Creating cube client...");
 
 	for (i = 0; i < MAX_DISP_NR; i++) {
 		INIT_LIST_HEAD(&cli->base.displays[i].modes);

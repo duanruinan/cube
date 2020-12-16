@@ -83,9 +83,21 @@ enum cb_log_level {
  * 
  */
 
+#define cb_client_tlog(name, handle, fmt, ...) do { \
+	struct timespec now; \
+	clock_gettime(CLOCK_MONOTONIC, &now); \
+	cb_client_log(handle, "[%05lu:%06lu][%-24s:%05d] [%s] " fmt "\n", \
+	       now.tv_sec % 86400l, now.tv_nsec / 1000l, \
+	       __func__, __LINE__, name, ##__VA_ARGS__); \
+} while (0);
+
 extern void cb_log(const char *fmt, ...);
 extern s32 cb_log_init(const char *log_server_name);
 extern void cb_log_fini(void);
+
+extern void cb_client_log(void *handle, const char *fmt, ...);
+extern void *cb_client_log_init(const char *log_server_name);
+extern void cb_client_log_fini(void *handle);
 
 #ifdef __cplusplus
 }
