@@ -850,6 +850,15 @@ s32 main(s32 argc, char **argv)
 	client->zpos = -1;
 	client->pipe_locked = -1;
 	client->composed = false;
+	client->x = 0;
+	client->y = 0;
+	client->width = 640;
+	client->height = 480;
+	client->hstride = 640;
+	client->vstride = 480;
+	client->use_dmabuf = true;
+	client->pix_fmt = CB_PIX_FMT_ARGB8888;
+
 	while ((ch = getopt_long(argc, argv, short_options,
 				 options, NULL)) != -1) {
 		switch (ch) {
