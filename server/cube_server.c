@@ -76,13 +76,15 @@ static enum cb_log_level serv_dbg = CB_LOG_DEBUG;
 	cb_tlog("[SERV][ERROR ] " fmt, ##__VA_ARGS__); \
 } while (0);
 
-static char short_options[] = "bhs:d:";
+static char short_options[] = "bhs:d:t:a:";
 
 static struct option long_options[] = {
 	{"background", 0, NULL, 'b'},
 	{"help", 0, NULL, 'h'},
 	{"seat", 1, NULL, 's'},
 	{"device", 1, NULL, 'd'},
+	{"touch-pipe", 1, NULL, 't'},
+	{"mc-accel", 1, NULL, 'a'},
 	{NULL, 0, NULL, 0},
 };
 
@@ -140,6 +142,8 @@ static void usage(void)
 	printf("\t\t-h, --help, show this message.\n");
 	printf("\t\t-s, --seat=ID, cube server's instance ID.\n");
 	printf("\t\t-d, --device=/dev/dri/cardX, device name.\n");
+	printf("\t\t-t, --touch-pipe=pipe number, touch screen index.\n");
+	printf("\t\t-t, --mc-accel=mouse accelerator, default 1.0.\n");
 }
 
 struct child_process {
@@ -214,6 +218,7 @@ static s32 child_processes_proc(s32 signal_number, void *data)
 				}
 				for (i = 0; i < p->argc; i++) {
 					av[i] = p->argv[i];
+					printf("av[%d]: %s\n", i, av[i]);
 				}
 				av[i] = NULL;
 				start_child_process(processes, p->argc, av, 10);
@@ -494,7 +499,8 @@ static s32 comp_destroy_delayed_proc(void *data)
 	return 0;
 }
 
-static struct cb_server *cb_server_create(s32 seat, char *dev)
+static struct cb_server *cb_server_create(s32 seat, char *dev, s32 touch_pipe,
+					  float mc_accel)
 {
 	struct cb_server *server;
 	char name[64];
@@ -551,7 +557,8 @@ static struct cb_server *cb_server_create(s32 seat, char *dev)
 		goto err;
 
 	server->disp_nr = pipe_nr;
-	server->c = compositor_create(dev, server->loop, pipe_cfg, pipe_nr);
+	server->c = compositor_create(dev, server->loop, pipe_cfg, pipe_nr,
+				      touch_pipe, mc_accel);
 	if (!server->c)
 		goto err;
 
@@ -579,11 +586,15 @@ s32 main(s32 argc, char **argv)
 	bool run_as_background = false;
 	struct cb_server *server;
 	s32 seat = 0;
+	s32 touch_pipe = 0;
+	float mc_accel = 1.0f;
 	char log_argv0[MAIN_ARG_MAX_LEN];
-	char log_argv1[MAIN_ARG_MAX_LEN];
+	char log_argv2[MAIN_ARG_MAX_LEN];
 	char *log_argv[MAIN_ARG_MAX_NR] = {NULL};
 	char *server_argv[MAIN_ARG_MAX_NR] = {NULL};
 	char *p;
+	char touch_pipe_s[MAIN_ARG_MAX_LEN];
+	char mc_accel_s[MAIN_ARG_MAX_LEN];
 
 	while ((ch = getopt_long(argc, argv, short_options,
 				 long_options, NULL)) != -1) {
@@ -600,6 +611,12 @@ s32 main(s32 argc, char **argv)
 		case 'd':
 			strcpy(device_name, optarg);
 			break;
+		case 't':
+			touch_pipe = atoi(optarg);
+			break;
+		case 'a':
+			mc_accel = atof(optarg);
+			break;
 		default:
 			usage();
 			return -1;
@@ -611,18 +628,29 @@ s32 main(s32 argc, char **argv)
 		p = strstr(log_argv0, "cube_server");
 		*p = '\0';
 		strcat(p, "cube_log");
-		sprintf(log_argv1, "-s %d", seat);
+		sprintf(log_argv2, "%d", seat);
 		log_argv[0] = log_argv0;
-		log_argv[1] = log_argv1;
-		log_argv[2] = NULL;
+		log_argv[1] = "-s";
+		log_argv[2] = log_argv2;
+		log_argv[3] = NULL;
 		server_argv[0] = argv[0];
-		server_argv[1] = log_argv1;
-		server_argv[2] = device_name;
-		server_argv[3] = NULL;
-		run_background(2, log_argv, 3, server_argv);
+		server_argv[1] = "-s";
+		server_argv[2] = log_argv2;
+		server_argv[3] = "-d";
+		server_argv[4] = device_name;
+		memset(touch_pipe_s, 0, MAIN_ARG_MAX_LEN);
+		sprintf(touch_pipe_s, "%d", touch_pipe);
+		server_argv[5] = "-t";
+		server_argv[6] = touch_pipe_s;
+		server_argv[7] = "-a";
+		memset(mc_accel_s, 0, MAIN_ARG_MAX_LEN);
+		sprintf(mc_accel_s, "%1.1f", mc_accel);
+		server_argv[8] = mc_accel_s;
+		server_argv[9] = NULL;
+		run_background(3, log_argv, 9, server_argv);
 	}
 
-	server = cb_server_create(seat, device_name);
+	server = cb_server_create(seat, device_name, touch_pipe, mc_accel);
 	if (!server)
 		goto err;
 

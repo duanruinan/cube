@@ -324,6 +324,9 @@ struct cb_compositor {
 	size_t raw_input_buffer_sz;
 	u8 *raw_input_tx_buffer;
 	size_t raw_input_tx_buffer_sz;
+
+	float mc_accel;
+	s32 touch_pipe;
 };
 
 #define NSEC_PER_SEC 1000000000
@@ -2750,7 +2753,7 @@ static void reset_mouse_pos(struct cb_compositor *c)
 	c->mc_desktop_pos.x = c->mc_desktop_pos.y = 0;
 }
 
-static void refresh_mc_desktop_pos(struct cb_compositor *c, s32 dx, s32 dy)
+static void set_mc_desktop_pos(struct cb_compositor *c, s32 dx, s32 dy)
 {
 	s32 cur_screen, i;
 
@@ -2777,7 +2780,7 @@ static s32 cb_compositor_hide_mouse_cursor(struct compositor *comp)
 	struct cb_compositor *c = to_cb_c(comp);
 
 	c->mc_hide = true;
-	refresh_mc_desktop_pos(c, 0, 0);
+	set_mc_desktop_pos(c, 0, 0);
 
 	return 0;
 }
@@ -2787,7 +2790,7 @@ static s32 cb_compositor_show_mouse_cursor(struct compositor *comp)
 	struct cb_compositor *c = to_cb_c(comp);
 
 	c->mc_hide = false;
-	refresh_mc_desktop_pos(c, 0, 0);
+	set_mc_desktop_pos(c, 0, 0);
 
 	return 0;
 }
@@ -2813,7 +2816,7 @@ static void event_proc(struct cb_compositor *c, struct input_event *evts,
 				break;
 			if (dx || dy) {
 				cursor_accel_set(&dx, &dy, 2.0f);
-				refresh_mc_desktop_pos(c, dx, dy);
+				set_mc_desktop_pos(c, dx, dy);
 				tx_evt[dst].type = EV_ABS;
 				tx_evt[dst].code = ABS_X | ABS_Y;
 				tx_evt[dst].v.pos.x = c->mc_g_desktop_pos.x;
@@ -4079,7 +4082,9 @@ static void cb_compositor_set_rd_dbg_level(struct compositor *comp,
 struct compositor *compositor_create(char *device_name,
 				     struct cb_event_loop *loop,
 				     struct pipeline *pipecfgs,
-				     s32 count_outputs)
+				     s32 count_outputs,
+				     s32 touch_pipe,
+				     float mc_accel)
 {
 	struct cb_compositor *c;
 	s32 i, vid;
@@ -4087,6 +4092,9 @@ struct compositor *compositor_create(char *device_name,
 	c = calloc(1, sizeof(*c));
 	if (!c)
 		return NULL;
+
+	c->touch_pipe = touch_pipe;
+	c->mc_accel = mc_accel;
 
 	c->loop = loop;
 

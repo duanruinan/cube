@@ -349,7 +349,9 @@ struct compositor {
 struct compositor *compositor_create(char *device_name,
 				     struct cb_event_loop *loop,
 				     struct pipeline *pipecfgs,
-				     s32 count_outputs);
+				     s32 count_outputs,
+				     s32 touch_pipe,
+				     float mc_accel);
 
 #endif
 
