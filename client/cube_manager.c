@@ -54,7 +54,7 @@ void usage(void)
 			"0,0/2560x1440-0,0/40330x65536@1"
 			":2560,0/1600x900-40330,0/25206x40960@1\n");
 	fprintf(stderr, "cube_manager --enumerate\n");
-	fprintf(stderr, "\tEnumerate all timings the output supported\n");
+	fprintf(stderr, "\tEnumerate all timings for all outputs supported\n");
 	fprintf(stderr, "cube_manager --create-mode timing_string\n");
 	fprintf(stderr, "\ttiming_string:\n");
 	fprintf(stderr,

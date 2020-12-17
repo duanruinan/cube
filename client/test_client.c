@@ -871,6 +871,8 @@ s32 main(s32 argc, char **argv)
 		case 't':
 			if (!strcmp(optarg, "dma"))
 				client->use_dmabuf = true;
+			else
+				client->use_dmabuf = false;
 			break;
 		case 'w':
 			client->width = atoi(optarg);
