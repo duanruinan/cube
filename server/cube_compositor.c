@@ -1171,7 +1171,7 @@ static void fill_dummy(u8 *data, u32 width, u32 height, u32 stride)
 
 	for (i = 0; i < height; i++) {
 		for (j = 0; j < width; j++) {
-			pixel[j] = 0xFF0000FF;
+			pixel[j] = 0xFF000000;
 		}
 		pixel += (stride >> 2);
 	}
@@ -1844,7 +1844,7 @@ static struct cb_output *cb_output_create(struct cb_compositor *c,
 	if (!output->dummy)
 		goto err;
 
-	/* fill dummy buffer with color blue */
+	/* fill dummy buffer with color black */
 	fill_dummy(output->dummy->info.maps[0], output->dummy->info.width,
 		   output->dummy->info.height, output->dummy->info.strides[0]);
 
