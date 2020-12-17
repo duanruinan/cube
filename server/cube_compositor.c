@@ -1285,6 +1285,8 @@ static bool prepare_dma_buf_planes(struct cb_surface *surface,
 			if (plane) {
 				if (plane != o->primary_plane)
 					put_free_output_plane(o, plane);
+				else
+					enable_primary_renderer(o);
 				view->planes[pipe] = NULL;
 			}
 			continue;
