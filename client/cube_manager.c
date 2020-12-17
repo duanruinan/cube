@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h> /* usleep */
 #include <errno.h>
 #include <getopt.h>
 #include <cube_utils.h>
@@ -37,7 +38,7 @@ void usage(void)
 	fprintf(stderr, "cube_manager --log func_level\n");
 	fprintf(stderr, "\tSet log level.\n");
 	fprintf(stderr, "\t\tcube_manager --log module0,level0:module1,level\n");
-	fprintf(stderr, "\t\t\tModule Name:clia/comp/sc/rd\n");
+	fprintf(stderr, "\t\t\tModule Name:clia/comp/sc/rd/client\n");
 	fprintf(stderr, "\t\t\tLevel:0-3\n");
 	fprintf(stderr, "cube_manager --info\n");
 	fprintf(stderr, "\tGet canvas information\n");
@@ -52,7 +53,7 @@ void usage(void)
 	fprintf(stderr, "\t\t\te.g. cube_manager --set-layout="
 			"0,0/2560x1440-0,0/40330x65536@1"
 			":2560,0/1600x900-40330,0/25206x40960@1\n");
-	fprintf(stderr, "cube_manager --enumerate pipe\n");
+	fprintf(stderr, "cube_manager --enumerate\n");
 	fprintf(stderr, "\tEnumerate all timings the output supported\n");
 	fprintf(stderr, "cube_manager --create-mode timing_string\n");
 	fprintf(stderr, "\ttiming_string:\n");
@@ -119,6 +120,8 @@ static void parse_log_param(char *param, struct cb_debug_flags *dbg)
 			pflag = &dbg->sc_flag;
 		else if (!strcmp(p, "rd"))
 			pflag = &dbg->rd_flag;
+		else if (!strcmp(p, "client"))
+			pflag = &dbg->client_flag;
 		else {
 			fprintf(stderr, "illegal module name %s\n", p);
 			exit(1);
@@ -139,6 +142,7 @@ static void parse_log_param(char *param, struct cb_debug_flags *dbg)
 	printf("\tcompositor: %u\n", dbg->comp_flag);
 	printf("\tscanout: %u\n", dbg->sc_flag);
 	printf("\trenderer: %u\n", dbg->rd_flag);
+	printf("\tclient: %u\n", dbg->client_flag);
 	free(opt);
 }
 
@@ -354,6 +358,8 @@ static void ready_cb(void *userdata)
 	if (manager->log_pending) {
 		manager->log_pending = false;
 		ret = client->set_server_dbg(client, &manager->dbg);
+		/* wait server receive this message */
+		usleep(10000);
 		client->stop(client);
 		if (ret < 0) {
 			fprintf(stderr, "failed to set debug level.\n");

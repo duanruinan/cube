@@ -64,6 +64,7 @@
 #define CONN_STATUS_DB_TIME 500
 
 static enum cb_log_level comp_dbg = CB_LOG_NOTICE;
+static enum cb_log_level client_dbg = CB_LOG_NOTICE;
 
 #define comp_debug(fmt, ...) do { \
 	if (comp_dbg >= CB_LOG_DEBUG) { \
@@ -2501,14 +2502,14 @@ static void cb_compositor_get_desktop_layout(struct compositor *comp,
 
 static void broadcast_layout_changed_event(struct cb_compositor *c)
 {
-	struct cb_client_agent *client;
+	struct cb_client_agent *client, *next_client;
 	struct cb_shell_info shell;
 
 	memset(&shell, 0, sizeof(shell));
 	shell.cmd = CB_SHELL_CANVAS_LAYOUT_CHANGED_NOTIFY;
 	cb_compositor_get_desktop_layout(&c->base, &shell.value.layout);
 
-	list_for_each_entry(client, &c->clients, link) {
+	list_for_each_entry_safe(client, next_client, &c->clients, link) {
 		if (client->capability & CB_CLIENT_CAP_NOTIFY_LAYOUT) {
 			client->send_shell_cmd(client, &shell);
 		}
@@ -4079,6 +4080,36 @@ static void cb_compositor_set_rd_dbg_level(struct compositor *comp,
 	c->r->set_dbg_level(c->r, level);
 }
 
+static void cb_compositor_set_client_dbg_level(struct compositor *comp,
+					       enum cb_log_level level)
+{
+	struct cb_compositor *c = to_cb_c(comp);
+	struct cb_client_agent *client, *next_client;
+	struct cb_shell_info shell;
+
+	/* broadcast client debug level to all cube clients */
+	memset(&shell, 0, sizeof(shell));
+	shell.cmd = CB_SHELL_DEBUG_SETTING;
+	comp_warn("set client dbg level as %d", level);
+	shell.value.dbg_flags.client_flag = level;
+	client_dbg = level;
+	list_for_each_entry_safe(client, next_client, &c->clients, link) {
+		client->send_shell_cmd(client, &shell);
+	}
+}
+
+static void cb_compositor_init_client_dbg(struct compositor *comp,
+					  struct cb_client_agent *client)
+{
+	struct cb_shell_info shell;
+
+	comp_warn("set client init debug level: %08X", client_dbg);
+	memset(&shell, 0, sizeof(shell));
+	shell.cmd = CB_SHELL_DEBUG_SETTING;
+	shell.value.dbg_flags.client_flag = client_dbg;
+	client->send_shell_cmd(client, &shell);
+}
+
 struct compositor *compositor_create(char *device_name,
 				     struct cb_event_loop *loop,
 				     struct pipeline *pipecfgs,
@@ -4197,12 +4228,14 @@ struct compositor *compositor_create(char *device_name,
 	c->base.show_mouse_cursor = cb_compositor_show_mouse_cursor;
 	c->base.set_mouse_cursor = cb_compositor_set_mouse_cursor;
 	c->base.add_client = cb_compositor_add_client;
+	c->base.init_client_dbg = cb_compositor_init_client_dbg;
 	c->base.rm_client = cb_compositor_rm_client;
 	c->base.set_kbd_led_status = set_kbd_led_status;
 	c->base.get_kbd_led_status = get_kbd_led_status;
 	c->base.set_dbg_level = cb_compositor_set_dbg_level;
 	c->base.set_sc_dbg_level = cb_compositor_set_sc_dbg_level;
 	c->base.set_rd_dbg_level = cb_compositor_set_rd_dbg_level;
+	c->base.set_client_dbg_level = cb_compositor_set_client_dbg_level;
 
 	return &c->base;
 

@@ -419,6 +419,8 @@ static s32 server_sock_cb(s32 fd, u32 mask, void *data)
 				 server->linkid_created_ack_tx_len, NULL);
 	} while (ret == -EAGAIN);
 
+	server->c->init_client_dbg(server->c, client);
+
 	return 0;
 }
 

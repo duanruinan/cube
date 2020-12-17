@@ -1211,7 +1211,7 @@ static void shell_proc(struct cb_client_agent *client, u8 *buf)
 
 	switch (shell_info.cmd) {
 	case CB_SHELL_DEBUG_SETTING:
-		clia_debug("setting debug level.");
+		clia_warn("setting debug level.");
 
 		clia_debug("CLIA: %02X", shell_info.value.dbg_flags.clia_flag);
 		clia_dbg = shell_info.value.dbg_flags.clia_flag;
@@ -1227,6 +1227,10 @@ static void shell_proc(struct cb_client_agent *client, u8 *buf)
 		clia_debug("RD: %02X", shell_info.value.dbg_flags.rd_flag);
 		client->c->set_rd_dbg_level(client->c,
 					shell_info.value.dbg_flags.rd_flag);
+		clia_warn("Client: %02X",
+			   shell_info.value.dbg_flags.client_flag);
+		client->c->set_client_dbg_level(
+			client->c, shell_info.value.dbg_flags.client_flag);
 		break;
 	case CB_SHELL_CANVAS_LAYOUT_SETTING:
 		clia_debug("setting layout. nr: %d",

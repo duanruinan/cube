@@ -45,8 +45,34 @@
 #endif
 
 #define client_debug(client, fmt, ...) do { \
+	if ((client)->debug_level >= CB_LOG_DEBUG) { \
+		cb_client_tlog((client)->pid_name, (client)->log_handle, \
+				"[CLI-DEBUG ] "fmt, ##__VA_ARGS__); \
+	} \
+} while (0);
+
+#define client_info(client, fmt, ...) do { \
+	if ((client)->debug_level >= CB_LOG_INFO) { \
+		cb_client_tlog((client)->pid_name, (client)->log_handle, \
+				"[CLI-INFO  ] "fmt, ##__VA_ARGS__); \
+	} \
+} while (0);
+
+#define client_notice(client, fmt, ...) do { \
+	if ((client)->debug_level >= CB_LOG_NOTICE) { \
+		cb_client_tlog((client)->pid_name, (client)->log_handle, \
+				"[CLI-NOTICE] "fmt, ##__VA_ARGS__); \
+	} \
+} while (0);
+
+#define client_warn(client, fmt, ...) do { \
 	cb_client_tlog((client)->pid_name, (client)->log_handle, \
-			"[CLI ][DEBUG ] "fmt, ##__VA_ARGS__); \
+			"[CLI-WARN  ] "fmt, ##__VA_ARGS__); \
+} while (0);
+
+#define client_err(client, fmt, ...) do { \
+	cb_client_tlog((client)->pid_name, (client)->log_handle, \
+			"[CLI-ERROR ] "fmt, ##__VA_ARGS__); \
 } while (0);
 
 struct client {
@@ -56,6 +82,7 @@ struct client {
 
 	void *log_handle;
 	char pid_name[9];
+	enum cb_log_level debug_level;
 
 	struct cb_surface_info s;
 	struct cb_view_info v;
@@ -220,6 +247,10 @@ static void destroy(struct cb_client *client)
 	if (!client)
 		return;
 
+	if (cli->log_handle) {
+		client_notice(cli, "Destroying cube client ...");
+	}
+
 	if (cli->loop) {
 		for (i = 0; i < cli->base.count_displays; i++) {
 			disp = &cli->base.displays[i];
@@ -311,6 +342,7 @@ static void destroy(struct cb_client *client)
 	}
 
 	if (cli->log_handle) {
+		client_notice(cli, "cube client is destroyed.");
 		cb_client_log_fini(cli->log_handle);
 		cli->log_handle = NULL;
 	}
@@ -322,15 +354,18 @@ static void run(struct cb_client *client)
 {
 	struct client *cli = to_client(client);
 
+	client_debug(cli, "run");
 	while (!cli->exit) {
 		cb_event_loop_dispatch(cli->loop, -1);
 	}
+	client_debug(cli, "run exit");
 }
 
 static void stop(struct cb_client *client)
 {
 	struct client *cli = to_client(client);
 
+	client_debug(cli, "stop run");
 	cli->exit = true;
 }
 
@@ -341,11 +376,12 @@ static void set_raw_input_en(struct cb_client *client, bool en)
 	u8 *p;
 	s32 ret;
 
+	client_notice(cli, "set raw input enabled: %c", en ? 'Y' : 'N');
 	p = cb_dup_raw_input_en_cmd(cli->raw_input_en_cmd,
 				cli->raw_input_en_cmd_t,
 				cli->raw_input_en_len, en);
 	if (!p) {
-		fprintf(stderr, "failed to dup raw input enable\n");
+		client_err(cli, "failed to dup raw input enable");
 		return;
 	}
 	
@@ -356,8 +392,8 @@ static void set_raw_input_en(struct cb_client *client, bool en)
 				 NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send raw input en length. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send raw input en length. %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return;
 	}
@@ -366,8 +402,8 @@ static void set_raw_input_en(struct cb_client *client, bool en)
 		ret = cb_sendmsg(cli->sock, cli->raw_input_en_cmd, length,NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send raw input en. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send raw input en. %s",
+			   strerror(errno));
 		stop(&cli->base);
 	}
 }
@@ -381,6 +417,8 @@ static s32 send_get_kbd_led_st(struct cb_client *client)
 	if (!client)
 		return -EINVAL;
 
+	client_notice(cli, "get kbd led status");
+
 	length = cli->get_kbd_led_st_len;
 
 	do {
@@ -388,8 +426,8 @@ static s32 send_get_kbd_led_st(struct cb_client *client)
 				 NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send get kbd led st length. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send get kbd led st length. %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -399,8 +437,8 @@ static s32 send_get_kbd_led_st(struct cb_client *client)
 				 NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send get kbd led st cmd. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send get kbd led st cmd. %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -414,8 +452,16 @@ static s32 set_kbd_led_st_cb(struct cb_client *client, void *userdata,
 {
 	struct client *cli = to_client(client);
 
-	if (!kbd_led_st_cb || !client)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "set kbd led status cb %p, %p", kbd_led_st_cb,
+		     userdata);
+
+	if (!kbd_led_st_cb) {
+		client_err(cli, "kbd_led_st_cb is null");
+		return -EINVAL;
+	}
 
 	cli->kbd_led_st_cb_userdata = userdata;
 	cli->kbd_led_st_cb = kbd_led_st_cb;
@@ -430,8 +476,16 @@ static s32 set_view_focus_chg_cb(struct cb_client *client, void *userdata,
 {
 	struct client *cli = to_client(client);
 
-	if (!view_focus_chg_cb || !client)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "set kbd view focus chg cb %p, %p", view_focus_chg_cb,
+		     userdata);
+
+	if (!view_focus_chg_cb) {
+		client_err(cli, "view_focus_chg_cb is null");
+		return -EINVAL;
+	}
 
 	cli->view_focus_chg_userdata = userdata;
 	cli->view_focus_chg_cb = view_focus_chg_cb;
@@ -449,12 +503,15 @@ static s32 send_get_edid(struct cb_client *client, u64 pipe)
 	if (!client)
 		return -EINVAL;
 
+	client_notice(cli, "send get edid command");
 	cmd = cb_dup_get_edid_cmd(cli->get_edid_cmd,
 				  cli->get_edid_cmd_t,
 				  cli->get_edid_len,
 				  pipe);
-	if (!cmd)
+	if (!cmd) {
+		client_err(cli, "failed to dup get edid cmd");
 		return -EINVAL;
+	}
 
 	length = cli->get_edid_len;
 
@@ -463,8 +520,8 @@ static s32 send_get_edid(struct cb_client *client, u64 pipe)
 				 NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send get edid length. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send get edid length. %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -474,8 +531,8 @@ static s32 send_get_edid(struct cb_client *client, u64 pipe)
 				 NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send get edid cmd. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send get edid cmd. %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -493,12 +550,15 @@ static s32 send_set_kbd_led_st(struct cb_client *client, u32 led_status)
 	if (!client)
 		return -EINVAL;
 
+	client_notice(cli, "send set kbd led status %08X", led_status);
 	cmd = cb_dup_set_kbd_led_st_cmd(cli->set_kbd_led_st_cmd,
 					cli->set_kbd_led_st_cmd_t,
 					cli->set_kbd_led_st_len,
 					led_status);
-	if (!cmd)
+	if (!cmd) {
+		client_err(cli, "failed to dup set kbd led status cmd");
 		return -EINVAL;
+	}
 
 	length = cli->set_kbd_led_st_len;
 
@@ -507,8 +567,8 @@ static s32 send_set_kbd_led_st(struct cb_client *client, u32 led_status)
 				 NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send set kbd led st length. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send set kbd led st length. %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -518,8 +578,8 @@ static s32 send_set_kbd_led_st(struct cb_client *client, u32 led_status)
 				 NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send set kbd led st cmd. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send set kbd led st cmd. %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -535,8 +595,14 @@ static s32 set_client_cap(struct cb_client *client, u64 cap)
 	u8 *set_cap_tx_cmd;
 	u32 n;
 
-	if (!client || !cap)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "set client cap %016X", cap);
+	if (!cap) {
+		client_err(cli, "cap is 0");
+		return -EINVAL;
+	}
 
 	set_cap_tx_cmd = cb_client_create_set_cap_cmd(cap, &n);
 	
@@ -547,8 +613,8 @@ static s32 set_client_cap(struct cb_client *client, u64 cap)
 				 NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send client cap length. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send client cap length. %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -557,8 +623,8 @@ static s32 set_client_cap(struct cb_client *client, u64 cap)
 		ret = cb_sendmsg(cli->sock, set_cap_tx_cmd, length, NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send client cap cmd (dbg). %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send client cap cmd (dbg). %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -576,15 +642,16 @@ static s32 set_server_dbg(struct cb_client *client,
 	u8 *p;
 	s32 ret;
 
-	if (!client || !dbg_flags)
+	if (!client)
 		return -EINVAL;
 
+	client_warn(cli, "set server dbg");
 	cli->shell.cmd = CB_SHELL_DEBUG_SETTING;
 	memcpy(&cli->shell.value.dbg_flags, dbg_flags, sizeof(*dbg_flags));
 	p = cb_dup_shell_cmd(cli->shell_tx_cmd, cli->shell_tx_cmd_t,
 			     cli->shell_tx_len, &cli->shell);
 	if (!p) {
-		fprintf(stderr, "failed to dup shell cmd (dbg)\n");
+		client_err(cli, "failed to dup shell cmd (dbg)");
 		return -EINVAL;
 	}
 	
@@ -595,8 +662,8 @@ static s32 set_server_dbg(struct cb_client *client,
 				 NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send shell cmd (dbg) length. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send shell cmd (dbg) length. %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -605,8 +672,8 @@ static s32 set_server_dbg(struct cb_client *client,
 		ret = cb_sendmsg(cli->sock, cli->shell_tx_cmd, length, NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send shell cmd (dbg). %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send shell cmd (dbg). %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -623,8 +690,16 @@ static s32 set_raw_input_evts_cb(struct cb_client *client,
 {
 	struct client *cli = to_client(client);
 
-	if (!client || !raw_input_evts_cb)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "set raw input events cb %p, %p",
+		     raw_input_evts_cb, userdata);
+
+	if (!raw_input_evts_cb) {
+		client_err(cli, "raw_input_evts_cb is null");
+		return -EINVAL;
+	}
 
 	cli->raw_input_evts_cb_userdata = userdata;
 	cli->raw_input_evts_cb = raw_input_evts_cb;
@@ -636,8 +711,15 @@ static s32 set_ready_cb(struct cb_client *client, void *userdata,
 {
 	struct client *cli = to_client(client);
 
-	if (!client || !ready_cb)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "set ready cb %p, %p", ready_cb, userdata);
+
+	if (!ready_cb) {
+		client_err(cli, "ready_cb is null");
+		return -EINVAL;
+	}
 
 	cli->ready_cb_userdata = userdata;
 	cli->ready_cb = ready_cb;
@@ -652,8 +734,15 @@ static s32 set_get_edid_cb(struct cb_client *client, void *userdata,
 {
 	struct client *cli = to_client(client);
 
-	if (!client || !get_edid_cb)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "set get edid cb %p, %p", get_edid_cb, userdata);
+
+	if (!get_edid_cb) {
+		client_err(cli, "get_edid_cb is null");
+		return -EINVAL;
+	}
 
 	cli->get_edid_cb_userdata = userdata;
 	cli->get_edid_cb = get_edid_cb;
@@ -665,8 +754,15 @@ static s32 set_destroyed_cb(struct cb_client *client, void *userdata,
 {
 	struct client *cli = to_client(client);
 
-	if (!client || !destroyed_cb)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "set destroyed cb %p, %p", destroyed_cb, userdata);
+
+	if (!destroyed_cb) {
+		client_err(cli, "destroyed_cb is null");
+		return -EINVAL;
+	}
 
 	cli->destroyed_cb_userdata = userdata;
 	cli->destroyed_cb = destroyed_cb;
@@ -684,6 +780,8 @@ static s32 change_layout(struct cb_client *client)
 	if (!client)
 		return -EINVAL;
 
+	client_notice(cli, "change layout");
+
 	cli->shell.cmd = CB_SHELL_CANVAS_LAYOUT_SETTING;
 	cli->shell.value.layout.count_heads = client->count_displays;
 	for (i = 0; i < client->count_displays; i++) {
@@ -698,7 +796,7 @@ static s32 change_layout(struct cb_client *client)
 	p = cb_dup_shell_cmd(cli->shell_tx_cmd, cli->shell_tx_cmd_t,
 			     cli->shell_tx_len, &cli->shell);
 	if (!p) {
-		fprintf(stderr, "failed to dup shell cmd\n");
+		client_err(cli, "failed to dup shell cmd");
 		return -EINVAL;
 	}
 	
@@ -709,8 +807,8 @@ static s32 change_layout(struct cb_client *client)
 				 NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send shell cmd length. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send shell cmd length. %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -719,8 +817,8 @@ static s32 change_layout(struct cb_client *client)
 		ret = cb_sendmsg(cli->sock, cli->shell_tx_cmd, length, NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send shell cmd (layout). %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send shell cmd (layout). %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -738,8 +836,15 @@ static s32 enumerate_mode(struct cb_client *client, s32 pipe, void *last_mode,
 	struct cb_client_display *disp;
 	struct cb_client_mode_desc *mode, *next;
 
-	if (!client || pipe < 0)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "enumerate mode of pipe %d, lm %p, f: [%c, %p]",
+		     pipe, last_mode, filter_en ? 'Y' : 'N', filter);
+	if (pipe < 0) {
+		client_err(cli, "pipe %d illegal", pipe);
+		return -EINVAL;
+	}
 
 	cli->shell.cmd = CB_SHELL_OUTPUT_VIDEO_TIMING_ENUMERATE;
 	cli->shell.value.ote.pipe = pipe;
@@ -763,7 +868,7 @@ static s32 enumerate_mode(struct cb_client *client, s32 pipe, void *last_mode,
 	p = cb_dup_shell_cmd(cli->shell_tx_cmd, cli->shell_tx_cmd_t,
 			     cli->shell_tx_len, &cli->shell);
 	if (!p) {
-		fprintf(stderr, "failed to dup shell cmd (enumerate mode)\n");
+		client_err(cli, "failed to dup shell cmd (enumerate mode)");
 		return -EINVAL;
 	}
 	
@@ -774,8 +879,8 @@ static s32 enumerate_mode(struct cb_client *client, s32 pipe, void *last_mode,
 				 NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send shell cmd (enum) length. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send shell cmd (enum) length. %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -784,8 +889,8 @@ static s32 enumerate_mode(struct cb_client *client, s32 pipe, void *last_mode,
 		ret = cb_sendmsg(cli->sock, cli->shell_tx_cmd, length, NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send shell cmd (enum). %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send shell cmd (enum). %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -799,8 +904,16 @@ static s32 set_enumerate_mode_cb(struct cb_client *client, void *userdata,
 {
 	struct client *cli = to_client(client);
 
-	if (!client || !enumerate_mode_cb)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "set enumerate mode cb %p, %p", enumerate_mode_cb,
+		     userdata);
+
+	if (!enumerate_mode_cb) {
+		client_err(cli, "enumerate_mode_cb is null");
+		return -EINVAL;
+	}
 
 	cli->enumerate_mode_cb_userdata = userdata;
 	cli->enumerate_mode_cb = enumerate_mode_cb;
@@ -818,18 +931,19 @@ static s32 query_layout(struct cb_client *client)
 	if (!client)
 		return -EINVAL;
 
+	client_debug(cli, "query_layout");
 	cli->shell.cmd = CB_SHELL_CANVAS_LAYOUT_QUERY;
 	p = cb_dup_shell_cmd(cli->shell_tx_cmd, cli->shell_tx_cmd_t,
 			     cli->shell_tx_len, &cli->shell);
 	if (!p) {
-		fprintf(stderr, "failed to dup shell cmd (query layout)\n");
+		client_err(cli, "failed to dup shell cmd (query layout)");
 		return -EINVAL;
 	}
 
-	printf("Q *** %d %d %d\n",
-		cli->shell.value.layout.count_heads,
-		cli->shell.value.layout.cfg[0].pipe,
-		cli->shell.value.layout.cfg[1].pipe);
+	client_debug(cli, "Query layout heads nr(%d) cfg[%d] cfg[%d]",
+		     cli->shell.value.layout.count_heads,
+		     cli->shell.value.layout.cfg[0].pipe,
+		     cli->shell.value.layout.cfg[1].pipe);
 	
 	length = cli->shell_tx_len;
 
@@ -838,8 +952,8 @@ static s32 query_layout(struct cb_client *client)
 				 NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send shell cmd length. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send shell cmd length. %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -848,8 +962,8 @@ static s32 query_layout(struct cb_client *client)
 		ret = cb_sendmsg(cli->sock, cli->shell_tx_cmd, length, NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send shell cmd (query layout). %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send shell cmd (query layout). %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -862,8 +976,16 @@ static s32 set_layout_query_cb(struct cb_client *client, void *userdata,
 {
 	struct client *cli = to_client(client);
 
-	if (!client || !layout_query_cb)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "set layout query cb %p, %p", layout_query_cb,
+		     userdata);
+
+	if (!layout_query_cb) {
+		client_err(cli, "layout_query_cb is null");
+		return -EINVAL;
+	}
 
 	cli->layout_query_cb_userdata = userdata;
 	cli->layout_query_cb = layout_query_cb;
@@ -876,8 +998,16 @@ static s32 set_layout_changed_cb(struct cb_client *client, void *userdata,
 {
 	struct client *cli = to_client(client);
 
-	if (!client || !layout_changed_cb)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "set layout changed cb %p, %p",
+		     layout_changed_cb, userdata);
+
+	if (!layout_changed_cb) {
+		client_err(cli, "layout_changed_cb is null");
+		return -EINVAL;
+	}
 
 	cli->layout_changed_cb_userdata = userdata;
 	cli->layout_changed_cb = layout_changed_cb;
@@ -893,8 +1023,32 @@ static s32 create_mode(struct cb_client *client, struct mode_info *info,
 	u8 *p;
 	s32 ret;
 
-	if (!client || !info)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "create custom mode (%p) for index %d", info, index);
+
+	if (!info) {
+		client_err(cli, "info is null");
+		return -EINVAL;
+	}
+
+	client_debug(cli, "\tclock: %u", info->clock);
+	client_debug(cli, "\twidth: %u", info->width);
+	client_debug(cli, "\thsync_start: %u", info->hsync_start);
+	client_debug(cli, "\thsync_end: %u", info->hsync_end);
+	client_debug(cli, "\thtotal: %u", info->htotal);
+	client_debug(cli, "\thskew: %u", info->hskew);
+	client_debug(cli, "\theight: %u", info->height);
+	client_debug(cli, "\tvsync_start: %u", info->vsync_start);
+	client_debug(cli, "\tvsync_end: %u", info->vsync_end);
+	client_debug(cli, "\tvtotal: %u", info->vtotal);
+	client_debug(cli, "\tvscan: %u", info->vscan);
+	client_debug(cli, "\tvrefresh: %u", info->vrefresh);
+	client_debug(cli, "\tinterlaced: %d", info->interlaced);
+	client_debug(cli, "\tHSync Polarity: %c", info->pos_hsync ? '+' : '-');
+	client_debug(cli, "\tVSync Polarity: %c", info->pos_vsync ? '+' : '-');
+	client_debug(cli, "\tPreferred: %c", info->preferred ? 'Y' : 'N');
 
 	cli->shell.cmd = CB_SHELL_OUTPUT_VIDEO_TIMING_CREAT;
 	memcpy(&cli->shell.value.mode, info, sizeof(*info));
@@ -902,7 +1056,7 @@ static s32 create_mode(struct cb_client *client, struct mode_info *info,
 	p = cb_dup_shell_cmd(cli->shell_tx_cmd, cli->shell_tx_cmd_t,
 			     cli->shell_tx_len, &cli->shell);
 	if (!p) {
-		fprintf(stderr, "failed to dup shell cmd\n");
+		client_err(cli, "failed to dup shell cmd");
 		return -EINVAL;
 	}
 	
@@ -913,8 +1067,8 @@ static s32 create_mode(struct cb_client *client, struct mode_info *info,
 				 NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send shell cmd length. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send shell cmd length. %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -923,8 +1077,8 @@ static s32 create_mode(struct cb_client *client, struct mode_info *info,
 		ret = cb_sendmsg(cli->sock, cli->shell_tx_cmd, length, NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send shell cmd (create mode). %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send shell cmd (create mode). %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -938,8 +1092,16 @@ static s32 set_create_mode_cb(struct cb_client *client, void *userdata,
 {
 	struct client *cli = to_client(client);
 
-	if (!client || !mode_created_cb)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "set create mode cb %p, %p", mode_created_cb,
+		     userdata);
+
+	if (!mode_created_cb) {
+		client_err(cli, "mode_created_cb is null");
+		return -EINVAL;
+	}
 
 	cli->mode_created_cb_userdata = userdata;
 	cli->mode_created_cb = mode_created_cb;
@@ -954,15 +1116,22 @@ static s32 create_surface(struct cb_client *client, struct cb_surface_info *s)
 	u8 *p;
 	s32 ret;
 
-	if (!client || !s)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "create surface %p", s);
+
+	if (!s) {
+		client_err(cli, "s is null");
+		return -EINVAL;
+	}
 
 	memcpy(&cli->s, s, sizeof(*s));
 	p = cb_dup_create_surface_cmd(cli->create_surface_tx_cmd,
 				      cli->create_surface_tx_cmd_t,
 				      cli->create_surface_tx_len, &cli->s);
 	if (!p) {
-		fprintf(stderr, "failed to dup create surface cmd\n");
+		client_err(cli, "failed to dup create surface cmd");
 		return -EINVAL;
 	}
 
@@ -973,8 +1142,8 @@ static s32 create_surface(struct cb_client *client, struct cb_surface_info *s)
 				 NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send create surf length. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send create surf length. %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -984,8 +1153,8 @@ static s32 create_surface(struct cb_client *client, struct cb_surface_info *s)
 				 length, NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send create surf cmd. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send create surf cmd. %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -999,8 +1168,16 @@ static s32 set_create_surface_cb(struct cb_client *client, void *userdata,
 {
 	struct client *cli = to_client(client);
 
-	if (!client || !surface_created_cb)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "set create surface cb %p, %p",
+		     surface_created_cb, userdata);
+
+	if (!surface_created_cb) {
+		client_err(cli, "surface_created_cb is null");
+		return -EINVAL;
+	}
 
 	cli->surface_created_cb_userdata = userdata;
 	cli->surface_created_cb = surface_created_cb;
@@ -1014,15 +1191,22 @@ static s32 create_view(struct cb_client *client, struct cb_view_info *v)
 	u8 *p;
 	s32 ret;
 
-	if (!client || !v)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "create view %p", v);
+
+	if (!v) {
+		client_err(cli, "v is null");
+		return -EINVAL;
+	}
 
 	memcpy(&cli->v, v, sizeof(*v));
 	p = cb_dup_create_view_cmd(cli->create_view_tx_cmd,
 				   cli->create_view_tx_cmd_t,
 				   cli->create_view_tx_len, &cli->v);
 	if (!p) {
-		fprintf(stderr, "failed to dup create view cmd\n");
+		client_err(cli, "failed to dup create view cmd");
 		return -EINVAL;
 	}
 
@@ -1033,8 +1217,8 @@ static s32 create_view(struct cb_client *client, struct cb_view_info *v)
 				 NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send create view length. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send create view length. %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1044,8 +1228,8 @@ static s32 create_view(struct cb_client *client, struct cb_view_info *v)
 				 length, NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send create view cmd. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send create view cmd. %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1059,8 +1243,16 @@ static s32 set_create_view_cb(struct cb_client *client, void *userdata,
 {
 	struct client *cli = to_client(client);
 
-	if (!client || !view_created_cb)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "set create view cb %p, %p", view_created_cb,
+		     userdata);
+
+	if (!view_created_cb) {
+		client_err(cli, "view_created_cb is null");
+		return -EINVAL;
+	}
 
 	cli->view_created_cb_userdata = userdata;
 	cli->view_created_cb = view_created_cb;
@@ -1076,15 +1268,22 @@ static s32 create_bo(struct cb_client *client, void *bo)
 	s32 ret, i;
 	struct cb_fds fds;
 
-	if (!client || !bo)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "create bo %p", bo);
+
+	if (!bo) {
+		client_err(cli, "bo is null");
+		return -EINVAL;
+	}
 
 	p = cb_dup_create_bo_cmd(cli->create_bo_tx_cmd,
 				 cli->create_bo_tx_cmd_t,
 				 cli->create_bo_tx_len,
 				 &buffer->info);
 	if (!p) {
-		fprintf(stderr, "failed to dup create bo cmd\n");
+		client_err(cli, "failed to dup create bo cmd");
 		return -EINVAL;
 	}
 
@@ -1095,8 +1294,8 @@ static s32 create_bo(struct cb_client *client, void *bo)
 				 NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send create bo length. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send create bo length. %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1109,8 +1308,8 @@ static s32 create_bo(struct cb_client *client, void *bo)
 		ret = cb_sendmsg(cli->sock, cli->create_bo_tx_cmd,length, &fds);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send create bo cmd. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send create bo cmd. %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1125,8 +1324,15 @@ static s32 set_create_bo_cb(struct cb_client *client,
 {
 	struct client *cli = to_client(client);
 
-	if (!client || !bo_created_cb)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "set create bo cb %p, %p", bo_created_cb, userdata);
+
+	if (!bo_created_cb) {
+		client_err(cli, "bo_created_cb is null");
+		return -EINVAL;
+	}
 
 	cli->bo_created_cb_userdata = userdata;
 	cli->bo_created_cb = bo_created_cb;
@@ -1140,15 +1346,22 @@ static s32 destroy_bo(struct cb_client *client, u64 bo_id)
 	u8 *p;
 	s32 ret;
 
-	if (!client || !bo_id)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "destroy bo %lu", bo_id);
+
+	if (!bo_id) {
+		client_err(cli, "bo_id is zero");
+		return -EINVAL;
+	}
 
 	p = cb_dup_destroy_bo_cmd(cli->destroy_bo_tx_cmd,
 				  cli->destroy_bo_tx_cmd_t,
 				  cli->destroy_bo_tx_len,
 				  bo_id);
 	if (!p) {
-		fprintf(stderr, "failed to dup destroy bo cmd\n");
+		client_err(cli, "failed to dup destroy bo cmd");
 		return -EINVAL;
 	}
 
@@ -1159,8 +1372,8 @@ static s32 destroy_bo(struct cb_client *client, u64 bo_id)
 				 NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send destroy bo length. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send destroy bo length. %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1170,8 +1383,8 @@ static s32 destroy_bo(struct cb_client *client, u64 bo_id)
 				 length, NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send destroy bo cmd. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send destroy bo cmd. %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1186,8 +1399,15 @@ static s32 commit_bo(struct cb_client *client, struct cb_commit_info *c)
 	u8 *p;
 	s32 ret;
 
-	if (!client || !c)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "client bo %p", c);
+
+	if (!c) {
+		client_err(cli, "c is null");
+		return -EINVAL;
+	}
 
 	memcpy(&cli->c, c, sizeof(*c));
 	p = cb_dup_commit_req_cmd(cli->commit_tx_cmd,
@@ -1195,7 +1415,7 @@ static s32 commit_bo(struct cb_client *client, struct cb_commit_info *c)
 				  cli->commit_tx_len,
 				  &cli->c);
 	if (!p) {
-		fprintf(stderr, "failed to dup commit bo cmd\n");
+		client_err(cli, "failed to dup commit bo cmd");
 		return -EINVAL;
 	}
 
@@ -1206,8 +1426,8 @@ static s32 commit_bo(struct cb_client *client, struct cb_commit_info *c)
 				 NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send commit bo length. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send commit bo length. %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1217,8 +1437,8 @@ static s32 commit_bo(struct cb_client *client, struct cb_commit_info *c)
 				 length, NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send commit bo cmd. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send commit bo cmd. %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1233,8 +1453,15 @@ static s32 set_commit_bo_cb(struct cb_client *client, void *userdata,
 {
 	struct client *cli = to_client(client);
 
-	if (!client || !bo_commited_cb)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "set commit bo cb %p, %p", bo_commited_cb, userdata);
+
+	if (!bo_commited_cb) {
+		client_err(cli, "bo_commited_cb is null");
+		return -EINVAL;
+	}
 
 	cli->bo_commited_cb_userdata = userdata;
 	cli->bo_commited_cb = bo_commited_cb;
@@ -1248,8 +1475,15 @@ static s32 set_bo_flipped_cb(struct cb_client *client, void *userdata,
 {
 	struct client *cli = to_client(client);
 
-	if (!client || !bo_flipped_cb)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "set bo flipped cb %p, %p", bo_flipped_cb, userdata);
+
+	if (!bo_flipped_cb) {
+		client_err(cli, "bo_flipped_cb is null");
+		return -EINVAL;
+	}
 
 	cli->bo_flipped_cb_userdata = userdata;
 	cli->bo_flipped_cb = bo_flipped_cb;
@@ -1263,8 +1497,16 @@ static s32 set_bo_completed_cb(struct cb_client *client, void *userdata,
 {
 	struct client *cli = to_client(client);
 
-	if (!client || !bo_completed_cb)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "set bo completed cb %p, %p", bo_completed_cb,
+		     userdata);
+
+	if (!bo_completed_cb) {
+		client_err(cli, "bo_completed_cb is null");
+		return -EINVAL;
+	}
 
 	cli->bo_completed_cb_userdata = userdata;
 	cli->bo_completed_cb = bo_completed_cb;
@@ -1281,13 +1523,20 @@ static s32 commit_mc(struct cb_client *client, struct cb_mc_info *mc)
 	if (!client || !mc)
 		return -EINVAL;
 
+	client_debug(cli, "commit mc %p", mc);
+
+	if (!mc) {
+		client_err(cli, "mc is null");
+		return -EINVAL;
+	}
+
 	memcpy(&cli->mc, mc, sizeof(*mc));
 	p = cb_dup_mc_commit_cmd(cli->commit_mc_tx_cmd,
 				 cli->commit_mc_tx_cmd_t,
 				 cli->commit_mc_tx_len,
 				 &cli->mc);
 	if (!p) {
-		fprintf(stderr, "failed to dup commit mc cmd\n");
+		client_err(cli, "failed to dup commit mc cmd");
 		return -EINVAL;
 	}
 
@@ -1298,8 +1547,8 @@ static s32 commit_mc(struct cb_client *client, struct cb_mc_info *mc)
 				 NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send commit mc length. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send commit mc length. %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1309,8 +1558,8 @@ static s32 commit_mc(struct cb_client *client, struct cb_mc_info *mc)
 				 length, NULL);
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
-		fprintf(stderr, "failed to send commit mc cmd. %s\n",
-			strerror(errno));
+		client_err(cli, "failed to send commit mc cmd. %s",
+			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1324,8 +1573,15 @@ static s32 set_commit_mc_cb(struct cb_client *client, void *userdata,
 {
 	struct client *cli = to_client(client);
 
-	if (!client || !mc_commited_cb)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "set commit mc cb %p, %p", mc_commited_cb, userdata);
+
+	if (!mc_commited_cb) {
+		client_err(cli, "mc_commited_cb is null");
+		return -EINVAL;
+	}
 
 	cli->mc_commited_cb_userdata = userdata;
 	cli->mc_commited_cb = mc_commited_cb;
@@ -1337,8 +1593,15 @@ s32 set_hpd_cb(struct cb_client *client, void *userdata,
 {
 	struct client *cli = to_client(client);
 
-	if (!client || !hpd_cb)
+	if (!client)
 		return -EINVAL;
+
+	client_debug(cli, "set hpd cb %p, %p", hpd_cb, userdata);
+
+	if (!hpd_cb) {
+		client_err(cli, "hpd_cb is null");
+		return -EINVAL;
+	}
 
 	cli->hpd_cb_userdata = userdata;
 	cli->hpd_cb = hpd_cb;
@@ -1355,15 +1618,21 @@ static s32 shell_proc(struct client *cli, u8 *buf)
 
 	ret = cb_parse_shell_cmd(buf, &cli->shell);
 	if (ret) {
-		fprintf(stderr, "shell failed. %ld\n", ret);
+		client_err(cli, "shell failed. %ld", ret);
 		return -EINVAL;
 	}
 
 	switch (cli->shell.cmd) {
+	case CB_SHELL_DEBUG_SETTING:
+		cli->debug_level = cli->shell.value.dbg_flags.client_flag;
+		break;
 	case CB_SHELL_CANVAS_LAYOUT_CHANGED_NOTIFY:
+		client_debug(cli, "received layout changed event.");
 		if (cli->base.count_displays == 0) {
 			cli->base.count_displays = 
 				cli->shell.value.layout.count_heads;
+			client_debug(cli, "count of displays: %d",
+				     cli->base.count_displays);
 			for (i = 0; i < cli->base.count_displays; i++) {
 				cfg = &cli->shell.value.layout.cfg[i];
 				disp = &cli->base.displays[i];
@@ -1393,6 +1662,8 @@ static s32 shell_proc(struct client *cli, u8 *buf)
 				else
 					disp->enabled = true;
 			}
+			client_debug(cli, "prepare to notify, cb: %p",
+				     cli->layout_changed_cb);
 			if (cli->layout_changed_cb) {
 				cli->layout_changed_cb(
 					cli->layout_changed_cb_userdata);
@@ -1435,6 +1706,8 @@ static s32 shell_proc(struct client *cli, u8 *buf)
 				}
 			}
 		}
+		client_debug(cli, "prepare to notify, cb: %p",
+			     cli->layout_changed_cb);
 		if (cli->layout_changed_cb) {
 			cli->layout_changed_cb(
 				cli->layout_changed_cb_userdata);
@@ -1442,6 +1715,7 @@ static s32 shell_proc(struct client *cli, u8 *buf)
 		
 		break;
 	case CB_SHELL_CANVAS_LAYOUT_QUERY:
+		client_debug(cli, "received layout query result.");
 		if (cli->base.count_displays == 0) {
 			cli->base.count_displays = 
 				cli->shell.value.layout.count_heads;
@@ -1474,6 +1748,8 @@ static s32 shell_proc(struct client *cli, u8 *buf)
 				else
 					disp->enabled = true;
 			}
+			client_debug(cli, "prepare to notify query result: %p",
+				     cli->layout_query_cb);
 			if (cli->layout_query_cb) {
 				cli->layout_query_cb(
 					cli->layout_query_cb_userdata);
@@ -1516,21 +1792,24 @@ static s32 shell_proc(struct client *cli, u8 *buf)
 				}
 			}
 		}
+		client_debug(cli, "prepare to notify query result: %p",
+			     cli->layout_query_cb);
 		if (cli->layout_query_cb) {
 			cli->layout_query_cb(cli->layout_query_cb_userdata);
 		}
 		
 		break;
 	case CB_SHELL_OUTPUT_VIDEO_TIMING_ENUMERATE:
+		client_debug(cli, "received enumerate result.");
 		for (i = 0; i < cli->base.count_displays; i++) {
 			if (cli->base.displays[i].pipe ==
 			    cli->shell.value.ote.pipe)
 				break;
 		}
 		if (i == cli->base.count_displays) {
-			fprintf(stderr, "illegal pipe in shell (enum). %d %d\n",
-				cli->base.count_displays,
-				cli->shell.value.ote.pipe);
+			client_err(cli, "illegal pipe in shell (enum). %d %d",
+				   cli->base.count_displays,
+				   cli->shell.value.ote.pipe);
 			cb_cmd_dump(buf);
 			return -EINVAL;
 		}
@@ -1540,12 +1819,16 @@ static s32 shell_proc(struct client *cli, u8 *buf)
 			memcpy(&mode->info, &cli->shell.value.mode,
 				sizeof(struct mode_info));
 			list_add_tail(&mode->link,&cli->base.displays[i].modes);
+			client_debug(cli, "prepare to notify enum result %p",
+				     cli->enumerate_mode_cb);
 			if (cli->enumerate_mode_cb) {
 				cli->enumerate_mode_cb(
 					cli->enumerate_mode_cb_userdata,
 					mode);
 			}
 		} else {
+			client_debug(cli, "prepare to notify last enum result "
+				     "%p", cli->enumerate_mode_cb);
 			if (cli->enumerate_mode_cb) {
 				cli->enumerate_mode_cb(
 					cli->enumerate_mode_cb_userdata, NULL);
@@ -1553,17 +1836,18 @@ static s32 shell_proc(struct client *cli, u8 *buf)
 		}
 		break;
 	case CB_SHELL_OUTPUT_VIDEO_TIMING_CREAT:
+		client_debug(cli, "received create custom mode result");
 		for (i = 0; i < cli->base.count_displays; i++) {
 			if (cli->base.displays[i].pipe ==
 			    cli->shell.value.modeset_pipe)
 				break;
 		}
 		if (i == cli->base.count_displays) {
-			fprintf(stderr, "illegal pipe in shell (create).\n");
+			client_err(cli, "illegal pipe in shell (create).");
 			return -EINVAL;
 		}
 		if (!cli->shell.value.new_mode_handle) {
-			fprintf(stderr, "failed to create cust mode\n");
+			client_err(cli, "failed to create cust mode");
 			if (cli->mode_created_cb) {
 				cli->mode_created_cb(false,
 					cli->mode_created_cb_userdata);
@@ -1571,6 +1855,8 @@ static s32 shell_proc(struct client *cli, u8 *buf)
 		} else {
 			cli->base.displays[i].mode_custom =
 				cli->shell.value.new_mode_handle;
+			client_debug(cli, "create cust mode ok, %p",
+				     cli->mode_created_cb);
 			if (cli->mode_created_cb) {
 				cli->mode_created_cb(true,
 					cli->mode_created_cb_userdata);
@@ -1578,8 +1864,7 @@ static s32 shell_proc(struct client *cli, u8 *buf)
 		}
 		break;
 	default:
-		fprintf(stderr, "unknown shell cmd %d\n",
-			cli->shell.cmd);
+		client_err(cli, "unknown shell cmd %d", cli->shell.cmd);
 		return -EINVAL;
 	}
 
@@ -1616,9 +1901,11 @@ static void client_ipc_proc(struct client *cli)
 	if (tlv->tag == CB_TAG_RAW_INPUT) {
 		evts = cb_client_parse_raw_input_evt_cmd(buf, &count_evts);
 		if (!evts) {
-			fprintf(stderr, "failed to parse raw input evts.\n");
+			client_err(cli, "failed to parse raw input evts.");
 			return;
 		}
+		client_debug(cli, "raw input evts: %p %p %u",
+			     cli->raw_input_evts_cb, evts, count_evts);
 		if (cli->raw_input_evts_cb) {
 			cli->raw_input_evts_cb(cli->raw_input_evts_cb_userdata,
 					       evts, count_evts);
@@ -1640,9 +1927,11 @@ static void client_ipc_proc(struct client *cli)
 		ret = cb_client_parse_view_focus_chg_cmd(buf, &view_id,
 							 &focus_on);
 		if (ret < 0) {
-			fprintf(stderr, "failed to parse view focus chg "
-				"message. ret = %d", ret);
+			client_err(cli, "failed to parse view focus chg "
+				   "message. ret = %d", ret);
 		} else {
+			client_debug(cli, "received view focus chg event "
+				     "%016X %c", view_id, focus_on);
 			if (cli->view_focus_chg_cb) {
 				cli->view_focus_chg_cb(
 					cli->view_focus_chg_userdata,
@@ -1660,15 +1949,16 @@ static void client_ipc_proc(struct client *cli)
 						       &cli->edid_sz);
 		if (ret < 0) {
 			if (ret == -ENOENT) {
-				fprintf(stderr,
-					"edid of pipe %lu not available\n",
-					cli->edid_pipe);
+				client_err(cli, "edid of pipe %lu not "
+					   "available", cli->edid_pipe);
 				cli->edid_sz = 0;
 			} else {
 				return;
 			}
 		}
 
+		client_debug(cli, "received edid, len: %lu, %p",
+			     cli->edid_sz, cli->get_edid_cb);
 		if (cli->get_edid_cb) {
 			cli->get_edid_cb(cli->get_edid_cb_userdata,
 					 cli->edid_pipe,
@@ -1680,9 +1970,11 @@ static void client_ipc_proc(struct client *cli)
 	if (tlv->tag == CB_TAG_GET_KBD_LED_STATUS_ACK) {
 		if (cb_client_parse_get_kbd_led_st_ack_cmd(buf,
 							   &led_status) < 0) {
-			fprintf(stderr, "failed to parse kbd led st ack.\n");
+			client_err(cli, "failed to parse kbd led st ack.");
 			return;
 		}
+		client_debug(cli, "received kbd led st result %08X, %p",
+			     led_status, cli->kbd_led_st_cb);
 		if (cli->kbd_led_st_cb) {
 			cli->kbd_led_st_cb(cli->kbd_led_st_cb_userdata,
 					   led_status);
@@ -1693,6 +1985,8 @@ static void client_ipc_proc(struct client *cli)
 	if (flag & (1 << CB_CMD_LINK_ID_ACK_SHIFT)) {
 		id = cb_client_parse_link_id(buf);
 		cli->link_id = id;
+		client_debug(cli, "received link id %016X, %p",
+			     id, cli->ready_cb);
 		if (cli->ready_cb) {
 			cli->ready_cb(cli->ready_cb_userdata);
 		}
@@ -1700,9 +1994,11 @@ static void client_ipc_proc(struct client *cli)
 	if (flag & (1 << CB_CMD_CREATE_SURFACE_ACK_SHIFT)) {
 		id = cb_client_parse_surface_id(buf);
 		cli->s.surface_id = id;
+		client_debug(cli, "received surface created result %016X, %p",
+			     id, cli->surface_created_cb);
 		if (cli->surface_created_cb) {
 			if (!id) {
-				fprintf(stderr, "failed to create surface.\n");
+				client_err(cli, "failed to create surface.");
 				cli->surface_created_cb(false,
 					cli->surface_created_cb_userdata, 0UL);
 				return;
@@ -1714,9 +2010,11 @@ static void client_ipc_proc(struct client *cli)
 	if (flag & (1 << CB_CMD_CREATE_VIEW_ACK_SHIFT)) {
 		id = cb_client_parse_view_id(buf);
 		cli->v.view_id = id;
+		client_debug(cli, "received view created result %016X, %p",
+			     id, cli->view_created_cb);
 		if (cli->view_created_cb) {
 			if (!id) {
-				fprintf(stderr, "failed to create view.\n");
+				client_err(cli, "failed to create view.");
 				cli->view_created_cb(false,
 					cli->view_created_cb_userdata, 0UL);
 				return;
@@ -1727,9 +2025,11 @@ static void client_ipc_proc(struct client *cli)
 	}
 	if (flag & (1 << CB_CMD_CREATE_BO_ACK_SHIFT)) {
 		id = cb_client_parse_bo_id(buf);
+		client_debug(cli, "received bo created result %016X, %p",
+			     id, cli->bo_created_cb);
 		if (cli->bo_created_cb) {
 			if (!id) {
-				fprintf(stderr, "failed to create bo.\n");
+				client_err(cli, "failed to create bo.");
 				cli->bo_created_cb(false,
 					cli->bo_created_cb_userdata, 0UL);
 				return;
@@ -1740,9 +2040,11 @@ static void client_ipc_proc(struct client *cli)
 	}
 	if (flag & (1 << CB_CMD_COMMIT_ACK_SHIFT)) {
 		id = cb_client_parse_commit_ack_cmd(buf, &surface_id);
+		client_debug(cli, "received commit ack %016X, %p",
+			     id, cli->bo_commited_cb);
 		if (cli->bo_commited_cb) {
 			if (id == (u64)(-1)) {
-				fprintf(stderr, "failed to commit bo.\n");
+				client_err(cli, "failed to commit bo.");
 				cli->bo_commited_cb(false,
 					cli->bo_commited_cb_userdata, (u64)-1,
 					surface_id);
@@ -1754,9 +2056,11 @@ static void client_ipc_proc(struct client *cli)
 	}
 	if (flag & (1 << CB_CMD_BO_FLIPPED_SHIFT)) {
 		id = cb_client_parse_bo_flipped_cmd(buf, &surface_id);
+		client_debug(cli, "received bo flipped event %016X, %p",
+			     id, cli->bo_flipped_cb);
 		if (cli->bo_flipped_cb) {
 			if (id == (u64)(-1)) {
-				fprintf(stderr, "Unknown bo flipped.\n");
+				client_err(cli, "Unknown bo flipped.");
 				return;
 			}
 			cli->bo_flipped_cb(cli->bo_flipped_cb_userdata, id,
@@ -1765,9 +2069,11 @@ static void client_ipc_proc(struct client *cli)
 	}
 	if (flag & (1 << CB_CMD_BO_COMPLETE_SHIFT)) {
 		id = cb_client_parse_bo_complete_cmd(buf, &surface_id);
+		client_debug(cli, "received bo completed event %016X, %p",
+			     id, cli->bo_completed_cb);
 		if (cli->bo_completed_cb) {
 			if (id == (u64)(-1)) {
-				fprintf(stderr, "Unknown bo completed.\n");
+				client_err(cli, "Unknown bo completed.");
 				return;
 			}
 			cli->bo_completed_cb(cli->bo_completed_cb_userdata,
@@ -1775,6 +2081,8 @@ static void client_ipc_proc(struct client *cli)
 		}
 	}
 	if (flag & (1 << CB_CMD_DESTROY_ACK_SHIFT)) {
+		client_debug(cli, "received destroy result %p",
+			     cli->destroyed_cb);
 		cb_server_parse_destroy_bo_cmd(buf);
 		if (cli->destroyed_cb)
 			cli->destroyed_cb(cli->destroyed_cb_userdata);
@@ -1790,11 +2098,13 @@ static void client_ipc_proc(struct client *cli)
 
 		id = cb_client_parse_hpd_cmd(buf, &conn_info);
 		if (id) {
-			fprintf(stderr, "unknown hotplug message.\n");
+			client_err(cli, "unknown hotplug message.");
 			return;
 		}
+		client_debug(cli, "received HPD event %016X, %p",
+			     id, cli->hpd_cb);
 		if (cli->base.count_displays == 0) {
-			fprintf(stderr, "receive hotplug message too early.\n");
+			client_err(cli, "receive hotplug message too early.");
 			return;
 		}
 		for (i = 0; i < cli->base.count_displays; i++) {
@@ -1816,6 +2126,8 @@ static void client_ipc_proc(struct client *cli)
 	}
 	if (flag & (1 << CB_CMD_MC_COMMIT_ACK_SHIFT)) {
 		id = cb_client_parse_mc_commit_ack_cmd(buf);
+		client_debug(cli, "received mc commited ack %016X, %p",
+			     id, cli->mc_commited_cb);
 		if (cli->mc_commited_cb) {
 			if (id) {
 				cli->mc_commited_cb(false,
@@ -1853,12 +2165,12 @@ static s32 sock_cb(s32 fd, u32 mask, void *data)
 	} while (ret == -EAGAIN);
 
 	if (ret < 0) {
-		fprintf(stderr, "failed to recv from server (%s).\n",
-			strerror(-ret));
+		client_err(cli, "failed to recv from server (%s).",
+			   strerror(-ret));
 		stop(&cli->base);
 		return ret;
 	} else if (ret == 0) {
-		fprintf(stderr, "connection lost.\n");
+		client_err(cli, "connection lost.");
 		stop(&cli->base);
 		return 0;
 	}
@@ -1983,6 +2295,8 @@ struct cb_client *cb_client_create(s32 seat)
 	if (!cli)
 		return NULL;
 
+	cli->debug_level = CB_LOG_NOTICE;
+
 	memset(cli->pid_name, 0, 9);
 	sprintf(cli->pid_name, "%08X", getpid());
 
@@ -1990,10 +2304,12 @@ struct cb_client *cb_client_create(s32 seat)
 	snprintf(name, 64, "%s/%s-%d", LOG_SERVER_NAME_PREFIX,
 		 LOG_SERVER_SOCK_NAME, seat);
 	cli->log_handle = cb_client_log_init(name);
-	if (!cli->log_handle)
-		goto err;
+	if (!cli->log_handle) {
+		free(cli);
+		return NULL;
+	}
 
-	client_debug(cli, "Creating cube client...");
+	client_notice(cli, "Creating cube client %s ...", cli->pid_name);
 
 	for (i = 0; i < MAX_DISP_NR; i++) {
 		INIT_LIST_HEAD(&cli->base.displays[i].modes);
@@ -2013,8 +2329,8 @@ struct cb_client *cb_client_create(s32 seat)
 	snprintf(name, 64, "%s/%s-%d", CB_SERVER_NAME_PREFIX,SERVER_NAME, seat);
 	ret = cb_socket_connect(cli->sock, name);
 	if (ret < 0) {
-		fprintf(stderr, "failed to connect to cube server %s. (%s)\n",
-			name, strerror(-ret));
+		client_err(cli, "failed to connect to cube server %s. (%s)",
+			   name, strerror(-ret));
 		goto err;
 	}
 
@@ -2143,8 +2459,10 @@ struct cb_client *cb_client_create(s32 seat)
 	cli->base.timer_update = timer_update;
 	cli->base.add_idle_task = add_idle_task;
 
+	client_notice(cli, "cube client %s is created.", cli->pid_name);
 	return &cli->base;
 err:
+	client_err(cli, "failed to create cube client.");
 	destroy(&cli->base);
 	return NULL;
 }

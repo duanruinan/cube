@@ -200,6 +200,10 @@ struct compositor {
 	/* add client */
 	struct cb_client_agent *(*add_client)(struct compositor *c, s32 sock);
 
+	/* set initial client debug level */
+	void (*init_client_dbg)(struct compositor *c,
+				struct cb_client_agent *client);
+
 	/* remove client */
 	void (*rm_client)(struct compositor *c, struct cb_client_agent *client);
 
@@ -328,6 +332,8 @@ struct compositor {
 	void (*set_dbg_level)(struct compositor *c, enum cb_log_level level);
 	void (*set_sc_dbg_level)(struct compositor *c, enum cb_log_level level);
 	void (*set_rd_dbg_level)(struct compositor *c, enum cb_log_level level);
+	void (*set_client_dbg_level)(struct compositor *c,
+				     enum cb_log_level level);
 
 	/* import DMA-BUF for renderer */
 	struct cb_buffer *(*import_rd_dmabuf)(struct compositor *c,

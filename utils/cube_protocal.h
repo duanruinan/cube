@@ -379,6 +379,7 @@ struct cb_debug_flags {
 	u8 comp_flag;
 	u8 sc_flag;
 	u8 rd_flag;
+	u8 client_flag;
 };
 
 struct cb_shell_info {
