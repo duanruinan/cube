@@ -18,6 +18,7 @@ CUBE_UTILS_H += cube_array.h
 CUBE_UTILS_H += cube_shm.h
 CUBE_UTILS_H += cube_protocal.h
 CUBE_UTILS_H += cube_cache.h
+CUBE_UTILS_H += cube_network.h
 
 CUBE_UTILS_OBJS += cube_log.o
 CUBE_UTILS_OBJS += cube_ipc.o
@@ -28,6 +29,7 @@ CUBE_UTILS_OBJS += cube_array.o
 CUBE_UTILS_OBJS += cube_shm.o
 CUBE_UTILS_OBJS += cube_protocal.o
 CUBE_UTILS_OBJS += cube_cache.o
+CUBE_UTILS_OBJS += cube_network.o
 
 all: $(OBJS)
 
@@ -56,6 +58,9 @@ cube_protocal.o: cube_protocal.c $(CUBE_UTILS_H)
 	$(CC) -c $< $(CFLAGS) -o $@
 
 cube_cache.o: cube_cache.c $(CUBE_UTILS_H)
+	$(CC) -c $< $(CFLAGS) -o $@
+
+cube_network.o: cube_network.c $(CUBE_UTILS_H)
 	$(CC) -c $< $(CFLAGS) -o $@
 
 cube_log: log_server.o

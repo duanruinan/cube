@@ -20,6 +20,7 @@ CUBE_UTILS_H += $(RPATH)/utils/cube_array.h
 CUBE_UTILS_H += $(RPATH)/utils/cube_shm.h
 CUBE_UTILS_H += $(RPATH)/utils/cube_cache.h
 CUBE_UTILS_H += $(RPATH)/utils/cube_protocal.h
+CUBE_UTILS_H += $(RPATH)/utils/cube_network.h
 
 all: $(OBJS)
 

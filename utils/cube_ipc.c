@@ -123,7 +123,7 @@ s32 cb_sendmsg(s32 sock, u8 *buf, size_t sz, struct cb_fds *fds)
 	msg.msg_control = (clen > 0) ? cmsgbuf : NULL;
 	msg.msg_controllen = clen;
 	msg.msg_flags = 0;
-	
+
 	do {
 		ret = sendmsg(sock, &msg, MSG_NOSIGNAL);
 	} while (ret < 0 && errno == EINTR);
@@ -238,7 +238,11 @@ s32 cb_socket_accept(const s32 sock)
 {
 	s32 sk;
 
-	if ((sk = accept(sock, NULL, NULL)) < 0) {
+	do {
+		sk = accept(sock, NULL, NULL);
+	} while (sk < 0 && errno == EINTR);
+
+	if (sk < 0) {
 		fprintf(stderr, "accept socket failed. %m\n");
 		return -errno;
 	}

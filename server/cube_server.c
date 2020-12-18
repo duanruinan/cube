@@ -393,7 +393,7 @@ static s32 server_sock_cb(s32 fd, u32 mask, void *data)
 	struct cb_client_agent *client;
 
 	sock = cb_socket_accept(fd);
-	if (sock <= 0) {
+	if (sock < 0) {
 		serv_err("failed to accept. (%s)", strerror(errno));
 		return -errno;
 	}

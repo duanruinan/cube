@@ -32,6 +32,7 @@
 #include <assert.h>
 #include <cube_utils.h>
 #include <cube_ipc.h>
+#include <cube_network.h>
 #include <cube_log.h>
 #include <cube_event.h>
 #include <cube_protocal.h>
@@ -63,17 +64,32 @@ struct log_client {
 	struct list_head link;
 };
 
+struct tool_client {
+	s32 sock;
+	struct cb_event_source *sock_source;
+	struct log_server *server;
+	struct list_head link;
+};
+
 struct log_server {
 	struct cb_event_loop *loop;
 	struct cb_event_source *sock_source;
 	struct cb_event_source *sig_int_source;
 	struct cb_event_source *sig_tem_source;
+	struct cb_event_source *tool_sock_source;
 	s32 sock;
 	s32 seat;
 	s32 exit;
 	s32 log_file_fd;
 	struct list_head clients;
+
+	/* send log message to log tools (with GUI) by TCP */
+	s32 tool_sock;
+	u32 tcp_port;
+	struct list_head tool_clients;
 };
+
+#define TCP_PORT_BASE 8099
 
 static void log_client_destroy(struct log_client *client)
 {
@@ -216,7 +232,7 @@ static s32 server_sock_cb(s32 fd, u32 mask, void *data)
 	s32 sock;
 
 	sock = cb_socket_accept(fd);
-	if (sock <= 0) {
+	if (sock < 0) {
 		fprintf(stderr, "failed to accept. (%s)\n", strerror(errno));
 		return -errno;
 	}
@@ -270,13 +286,48 @@ static s32 signal_event_proc(s32 signal_number, void *data)
 	return 0;
 }
 
+static void tool_client_destroy(struct tool_client *client)
+{
+	if (!client)
+		return;
+
+	if (client->sock_source) {
+		cb_event_source_remove(client->sock_source);
+		client->sock_source = NULL;
+	}
+
+	if (client->sock) {
+		close(client->sock);
+		client->sock = 0;
+	}
+
+	free(client);
+}
+
 static void log_server_destroy(struct log_server *server)
 {
 	struct log_client *client, *next;
+	struct tool_client *tool, *next_tool;
 	if (!server)
 		return;
 
 	if (server->loop) {
+		list_for_each_entry_safe(tool, next_tool, &server->tool_clients,
+					 link) {
+			list_del(&tool->link);
+			tool_client_destroy(tool);
+		}
+
+		if (server->tool_sock_source) {
+			cb_event_source_remove(server->tool_sock_source);
+			server->tool_sock_source = NULL;
+		}
+
+		if (server->tool_sock) {
+			close(server->tool_sock);
+			server->tool_sock = 0;
+		}
+
 		list_for_each_entry_safe(client, next, &server->clients, link) {
 			list_del(&client->link);
 			log_client_destroy(client);
@@ -312,6 +363,63 @@ static void log_server_destroy(struct log_server *server)
 	}
 
 	free(server);
+}
+
+static s32 tool_client_sock_cb(s32 fd, u32 mask, void *data)
+{
+	return 0;
+}
+
+static struct tool_client *tool_client_create(s32 sock,
+					      struct log_server *server)
+{
+	struct tool_client *client;
+
+	if (sock <= 0)
+		return NULL;
+
+	client = calloc(1, sizeof(*client));
+	if (!client)
+		goto err;
+
+	memset(client, 0 ,sizeof(*client));
+	client->sock = sock;
+	client->server = server;
+
+	client->sock_source = cb_event_loop_add_fd(server->loop, client->sock,
+						   CB_EVT_READABLE,
+						   tool_client_sock_cb,
+						   client);
+	if (!client->sock_source)
+		goto err;
+
+	return client;
+
+err:
+	tool_client_destroy(client);
+	return NULL;
+}
+
+static s32 server_tool_sock_cb(s32 fd, u32 mask, void *data)
+{
+	struct log_server *server = data;
+	struct tool_client *client;
+	s32 sock;
+
+	sock = cb_tcp_socket_accept(fd);
+	if (sock < 0) {
+		fprintf(stderr, "failed to accept. (%s)\n", strerror(errno));
+		return -errno;
+	}
+
+	client = tool_client_create(sock, server);
+	if (!client) {
+		fprintf(stderr, "failed to create log client.\n");
+		return -1;
+	}
+
+	list_add_tail(&client->link, &server->tool_clients);
+	return 0;
 }
 
 static struct log_server *log_server_create(s32 seat)
@@ -363,6 +471,22 @@ static struct log_server *log_server_create(s32 seat)
 	snprintf(name, 64, "%s/cube_log_%d.txt", LOG_SERVER_NAME_PREFIX,
 		 server->seat);
 	server->log_file_fd = open(name, O_CREAT | O_TRUNC | O_RDWR, 0644);
+
+	INIT_LIST_HEAD(&server->tool_clients);
+	server->tcp_port = TCP_PORT_BASE + server->seat;
+	server->tool_sock = cb_tcp_socket_cloexec();
+	if (!server->tool_sock)
+		goto err;
+
+	cb_tcp_socket_bind_listen(server->sock, server->tcp_port);
+
+	server->tool_sock_source = cb_event_loop_add_fd(
+					server->loop, server->tool_sock,
+					CB_EVT_READABLE,
+					server_tool_sock_cb,
+					server);
+	if (!server->tool_sock_source)
+		goto err;
 	
 	return server;
 
