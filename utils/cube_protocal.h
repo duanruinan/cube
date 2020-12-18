@@ -646,6 +646,9 @@ s32 cb_client_parse_view_focus_chg_cmd(u8 *data, u64 *view_id, bool *on);
 #define mk_fourcc(a, b, c, d) ((u32)(a) | ((u32)(b) << 8) | \
 			       ((u32)(c) << 16) | ((u32)(d) << 24))
 
+#define DEBUG_PATH "/tmp/cube_debug"
+#define DEBUG_FLAG DEBUG_PATH"/cube_dbg_flag"
+
 static inline enum cb_pix_fmt fourcc_to_cb_pix_fmt(u32 fourcc)
 {
 	switch (fourcc) {

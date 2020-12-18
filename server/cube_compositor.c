@@ -32,6 +32,7 @@
 #include <time.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/inotify.h>
 #include <linux/uinput.h>
 #include <linux/kd.h>
 #include <linux/input.h>
@@ -328,6 +329,10 @@ struct cb_compositor {
 
 	float mc_accel;
 	s32 touch_pipe;
+
+	/* for debug tool change dbg level */
+	s32 debug_inotify_fd;
+	struct cb_event_source *dbg_source;
 };
 
 #define NSEC_PER_SEC 1000000000
@@ -1029,6 +1034,16 @@ static s32 cb_compositor_destroy(struct compositor *comp)
 	struct cb_compositor *c = to_cb_c(comp);
 	s32 i, ret;
 	struct cb_view *view, *view_next;
+
+	if (c->dbg_source) {
+		cb_event_source_remove(c->dbg_source);
+		c->dbg_source = NULL;
+	}
+
+	if (c->debug_inotify_fd > 0) {
+		close(c->debug_inotify_fd);
+		c->debug_inotify_fd = 0;
+	}
 
 	list_for_each_entry_safe(client, next, &c->clients, link) {
 		list_del(&client->link);
@@ -4100,6 +4115,69 @@ static void cb_compositor_set_client_dbg_level(struct compositor *comp,
 	}
 }
 
+static s32 dbg_changed(s32 fd, u32 mask, void *data)
+{
+	struct cb_compositor *c = data;
+	s32 dbg_fd, ret, pos = 0, event_sz;
+	u8 flag[5] = {1, 1, 1, 1, 1};
+	u8 event_buf[64];
+	struct cb_client_agent *client, *next_client;
+	struct cb_shell_info shell;
+	struct inotify_event *event;
+	bool changed = false;
+
+	if (!c)
+		return -1;
+
+	ret = read(fd, event_buf, sizeof(event_buf));
+	if (ret < sizeof(*event))
+		return -1;
+
+	while (ret >= sizeof(*event)) {
+		event = (struct inotify_event *)(event_buf + pos);
+		if (event->len) {
+			if (event->mask & IN_MODIFY) {
+				comp_notice("file: %s changed", event->name);
+				if (strcmp(event->name, DEBUG_FLAG)) {
+					comp_notice("debug changed.");
+					changed = true;
+				}
+			}
+		}
+		event_sz = sizeof(*event) + event->len;
+		ret -= event_sz;
+		pos += event_sz;
+	}
+
+	if (!changed)
+		return -1;
+
+	dbg_fd = open(DEBUG_FLAG, O_RDONLY, 0644);
+	if (dbg_fd < 0)
+		return -1;
+
+	read(dbg_fd, &flag[0], 5);
+	close(dbg_fd);
+	comp_notice("debug: %02X %02X %02X %02X %02X",
+		    flag[0], flag[1], flag[2], flag[3], flag[4]);
+
+	comp_dbg = flag[0];
+	c->base.set_client_dbg_level(&c->base, flag[1]);
+	c->base.set_sc_dbg_level(&c->base, flag[2]);
+	c->base.set_rd_dbg_level(&c->base, flag[3]);
+	client_dbg = flag[4];
+
+	/* broadcast client debug level to all cube clients */
+	memset(&shell, 0, sizeof(shell));
+	shell.cmd = CB_SHELL_DEBUG_SETTING;
+	shell.value.dbg_flags.client_flag = flag[4];
+	list_for_each_entry_safe(client, next_client, &c->clients, link) {
+		client->send_shell_cmd(client, &shell);
+	}
+
+	return 0;
+}
+
 static void cb_compositor_init_client_dbg(struct compositor *comp,
 					  struct cb_client_agent *client)
 {
@@ -4200,6 +4278,18 @@ struct compositor *compositor_create(char *device_name,
 
 	/* prepare input devices */
 	if (cb_compositor_input_init(c) < 0)
+		goto err;
+
+	c->debug_inotify_fd = inotify_init();
+	if (c->debug_inotify_fd < 0)
+		goto err;
+
+	inotify_add_watch(c->debug_inotify_fd, DEBUG_PATH, IN_MODIFY);
+
+	c->dbg_source = cb_event_loop_add_fd(c->loop, c->debug_inotify_fd,
+					     CB_EVT_READABLE,
+					     dbg_changed, c);
+	if (!c->dbg_source)
 		goto err;
 
 	c->base.register_ready_cb = cb_compositor_register_ready_cb;

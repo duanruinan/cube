@@ -109,9 +109,27 @@ static void log_client_destroy(struct log_client *client)
 	free(client);
 }
 
+static void tool_client_destroy(struct tool_client *client)
+{
+	if (!client)
+		return;
+
+	if (client->sock_source) {
+		cb_event_source_remove(client->sock_source);
+		client->sock_source = NULL;
+	}
+
+	if (client->sock) {
+		close(client->sock);
+		client->sock = 0;
+	}
+
+	free(client);
+}
+
 static s32 client_sock_cb(s32 fd, u32 mask, void *data)
 {
-	s32 ret;
+	s32 ret, r;
 	size_t byts_rd;
 	struct log_client *client = data;
 	struct cb_fds fds = {
@@ -119,6 +137,8 @@ static s32 client_sock_cb(s32 fd, u32 mask, void *data)
 	};
 	s32 flag; /* 0: length not received, 1: length received. */
 	off_t offs;
+	struct log_server *server = client->server;
+	struct tool_client *tool, *next_tool;
 
 	if (client->cursor >= ((u8 *)(client->log_buf) + sizeof(size_t))) {
 		flag = 1;
@@ -187,6 +207,18 @@ static s32 client_sock_cb(s32 fd, u32 mask, void *data)
 			write(client->server->log_file_fd,
 			      (char *)&client->log_buf[0] + sizeof(size_t),
 			      client->log_sz);
+
+			list_for_each_entry_safe(tool, next_tool,
+						 &server->tool_clients, link) {
+				r = cb_tcp_send(tool->sock,
+						(char *)&client->log_buf[0]
+							+ sizeof(size_t),
+						client->log_sz);
+				if (r < 0) {
+					list_del(&tool->link);
+					tool_client_destroy(tool);
+				}
+			}
 		}
 	}
 
@@ -286,24 +318,6 @@ static s32 signal_event_proc(s32 signal_number, void *data)
 	return 0;
 }
 
-static void tool_client_destroy(struct tool_client *client)
-{
-	if (!client)
-		return;
-
-	if (client->sock_source) {
-		cb_event_source_remove(client->sock_source);
-		client->sock_source = NULL;
-	}
-
-	if (client->sock) {
-		close(client->sock);
-		client->sock = 0;
-	}
-
-	free(client);
-}
-
 static void log_server_destroy(struct log_server *server)
 {
 	struct log_client *client, *next;
@@ -367,6 +381,36 @@ static void log_server_destroy(struct log_server *server)
 
 static s32 tool_client_sock_cb(s32 fd, u32 mask, void *data)
 {
+	struct tool_client *client = data;
+	u8 buf[16] = {0};
+	size_t len = 0;
+	s32 ret, dbg_fd;
+
+	if (!client)
+		return 0;
+
+	ret = cb_tcp_recv(fd, &len, sizeof(size_t));
+	if (ret < 0) {
+		list_del(&client->link);
+		tool_client_destroy(client);
+		return 0;
+	}
+
+	ret = cb_tcp_recv(fd, &buf[0], len);
+	if (ret < 0) {
+		list_del(&client->link);
+		tool_client_destroy(client);
+		return 0;
+	}
+
+	/*
+	 * Comp, Clia, SO, RD, Client
+	 * buf[0], buf[1], buf[2], buf[3], buf[4]);
+	 */
+	dbg_fd = open(DEBUG_FLAG, O_RDWR | O_TRUNC, 0644);
+	write(dbg_fd, &buf[0], 5);
+	close(dbg_fd);
+
 	return 0;
 }
 
@@ -472,14 +516,16 @@ static struct log_server *log_server_create(s32 seat)
 		 server->seat);
 	server->log_file_fd = open(name, O_CREAT | O_TRUNC | O_RDWR, 0644);
 
-/*
 	INIT_LIST_HEAD(&server->tool_clients);
 	server->tcp_port = TCP_PORT_BASE + server->seat;
 	server->tool_sock = cb_tcp_socket_cloexec();
 	if (!server->tool_sock)
 		goto err;
 
-	cb_tcp_socket_bind_listen(server->sock, server->tcp_port);
+	if (cb_tcp_socket_bind_listen(server->tool_sock,
+				      server->tcp_port) < 0)
+		goto err;
+
 	server->tool_sock_source = cb_event_loop_add_fd(
 					server->loop, server->tool_sock,
 					CB_EVT_READABLE,
@@ -487,8 +533,7 @@ static struct log_server *log_server_create(s32 seat)
 					server);
 	if (!server->tool_sock_source)
 		goto err;
-*/
-	
+
 	return server;
 
 err:
@@ -542,7 +587,15 @@ s32 main(s32 argc, char **argv)
 	s32 ch;
 	s32 run_as_background = 0;
 	struct log_server *server;
-	s32 seat = 0;
+	s32 seat = 0, dbg_fd;
+	u8 flag[5] = {1, 1, 1, 1, 1};
+
+	unlink(DEBUG_FLAG);
+	mkdir(DEBUG_PATH, 0644);
+
+	dbg_fd = open(DEBUG_FLAG, O_CREAT | O_RDWR | O_TRUNC, 0644);
+	write(dbg_fd, &flag[0], 5);
+	close(dbg_fd);
 
 	while ((ch = getopt_long(argc, argv, short_options,
 				 long_options, NULL)) != -1) {

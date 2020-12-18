@@ -1402,7 +1402,7 @@ static s32 commit_bo(struct cb_client *client, struct cb_commit_info *c)
 	if (!client)
 		return -EINVAL;
 
-	client_debug(cli, "client bo %p", c);
+	client_debug(cli, "client bo %016X", c);
 
 	if (!c) {
 		client_err(cli, "c is null");
@@ -1523,7 +1523,7 @@ static s32 commit_mc(struct cb_client *client, struct cb_mc_info *mc)
 	if (!client || !mc)
 		return -EINVAL;
 
-	client_debug(cli, "commit mc %p", mc);
+	client_debug(cli, "commit mc %016X", mc);
 
 	if (!mc) {
 		client_err(cli, "mc is null");
