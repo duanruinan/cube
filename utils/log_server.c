@@ -472,6 +472,7 @@ static struct log_server *log_server_create(s32 seat)
 		 server->seat);
 	server->log_file_fd = open(name, O_CREAT | O_TRUNC | O_RDWR, 0644);
 
+/*
 	INIT_LIST_HEAD(&server->tool_clients);
 	server->tcp_port = TCP_PORT_BASE + server->seat;
 	server->tool_sock = cb_tcp_socket_cloexec();
@@ -479,7 +480,6 @@ static struct log_server *log_server_create(s32 seat)
 		goto err;
 
 	cb_tcp_socket_bind_listen(server->sock, server->tcp_port);
-
 	server->tool_sock_source = cb_event_loop_add_fd(
 					server->loop, server->tool_sock,
 					CB_EVT_READABLE,
@@ -487,6 +487,7 @@ static struct log_server *log_server_create(s32 seat)
 					server);
 	if (!server->tool_sock_source)
 		goto err;
+*/
 	
 	return server;
 
