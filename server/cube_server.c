@@ -143,7 +143,7 @@ static void usage(void)
 	printf("\t\t-s, --seat=ID, cube server's instance ID.\n");
 	printf("\t\t-d, --device=/dev/dri/cardX, device name.\n");
 	printf("\t\t-t, --touch-pipe=pipe number, touch screen index.\n");
-	printf("\t\t-t, --mc-accel=mouse accelerator, default 1.0.\n");
+	printf("\t\t-a, --mc-accel=mouse accelerator, default 1.0.\n");
 }
 
 struct child_process {
