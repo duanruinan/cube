@@ -166,6 +166,9 @@ struct client {
 	void (*raw_input_evts_cb)(void *userdata, struct cb_raw_input_event *,
 				  u32 count_evts);
 
+	void *raw_touch_evts_cb_userdata;
+	void (*raw_touch_evts_cb)(void *userdata, struct touch_event *, u32 sz);
+
 	void *ready_cb_userdata;
 	void (*ready_cb)(void *userdata);
 
@@ -703,6 +706,31 @@ static s32 set_raw_input_evts_cb(struct cb_client *client,
 
 	cli->raw_input_evts_cb_userdata = userdata;
 	cli->raw_input_evts_cb = raw_input_evts_cb;
+	return 0;
+}
+
+static s32 set_raw_touch_evts_cb(struct cb_client *client,
+				 void *userdata,
+				 void (*raw_touch_evts_cb)(
+				 		void *userdata,
+				 		struct touch_event *,
+				 		u32 sz))
+{
+	struct client *cli = to_client(client);
+
+	if (!client)
+		return -EINVAL;
+
+	client_debug(cli, "set raw touch events cb %p, %p",
+		     raw_touch_evts_cb, userdata);
+
+	if (!raw_touch_evts_cb) {
+		client_err(cli, "raw_touch_evts_cb is null");
+		return -EINVAL;
+	}
+
+	cli->raw_touch_evts_cb_userdata = userdata;
+	cli->raw_touch_evts_cb = raw_touch_evts_cb;
 	return 0;
 }
 
@@ -1879,7 +1907,8 @@ static void client_ipc_proc(struct client *cli)
 	struct cb_tlv *tlv;
 	u64 id;
 	struct cb_raw_input_event *evts;
-	u32 count_evts, led_status;
+	struct touch_event *tevts;
+	u32 count_evts, led_status, touch_sz;
 	u64 surface_id, view_id;
 	bool focus_on;
 
@@ -1914,7 +1943,17 @@ static void client_ipc_proc(struct client *cli)
 	}
 
 	if (tlv->tag == CB_TAG_RAW_TOUCH) {
-		/* TODO */
+		tevts = cb_client_parse_raw_touch_evt_cmd(buf, &touch_sz);
+		if (!tevts) {
+			client_err(cli, "failed to parse raw touch evts.");
+			return;
+		}
+		client_debug(cli, "raw touch evts: %p %p %u",
+			     cli->raw_touch_evts_cb, tevts, touch_sz);
+		if (cli->raw_touch_evts_cb) {
+			cli->raw_touch_evts_cb(cli->raw_touch_evts_cb_userdata,
+					       tevts, touch_sz);
+		}
 		return;
 	}
 
@@ -2421,6 +2460,7 @@ struct cb_client *cb_client_create(s32 seat)
 	cli->base.set_server_dbg = set_server_dbg;
 	cli->base.set_client_cap = set_client_cap;
 	cli->base.set_raw_input_evts_cb = set_raw_input_evts_cb;
+	cli->base.set_raw_touch_evts_cb = set_raw_touch_evts_cb;
 	cli->base.set_ready_cb = set_ready_cb;
 	cli->base.set_destroyed_cb = set_destroyed_cb;
 	cli->base.set_raw_input_en = set_raw_input_en;

@@ -334,6 +334,10 @@ struct compositor {
 	void (*set_rd_dbg_level)(struct compositor *c, enum cb_log_level level);
 	void (*set_client_dbg_level)(struct compositor *c,
 				     enum cb_log_level level);
+	void (*set_touch_dbg_level)(struct compositor *c,
+				    enum cb_log_level level);
+	void (*set_joystick_dbg_level)(struct compositor *c,
+				       enum cb_log_level level);
 
 	/* import DMA-BUF for renderer */
 	struct cb_buffer *(*import_rd_dmabuf)(struct compositor *c,

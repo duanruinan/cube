@@ -380,6 +380,8 @@ struct cb_debug_flags {
 	u8 sc_flag;
 	u8 rd_flag;
 	u8 client_flag;
+	u8 touch_flag;
+	u8 joystick_flag;
 };
 
 struct cb_shell_info {
@@ -533,6 +535,7 @@ u64 cb_client_parse_destroy_ack_cmd(u8 *data);
 /* client: parse raw event */
 struct cb_raw_input_event *cb_client_parse_raw_input_evt_cmd(u8 *data,
 							     u32 *count_evts);
+struct touch_event *cb_client_parse_raw_touch_evt_cmd(u8 *data, u32 *sz);
 
 /* client: raw input enable cmd */
 u8 *cb_client_create_raw_input_en_cmd(u64 en, u32 *n);

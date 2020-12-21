@@ -83,6 +83,13 @@ struct cb_client {
 				     		struct cb_raw_input_event *evts,
 				     		u32 count_evts));
 
+	s32 (*set_raw_touch_evts_cb)(struct cb_client *client,
+				     void *userdata,
+				     void (*raw_touch_evts_cb)(
+				     		void *userdata,
+				     		struct touch_event *evts,
+				     		u32 sz));
+
 	s32 (*set_ready_cb)(struct cb_client *client, void *userdata,
 			    void (*ready_cb)(void *userdata));
 

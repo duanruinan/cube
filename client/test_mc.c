@@ -330,6 +330,49 @@ static void ready_cb(void *userdata)
 	client->send_get_kbd_led_st(client);
 }
 
+static void raw_touch_evts_cb(void *userdata,
+			      struct touch_event *tevts,
+			      u32 sz)
+{
+	struct touch_event *te;
+	struct slot_info *si;
+	bool xc, yc;
+	u16 *pos;
+	s32 i;
+
+	printf(">>> touch screen length: %d\n", sz);
+	te = tevts;
+	printf(">>>>> count slots: %u\n", te->count_slots + 1);
+	printf(">>>>> payload size: %u\n", te->payload_sz);
+	si = (struct slot_info *)&te->payload[0];
+	
+	for (i = 0; i < te->count_slots + 1; i++) {
+		printf(">>>>>>>> SLOT INFO >>>>>>>>>\n");
+		printf(">>>>>>>> SLOT ID: %u\n", si->slot_id);
+		printf(">>>>>>>> Pressed: %u\n", si->pressed);
+		printf(">>>>>>>> pos_x_changed: %u\n", si->pos_x_changed);
+		if (si->pos_x_changed)
+			xc = true;
+		else
+			xc = false;
+		printf(">>>>>>>> pos_y_changed: %u\n", si->pos_y_changed);
+		if (si->pos_y_changed)
+			yc = true;
+		else
+			yc = false;
+		pos = &si->pos[0];
+		if (xc) {
+			printf(">>>>>>>> pos_x: %u\n", *pos);
+			pos++;
+		}
+		if (yc) {
+			printf(">>>>>>>> pos_y: %u\n", *pos);
+			pos++;
+		}
+		si = (struct slot_info *)pos;
+	}
+}
+
 static void raw_input_evts_cb(void *userdata,
 			      struct cb_raw_input_event *evts,
 			      u32 count_evts)
@@ -420,6 +463,7 @@ s32 main(s32 argc, char **argv)
 
 	client->set_ready_cb(client, input, ready_cb);
 	client->set_raw_input_evts_cb(client, input, raw_input_evts_cb);
+	client->set_raw_touch_evts_cb(client, input, raw_touch_evts_cb);
 
 	if (input->client)
 		client->run(client);

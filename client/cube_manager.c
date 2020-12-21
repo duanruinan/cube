@@ -38,7 +38,8 @@ void usage(void)
 	fprintf(stderr, "cube_manager --log func_level\n");
 	fprintf(stderr, "\tSet log level.\n");
 	fprintf(stderr, "\t\tcube_manager --log module0,level0:module1,level\n");
-	fprintf(stderr, "\t\t\tModule Name:clia/comp/sc/rd/client\n");
+	fprintf(stderr, "\t\t\tModule Name:clia/comp/sc/rd/client/touch/"
+			"joystick\n");
 	fprintf(stderr, "\t\t\tLevel:0-3\n");
 	fprintf(stderr, "cube_manager --info\n");
 	fprintf(stderr, "\tGet canvas information\n");
@@ -122,6 +123,10 @@ static void parse_log_param(char *param, struct cb_debug_flags *dbg)
 			pflag = &dbg->rd_flag;
 		else if (!strcmp(p, "client"))
 			pflag = &dbg->client_flag;
+		else if (!strcmp(p, "touch"))
+			pflag = &dbg->touch_flag;
+		else if (!strcmp(p, "joystick"))
+			pflag = &dbg->joystick_flag;
 		else {
 			fprintf(stderr, "illegal module name %s\n", p);
 			exit(1);

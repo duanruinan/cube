@@ -1182,6 +1182,23 @@ struct cb_raw_input_event *cb_client_parse_raw_input_evt_cmd(u8 *data,
 	return (struct cb_raw_input_event *)(&tlv->payload[0]);
 }
 
+struct touch_event *cb_client_parse_raw_touch_evt_cmd(u8 *data, u32 *sz)
+{
+	struct cb_tlv *tlv;
+
+	if (!sz || !data)
+		return NULL;
+
+	tlv = (struct cb_tlv *)(data+sizeof(u32));
+
+	if (tlv->tag != CB_TAG_RAW_TOUCH)
+		return NULL;
+
+	*sz = tlv->length;
+
+	return (struct touch_event *)(&tlv->payload[0]);
+}
+
 u8 *cb_client_create_get_kbd_led_st_cmd(u32 *n)
 {
 	struct cb_tlv *tlv;

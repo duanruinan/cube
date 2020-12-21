@@ -351,6 +351,46 @@ static void cb_client_agent_send_raw_input(struct cb_client_agent *client,
 	}
 }
 
+static void cb_client_agent_send_raw_touch(struct cb_client_agent *client,
+					   u8 *evts, u32 sz)
+{
+	size_t length;
+	struct cb_tlv *tlv;
+	s32 ret;
+	u32 *head;
+
+	tlv = (struct cb_tlv *)(evts + sizeof(u32));
+	tlv->length = sz;
+	length = tlv->length + sizeof(*tlv) + sizeof(u32);
+
+	head = (u32 *)evts;
+	*head = 0xFE; /* magic or else */
+
+	tlv->tag = CB_TAG_RAW_TOUCH;
+
+	do {
+		ret = cb_sendmsg(client->sock, (u8 *)&length, sizeof(size_t),
+				 NULL);
+	} while (ret == -EAGAIN);
+	clia_debug("send raw touch length: %llu", length);
+	if (ret < 0) {
+		clia_err("failed to send raw touch length. %s",
+			 strerror(errno));
+		client->c->rm_client(client->c, client);
+		return;
+	}
+
+	do {
+		ret = cb_sendmsg(client->sock, evts, length, NULL);
+	} while (ret == -EAGAIN);
+	clia_debug("send raw touch evts: %llu", length);
+	if (ret < 0) {
+		clia_err("failed to send raw touch evts. %s",
+			 strerror(errno));
+		client->c->rm_client(client->c, client);
+	}
+}
+
 static void cb_client_agent_send_hpd_evt(struct cb_client_agent *client,
 					 struct cb_connector_info *conn_info)
 {
@@ -1231,6 +1271,16 @@ static void shell_proc(struct cb_client_agent *client, u8 *buf)
 			   shell_info.value.dbg_flags.client_flag);
 		client->c->set_client_dbg_level(
 			client->c, shell_info.value.dbg_flags.client_flag);
+
+		clia_debug("Touch: %02X",
+			   shell_info.value.dbg_flags.touch_flag);
+		client->c->set_touch_dbg_level(
+			client->c, shell_info.value.dbg_flags.client_flag);
+
+		clia_debug("Joystick: %02X",
+			   shell_info.value.dbg_flags.joystick_flag);
+		client->c->set_joystick_dbg_level(
+			client->c, shell_info.value.dbg_flags.client_flag);
 		break;
 	case CB_SHELL_CANVAS_LAYOUT_SETTING:
 		clia_debug("setting layout. nr: %d",
@@ -1656,6 +1706,7 @@ struct cb_client_agent *cb_client_agent_create(s32 sock,
 	client->send_bo_flipped = cb_client_agent_send_bo_flipped;
 	client->send_bo_complete = cb_client_agent_send_bo_complete;
 	client->send_raw_input_evts = cb_client_agent_send_raw_input;
+	client->send_raw_touch_evts = cb_client_agent_send_raw_touch;
 	client->send_hpd_evt = cb_client_agent_send_hpd_evt;
 	client->send_mc_commit_ack = cb_client_agent_send_mc_commit_ack;
 	client->send_shell_cmd = cb_client_agent_send_shell_cmd;

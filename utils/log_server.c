@@ -404,11 +404,11 @@ static s32 tool_client_sock_cb(s32 fd, u32 mask, void *data)
 	}
 
 	/*
-	 * Comp, Clia, SO, RD, Client
-	 * buf[0], buf[1], buf[2], buf[3], buf[4]);
+	 * Comp, Clia, SO, RD, Client, Touch, Joystick
+	 * buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6]
 	 */
 	dbg_fd = open(DEBUG_FLAG, O_RDWR | O_TRUNC, 0644);
-	write(dbg_fd, &buf[0], 5);
+	write(dbg_fd, &buf[0], MIN(len, 7));
 	close(dbg_fd);
 
 	return 0;
@@ -588,13 +588,13 @@ s32 main(s32 argc, char **argv)
 	s32 run_as_background = 0;
 	struct log_server *server;
 	s32 seat = 0, dbg_fd;
-	u8 flag[5] = {1, 1, 1, 1, 1};
+	u8 flag[7] = {1, 1, 1, 1, 1, 1, 1,};
 
 	unlink(DEBUG_FLAG);
 	mkdir(DEBUG_PATH, 0644);
 
 	dbg_fd = open(DEBUG_FLAG, O_CREAT | O_RDWR | O_TRUNC, 0644);
-	write(dbg_fd, &flag[0], 5);
+	write(dbg_fd, &flag[0], 7);
 	close(dbg_fd);
 
 	while ((ch = getopt_long(argc, argv, short_options,

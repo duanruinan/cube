@@ -117,6 +117,8 @@ struct cb_client_agent {
 	void (*send_raw_input_evts)(struct cb_client_agent *client,
 				    u8 *evts,
 				    u32 count_evts);
+	void (*send_raw_touch_evts)(struct cb_client_agent *client,
+				    u8 *evts, u32 sz);
 	void (*send_hpd_evt)(struct cb_client_agent *client,
 			     struct cb_connector_info *conn_info);
 	void (*send_mc_commit_ack)(struct cb_client_agent *client, u64 result);

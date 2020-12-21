@@ -66,6 +66,8 @@
 
 static enum cb_log_level comp_dbg = CB_LOG_NOTICE;
 static enum cb_log_level client_dbg = CB_LOG_NOTICE;
+static enum cb_log_level touch_dbg = CB_LOG_NOTICE;
+static enum cb_log_level joystick_dbg = CB_LOG_NOTICE;
 
 #define comp_debug(fmt, ...) do { \
 	if (comp_dbg >= CB_LOG_DEBUG) { \
@@ -91,6 +93,58 @@ static enum cb_log_level client_dbg = CB_LOG_NOTICE;
 
 #define comp_err(fmt, ...) do { \
 	cb_tlog("[COMP][ERROR ] " fmt, ##__VA_ARGS__); \
+} while (0);
+
+#define touch_debug(fmt, ...) do { \
+	if (touch_dbg >= CB_LOG_DEBUG) { \
+		cb_tlog("[TOUC][DEBUG ] "fmt, ##__VA_ARGS__); \
+	} \
+} while (0);
+
+#define touch_info(fmt, ...) do { \
+	if (touch_dbg >= CB_LOG_INFO) { \
+		cb_tlog("[TOUC][INFO  ] "fmt, ##__VA_ARGS__); \
+	} \
+} while (0);
+
+#define touch_notice(fmt, ...) do { \
+	if (touch_dbg >= CB_LOG_NOTICE) { \
+		cb_tlog("[TOUC][NOTICE] "fmt, ##__VA_ARGS__); \
+	} \
+} while (0);
+
+#define touch_warn(fmt, ...) do { \
+	cb_tlog("[TOUC][WARN  ] " fmt, ##__VA_ARGS__); \
+} while (0);
+
+#define touch_err(fmt, ...) do { \
+	cb_tlog("[TOUC][ERROR ] " fmt, ##__VA_ARGS__); \
+} while (0);
+
+#define joystick_debug(fmt, ...) do { \
+	if (joystick_dbg >= CB_LOG_DEBUG) { \
+		cb_tlog("[JS  ][DEBUG ] "fmt, ##__VA_ARGS__); \
+	} \
+} while (0);
+
+#define joystick_info(fmt, ...) do { \
+	if (joystick_dbg >= CB_LOG_INFO) { \
+		cb_tlog("[JS  ][INFO  ] "fmt, ##__VA_ARGS__); \
+	} \
+} while (0);
+
+#define joystick_notice(fmt, ...) do { \
+	if (joystick_dbg >= CB_LOG_NOTICE) { \
+		cb_tlog("[JS  ][NOTICE] "fmt, ##__VA_ARGS__); \
+	} \
+} while (0);
+
+#define joystick_warn(fmt, ...) do { \
+	cb_tlog("[JS  ][WARN  ] " fmt, ##__VA_ARGS__); \
+} while (0);
+
+#define joystick_err(fmt, ...) do { \
+	cb_tlog("[JS  ][ERROR ] " fmt, ##__VA_ARGS__); \
 } while (0);
 
 struct cb_compositor;
@@ -330,9 +384,71 @@ struct cb_compositor {
 	float mc_accel;
 	s32 touch_pipe;
 
+	/* touchscreen attached (only one touch screen is supported) */
+	bool touchscreen_attached;
+
 	/* for debug tool change dbg level */
 	s32 debug_inotify_fd;
 	struct cb_event_source *dbg_source;
+};
+
+#define MAX_SLOT_NR 32
+
+struct touch_slot {
+	u8 id;
+	bool pressed; /* reset when commit */
+	bool pos_x_changed; /* reset when commit */
+	bool pos_y_changed; /* reset when commit */
+	bool commit_pending; /* reset when commit */
+	u16 pos_x;
+	u16 pos_y;
+};
+
+struct touch_status {
+	s32 st_x, st_y;
+	bool st_changed;
+	struct touch_slot slots[MAX_SLOT_NR];
+	struct touch_slot *last_slot; /* reset when commit */
+};
+
+enum touch_type {
+	ST_TOUCH = 0,
+	MT_TOUCH,
+};
+
+struct touch_info {
+	enum touch_type type;
+	s32 fix_min_x, fix_max_x, fix_min_y, fix_max_y;
+	s32 min_abs_x, min_abs_y, max_abs_x, max_abs_y;
+	s32 min_abs_mt_position_x, max_abs_mt_position_x;
+	s32 min_abs_mt_position_y, max_abs_mt_position_y;
+	s32 min_abs_mt_slot, max_abs_mt_slot;
+	u32 count_slots;
+	s32 min_x, max_x, min_y, max_y;
+	bool fix_min_max_pending;
+};
+
+enum input_type {
+	INPUT_TYPE_UNKNOWN = 0,
+	INPUT_TYPE_MOUSE,
+	INPUT_TYPE_KBD,
+	INPUT_TYPE_KBD_LED_VDEV,
+	INPUT_TYPE_TOUCH,
+	INPUT_TYPE_JOYSTICK,
+};
+
+struct input_device {
+	s32 fd;
+	enum input_type type;
+	char name[256];
+	char devpath[256];
+	struct cb_event_source *input_source;
+	struct cb_compositor *c;
+	struct list_head link;
+
+	/* for touch screen */
+	struct touch_info tinfo;
+	struct touch_status ts;
 };
 
 #define NSEC_PER_SEC 1000000000
@@ -753,6 +869,8 @@ static void update_mc_view_port(struct cb_output *output, bool gen_g_pos)
 	}
 }
 
+static void set_fix_touch_min_max_pending(struct input_device *dev);
+
 /*
  * Calculate rectangle on crtc coordinates for desktop canvas.
  * desktop canvas's size is the real full screen buffer's size.
@@ -761,6 +879,8 @@ static void update_crtc_view_port(struct cb_output *output)
 {
 	struct cb_mode *mode;
 	s32 calc;
+	struct input_device *dev;
+	struct cb_compositor *c;
 
 	mode = output->output->get_current_mode(output->output);
 	if (!mode) {
@@ -794,6 +914,14 @@ static void update_crtc_view_port(struct cb_output *output)
 			output->crtc_view_port.pos.y = 0;
 			output->crtc_view_port.w = calc;
 			output->crtc_view_port.h = output->crtc_h;
+		}
+		c = output->c;
+		if (c->touchscreen_attached) {
+			list_for_each_entry(dev, &c->input_devs, link) {
+				if (dev->type == INPUT_TYPE_TOUCH) {
+					set_fix_touch_min_max_pending(dev);
+				}
+			}
 		}
 	}
 	comp_notice("desktop (%d,%d - %ux%u) crtc_view_port (%d,%d - %ux%u)",
@@ -2625,24 +2753,8 @@ static s32 cb_compositor_set_mouse_cursor(struct compositor *comp,
 	return 0;
 }
 
-enum input_type {
-	INPUT_TYPE_UNKNOWN = 0,
-	INPUT_TYPE_MOUSE,
-	INPUT_TYPE_KBD,
-	INPUT_TYPE_KBD_LED_VDEV,
-	INPUT_TYPE_TOUCH,
-	INPUT_TYPE_JOYSTICK,
-};
-
-struct input_device {
-	s32 fd;
-	enum input_type type;
-	char name[256];
-	char devpath[256];
-	struct cb_event_source *input_source;
-	struct cb_compositor *c;
-	struct list_head link;
-};
+#define LONG_BITS (sizeof(long) * 8)
+#define NLONGS(x) (((x) + LONG_BITS - 1) / LONG_BITS)
 
 static enum input_type test_dev(const char *dev)
 {
@@ -2650,6 +2762,7 @@ static enum input_type test_dev(const char *dev)
 	u8 evbit[EV_MAX/8 + 1];
 	char buffer[64];
 	u32 i;
+	u64 props[NLONGS(INPUT_PROP_CNT)];
 
 	comp_debug("begin test %s", dev);
 	fd = open(dev, O_RDWR | O_CLOEXEC, 0644);
@@ -2663,6 +2776,15 @@ static enum input_type test_dev(const char *dev)
 #define test_bit(bit, array)    (array[bit/8] & (1<<(bit%8)))
 #endif
 	ioctl(fd, EVIOCGBIT(0, sizeof(evbit)), evbit);
+
+	if (test_bit(EV_ABS, evbit)) {
+		memset(props, 0, sizeof(props));
+		if (ioctl(fd, EVIOCGPROP(sizeof(props)), props) < 0) {
+			comp_err("failed to get device's properties. (%s)",
+				 strerror(errno));
+		}
+	}
+
 	close(fd);
 
 	for (i = 0; i < EV_MAX; i++) {
@@ -2712,6 +2834,15 @@ static enum input_type test_dev(const char *dev)
 	    && test_bit(EV_LED, evbit)) {
 		comp_notice("device %s (%s) is keyboard", buffer, dev);
 		return INPUT_TYPE_KBD;
+	} else if (test_bit(EV_KEY, evbit) && test_bit(EV_ABS, evbit) &&
+		   test_bit(EV_FF, evbit)) {
+		comp_notice("device %s (%s) is joystick", buffer, dev);
+	} else if (test_bit(EV_ABS, evbit)) {
+		if (!!(props[INPUT_PROP_DIRECT / LONG_BITS]
+				& (1LL << (INPUT_PROP_DIRECT % LONG_BITS)))) {
+			comp_notice("device %s (%s) is touch", buffer, dev);
+			return INPUT_TYPE_TOUCH;
+		}
 	}
 
 	comp_debug("end test %s", dev);
@@ -2816,7 +2947,7 @@ static s32 cb_compositor_show_mouse_cursor(struct compositor *comp)
 static void event_proc(struct cb_compositor *c, struct input_event *evts,
 		       s32 cnt)
 {
-	struct cb_client_agent *client;
+	struct cb_client_agent *client, *next_client;
 	s32 src, dst;
 	s32 dx, dy;
 	struct cb_raw_input_event *tx_evt;
@@ -2894,7 +3025,7 @@ static void event_proc(struct cb_compositor *c, struct input_event *evts,
 		return;
 
 	/* send raw event */
-	list_for_each_entry(client, &c->clients, link) {
+	list_for_each_entry_safe(client, next_client, &c->clients, link) {
 		if (!(client->capability & CB_CLIENT_CAP_RAW_INPUT))
 			continue;
 		if (!client->raw_input_en)
@@ -2902,6 +3033,9 @@ static void event_proc(struct cb_compositor *c, struct input_event *evts,
 		client->send_raw_input_evts(client, c->raw_input_tx_buffer,dst);
 	}
 }
+
+static void touch_proc(struct input_device *dev, struct input_event *evts,
+		       s32 cnt);
 
 static s32 read_input_event(s32 fd, u32 mask, void *data)
 {
@@ -2913,7 +3047,22 @@ static s32 read_input_event(s32 fd, u32 mask, void *data)
 	if (ret <= 0) {
 		return ret;
 	}
-	event_proc(c, c->raw_input_buffer, ret / sizeof(struct input_event));
+
+	switch (dev->type) {
+	case INPUT_TYPE_TOUCH:
+		touch_proc(dev, c->raw_input_buffer,
+			   ret / sizeof(struct input_event));
+		break;
+	case INPUT_TYPE_JOYSTICK:
+		break;
+	case INPUT_TYPE_KBD:
+	case INPUT_TYPE_MOUSE:
+		event_proc(c, c->raw_input_buffer,
+			   ret / sizeof(struct input_event));
+		break;
+	default:
+		break;
+	}
 
 	return 0;
 }
@@ -2931,6 +3080,15 @@ static void input_device_destroy(struct input_device *dev)
 	free(dev);
 }
 
+static char *input_type_str[] = {
+	[INPUT_TYPE_UNKNOWN] = "Unknown",
+	[INPUT_TYPE_MOUSE] = "Mouse",
+	[INPUT_TYPE_KBD] = "Keyboard",
+	[INPUT_TYPE_KBD_LED_VDEV] = "Uinput",
+	[INPUT_TYPE_TOUCH] = "Touchscreen",
+	[INPUT_TYPE_JOYSTICK] = "Joystick",
+};
+
 static void remove_input_device(struct cb_compositor *c, const char *devpath)
 {
 	struct input_device *dev, *next;
@@ -2939,10 +3097,573 @@ static void remove_input_device(struct cb_compositor *c, const char *devpath)
 		if (!strcmp(dev->devpath, devpath)) {
 			comp_notice("Remove %s (%s), type %s", dev->name,
 				    devpath,
-				    dev->type == INPUT_TYPE_MOUSE ? "M" : "K");
+				    input_type_str[dev->type]);
+			if (dev->type == INPUT_TYPE_TOUCH)
+				c->touchscreen_attached = false;
 			input_device_destroy(dev);
 			return;
 		}
+	}
+}
+
+static void retrieve_touch_info(struct input_device *dev)
+{
+	struct input_absinfo absinfo;
+	s32 ret, i, start;
+
+	ret = ioctl(dev->fd, EVIOCGABS(ABS_X), &absinfo);
+	if (ret < 0 || absinfo.maximum <= absinfo.minimum) {
+		touch_err("failed to get abs_x range. (%s)", strerror(errno));
+		assert(0);
+	}
+	dev->tinfo.min_abs_x = absinfo.minimum;
+	dev->tinfo.max_abs_x = absinfo.maximum;
+	touch_debug("ABS_X (%d-%d)", dev->tinfo.min_abs_x,
+		    dev->tinfo.max_abs_x);
+
+	ret = ioctl(dev->fd, EVIOCGABS(ABS_Y), &absinfo);
+	if (ret < 0 || absinfo.maximum <= absinfo.minimum) {
+		touch_err("failed to get abs_x range. (%s)", strerror(errno));
+		assert(0);
+	}
+	dev->tinfo.min_abs_y = absinfo.minimum;
+	dev->tinfo.max_abs_y = absinfo.maximum;
+	touch_debug("ABS_Y (%d-%d)", dev->tinfo.min_abs_y,
+		    dev->tinfo.max_abs_y);
+	dev->tinfo.type = ST_TOUCH;
+	dev->tinfo.count_slots = 1;
+	start = 0;
+
+	ret = ioctl(dev->fd, EVIOCGABS(ABS_MT_POSITION_X), &absinfo);
+	if (ret < 0 || absinfo.maximum <= absinfo.minimum) {
+		touch_err("failed to get abs_mt_position_x. (%s)",
+			  strerror(errno));
+		goto out;
+	}
+	dev->tinfo.min_abs_mt_position_x = absinfo.minimum;
+	dev->tinfo.max_abs_mt_position_x = absinfo.maximum;
+	touch_debug("ABS_MT_POSITION_X (%d-%d)",
+		    dev->tinfo.min_abs_mt_position_x,
+		    dev->tinfo.max_abs_mt_position_x);
+
+	ret = ioctl(dev->fd, EVIOCGABS(ABS_MT_POSITION_Y), &absinfo);
+	if (ret < 0 || absinfo.maximum <= absinfo.minimum) {
+		touch_err("failed to get abs_mt_position_y. (%s)",
+			  strerror(errno));
+		goto out;
+	}
+	dev->tinfo.min_abs_mt_position_y = absinfo.minimum;
+	dev->tinfo.max_abs_mt_position_y = absinfo.maximum;
+	touch_debug("ABS_MT_POSITION_Y (%d-%d)",
+		    dev->tinfo.min_abs_mt_position_y,
+		    dev->tinfo.max_abs_mt_position_y);
+	dev->tinfo.type = MT_TOUCH;
+
+	ret = ioctl(dev->fd, EVIOCGABS(ABS_MT_SLOT), &absinfo);
+	if (ret < 0 || absinfo.maximum <= absinfo.minimum) {
+		touch_err("failed to get abs_mt_slot. (%s)",
+			  strerror(errno));
+		touch_err("MT protocol type A is obsolete, all kernel drivers "
+			  "have been converted to use type B.");
+		/*
+		 * MT protocol type A is obsolete, all kernel drivers have
+		 * been converted to use type B.
+		 */
+		assert(0);
+	}
+	dev->tinfo.min_abs_mt_slot = absinfo.minimum;
+	dev->tinfo.max_abs_mt_slot = absinfo.maximum;
+	touch_debug("SLOT (%d-%d)", dev->tinfo.min_abs_mt_slot,
+		    dev->tinfo.max_abs_mt_slot);
+	dev->tinfo.count_slots = absinfo.maximum - absinfo.minimum + 1;
+	start = absinfo.minimum;
+
+out:
+	for (i = 0; i < dev->tinfo.count_slots; i++, start++)
+		dev->ts.slots[i].id = start;
+	dev->ts.last_slot = &dev->ts.slots[0];
+	touch_info("Count slot: %u", dev->tinfo.count_slots);
+}
+
+static void set_fix_touch_min_max_pending(struct input_device *dev)
+{
+	if (dev->type == INPUT_TYPE_TOUCH) {
+		if (dev->tinfo.type == ST_TOUCH) {
+			dev->tinfo.fix_min_x = dev->tinfo.min_abs_x;
+			dev->tinfo.fix_max_x = dev->tinfo.max_abs_x;
+			dev->tinfo.fix_min_y = dev->tinfo.min_abs_y;
+			dev->tinfo.fix_max_y = dev->tinfo.max_abs_y;
+		} else {
+			dev->tinfo.fix_min_x = dev->tinfo.min_abs_mt_position_x;
+			dev->tinfo.fix_max_x = dev->tinfo.max_abs_mt_position_x;
+			dev->tinfo.fix_min_y = dev->tinfo.min_abs_mt_position_y;
+			dev->tinfo.fix_max_y = dev->tinfo.max_abs_mt_position_y;
+		}
+		touch_debug(">> set [fix_min_max_pending]");
+		dev->tinfo.fix_min_max_pending = true;
+	}
+}
+
+static void touch_pos_proc(struct input_device *dev, s32 x, s32 y,
+			   u16 *gx, u16 *gy)
+{
+	struct cb_compositor *c = dev->c;
+	struct cb_output *o;
+	s64 lx, ly;
+	s32 min_x, max_x, min_y, max_y, i;
+	s32 left, top;
+	u32 width, height;
+
+	min_x = dev->tinfo.fix_min_x;
+	max_x = dev->tinfo.fix_max_x;
+	min_y = dev->tinfo.fix_min_y;
+	max_y = dev->tinfo.fix_max_y;
+
+	if (dev->tinfo.fix_min_max_pending) {
+		i = c->touch_pipe;
+		o = c->outputs[i];
+		if (!o->enabled)
+			return;
+
+		left = o->crtc_view_port.pos.x;
+		top = o->crtc_view_port.pos.y;
+		width = o->crtc_view_port.w;
+		height = o->crtc_view_port.h;
+		if (!width || !height)
+			return;
+
+		if (dev->tinfo.type == MT_TOUCH) {
+			dev->tinfo.fix_min_x
+			   = dev->tinfo.min_abs_mt_position_x;
+			dev->tinfo.fix_max_x
+			   = dev->tinfo.max_abs_mt_position_x;
+			dev->tinfo.fix_min_y
+			   = dev->tinfo.min_abs_mt_position_y;
+			dev->tinfo.fix_max_y
+			   = dev->tinfo.max_abs_mt_position_y;
+		} else {
+			dev->tinfo.fix_min_x
+			   = dev->tinfo.min_abs_x;
+			dev->tinfo.fix_max_x
+			   = dev->tinfo.max_abs_x;
+			dev->tinfo.fix_min_y
+			   = dev->tinfo.min_abs_y;
+			dev->tinfo.fix_max_y
+			   = dev->tinfo.max_abs_y;
+		}
+/*
+		left + left + width        max_x - min_x + 1
+		-------------------- = --------------------
+		left                       fix_min_x - min_x
+
+		left + left + width        max_x - min_x + 1
+		-------------------- = --------------------
+		left + width              fix_max_x - min_x
+
+
+		top + top + height         max_y - min_y + 1
+		-------------------- = ---------------------
+		top                        fix_min_y - min_y
+
+		top + top + height         max_y - min_y + 1
+		-------------------- = ---------------------
+		top + height              fix_max_y - min_y
+*/
+		if (left) {
+			dev->tinfo.fix_min_x
+				= left * (max_x - min_x + 1)
+				/ (left + left + width) + min_x;
+			dev->tinfo.fix_max_x
+				= (left + width) * (max_x - min_x + 1)
+				/ (left + left + width) + min_x;
+			touch_debug("min_x %d -> %d", min_x,
+				    dev->tinfo.fix_min_x);
+			touch_debug("max_x %d -> %d", max_x,
+				    dev->tinfo.fix_max_x);
+			min_x = dev->tinfo.fix_min_x;
+			max_x = dev->tinfo.fix_max_x;
+		} else if (top) {
+			dev->tinfo.fix_min_y
+				= top * (max_y - min_y + 1)
+				/ (top + top + height) + min_y;
+			dev->tinfo.fix_max_y
+				= (top + height) * (max_y - min_y + 1)
+				/ (top + top + height) + min_y;
+			touch_debug("min_y %d -> %d", min_y,
+				    dev->tinfo.fix_min_y);
+			touch_debug("max_y %d -> %d", max_y,
+				    dev->tinfo.fix_max_y);
+			min_y = dev->tinfo.fix_min_y;
+			max_y = dev->tinfo.fix_max_y;
+		}
+		touch_debug(">> clear [fix_min_max_pending]");
+		dev->tinfo.fix_min_max_pending = false;
+	}
+
+	if (gx && x != -1) {
+		if (x < min_x) {
+			x = min_x;
+			touch_warn("x = %d min_x = %d", x, min_x);
+		}
+		if (x > max_x) {
+			x = max_x;
+			touch_warn("x = %d", x);
+		}
+		lx = x;
+/*
+ *          max_x - min_x + 1              lx - min_x
+ *   ------------------------------ = ----------------------------
+ *              65536                          ?
+ *
+ */
+		lx = (lx - min_x) * 65536 / (max_x - min_x + 1);
+		*gx = (u16)lx;
+	}
+
+	if (gy && y != -1) {
+		if (y < min_y)
+			y = min_y;
+		if (y > max_y)
+			y = max_y;
+		ly = y;
+/*
+ *          max_y - min_y + 1              ly - min_y
+ *   ------------------------------ = ----------------------------
+ *              65536                          ?
+ *
+ */
+		ly = (ly - min_y) * 65536 / (max_y - min_y + 1);
+		*gy = (u16)ly;
+	}
+}
+
+static void dump_touch(struct touch_event *te, u32 sz)
+{
+	struct slot_info *si;
+	u32 i;
+	bool xc, yc;
+	u16 *pos;
+	u8 *p = (u8 *)te;
+
+	for (i = 0; i < sz; i++) {
+		touch_debug("%02X", p[i]);
+	}
+
+	touch_debug("--- TE Head ---");
+	touch_debug("--- count slots: %u", te->count_slots);
+	touch_debug("--- payload sz: %u", te->payload_sz);
+	if (te->payload_sz == 0) {
+		touch_debug("program exist after one second!!!!!");
+		sleep(1);
+		exit(0);
+	}
+	assert(te->payload_sz);
+
+	si = (struct slot_info *)&te->payload[0];
+	for (i = 0; i < te->count_slots + 1; i++) {
+		touch_debug("--- SLOT INFO ---");
+		touch_debug("--- SLOT_ID: %u", si->slot_id);
+		touch_debug("--- Pressed: %u", si->pressed);
+		touch_debug("--- pos_x_changed: %u", si->pos_x_changed);
+		if (si->pos_x_changed)
+			xc = true;
+		else
+			xc = false;
+		touch_debug("--- pos_y_changed: %u", si->pos_y_changed);
+		if (si->pos_y_changed)
+			yc = true;
+		else
+			yc = false;
+		pos = &si->pos[0];
+		if (xc) {
+			touch_debug("--- pos_x: %u", *pos);
+			pos++;
+		}
+		if (yc) {
+			touch_debug("--- pos_y: %u", *pos);
+			pos++;
+		}
+		si = (struct slot_info *)pos;
+	}
+}
+
+static void touch_syn_proc(struct input_device *dev,
+			   struct input_event *event, u8 **cur)
+{
+	struct touch_event *te;
+	struct slot_info *si;
+	u16 *pp;
+	s32 i;
+	u8 count_slots = 0;
+
+	if (!cur || !(*cur))
+		return;
+
+	te = (struct touch_event *)(*cur);
+
+	switch (event->code) {
+	case SYN_REPORT:
+		touch_debug("EV_SYN SYN_REPORT %08X", event->value);
+		if (dev->tinfo.type == ST_TOUCH) {
+			te->count_slots = 0;
+			te->payload_sz = 0;
+
+			si = (struct slot_info *)(&te->payload[0]);
+			si->slot_id = 0;
+			si->pressed = dev->ts.slots[0].pressed;
+			te->payload_sz += sizeof(*si);
+			pp = &si->pos[0];
+
+			if (dev->ts.slots[0].pos_x_changed) {
+				si->pos_x_changed = 1;
+				*pp = dev->ts.slots[0].pos_x;
+				te->payload_sz += sizeof(u16);
+				pp++;
+			} else {
+				si->pos_x_changed = 0;
+			}
+
+			if (dev->ts.slots[0].pos_y_changed) {
+				si->pos_y_changed = 1;
+				*pp = dev->ts.slots[0].pos_y;
+				te->payload_sz += sizeof(u16);
+				pp++;
+			} else {
+				si->pos_y_changed = 0;
+			}
+
+			/* reset state */
+			dev->ts.slots[0].pressed = false;
+			dev->ts.slots[0].pos_x_changed = false;
+			dev->ts.slots[0].pos_y_changed = false;
+			dev->ts.slots[0].commit_pending = false;
+			dev->ts.last_slot = &dev->ts.slots[0];
+
+			/* update cur */
+			*cur = (u8 *)pp;
+		} else {
+			count_slots = 0;
+			te->payload_sz = 0;
+			si = (struct slot_info *)(&te->payload[0]);
+			for (i = 0; i < dev->tinfo.count_slots; i++) {
+				if (!dev->ts.slots[i].commit_pending)
+					continue;
+
+				count_slots++;
+				si->slot_id = i; /* logical id */
+				si->pressed = dev->ts.slots[i].pressed;
+				te->payload_sz += sizeof(*si);
+
+				pp = &si->pos[0];
+
+				if (dev->ts.slots[i].pos_x_changed) {
+					si->pos_x_changed = 1;
+					*pp = dev->ts.slots[i].pos_x;
+					te->payload_sz += sizeof(u16);
+					pp++;
+				} else {
+					si->pos_x_changed = 0;
+				}
+
+				if (dev->ts.slots[i].pos_y_changed) {
+					si->pos_y_changed = 1;
+					*pp = dev->ts.slots[i].pos_y;
+					te->payload_sz += sizeof(u16);
+					pp++;
+				} else {
+					si->pos_y_changed = 0;
+				}
+
+				si = (struct slot_info *)pp;
+
+				/* reset state */
+				/* dev->ts.slots[i].pressed = false; */
+				dev->ts.slots[i].pos_x_changed = false;
+				dev->ts.slots[i].pos_y_changed = false;
+				dev->ts.slots[i].commit_pending = false;
+			}
+
+			assert(count_slots);
+			te->count_slots = count_slots - 1;
+			touch_debug("count_slots = %u", te->count_slots);
+
+			for (i = 0; i < dev->tinfo.count_slots; i++) {
+				if (dev->ts.slots[i].pressed)
+					break;
+			}
+
+			if (i == dev->tinfo.count_slots) {
+				dev->ts.last_slot = &dev->ts.slots[0];
+				touch_debug("reset last slot");
+			}
+
+			/* update cur */
+			*cur = (u8 *)pp;
+		}
+		break;
+	case SYN_MT_REPORT:
+		touch_debug("EV_SYN SYN_MT_REPORT %08X", event->value);
+		touch_err("Rev A ?");
+		assert(0);
+		return;
+	default:
+		touch_err("unknown code %04X", event->code);
+		return;
+	}
+}
+
+static void touch_abs_proc(struct input_device *dev, struct input_event *event)
+{
+	u16 gx, gy;
+	s32 i;
+	s16 pressed = -1;
+
+	switch (event->code) {
+	case ABS_X:
+		touch_debug("EV_ABS ABS_X %d", event->value);
+		touch_pos_proc(dev, event->value, -1, &gx, NULL);
+		dev->ts.st_x = gx;
+		dev->ts.st_changed = true;
+		if (dev->tinfo.type == ST_TOUCH) {
+			dev->ts.slots[0].pos_x_changed = true;
+			dev->ts.slots[0].pos_x = gx;
+			dev->ts.slots[0].commit_pending = true;
+		}
+		break;
+	case ABS_Y:
+		touch_debug("EV_ABS ABS_Y %d", event->value);
+		touch_pos_proc(dev, -1, event->value, NULL, &gy);
+		dev->ts.st_y = gy;
+		dev->ts.st_changed = true;
+		if (dev->tinfo.type == ST_TOUCH) {
+			dev->ts.slots[0].pos_y_changed = true;
+			dev->ts.slots[0].pos_y = gy;
+			dev->ts.slots[0].commit_pending = true;
+		}
+		break;
+	case ABS_MT_TRACKING_ID:
+		touch_debug("EV_ABS ABS_MT_TRACKING_ID %08X", event->value);
+		pressed = dev->ts.last_slot->pressed ? 1 : -1;
+		if ((pressed == (s16)(-1)) && (event->value == (s32)(-1))) {
+			/* no change, not pressed */
+			touch_warn("Pressed status not changed ! 0");
+		} else if ((pressed == 1) && (event->value != (s32)(-1))) {
+			/* no change, pressed */
+			touch_warn("Pressed status not changed ! 1");
+		}
+		if (event->value == (s32)(-1)) {
+			dev->ts.last_slot->commit_pending = true;
+			dev->ts.last_slot->pressed = 0;
+			touch_debug("Pressed status: 0");
+		} else {
+			dev->ts.last_slot->commit_pending = true;
+			dev->ts.last_slot->pressed = 1;
+			touch_debug("Pressed status: 1");
+		}
+		break;
+	case ABS_MT_POSITION_X:
+		touch_debug("EV_ABS ABS_MT_POSITION_X %d", event->value);
+		touch_pos_proc(dev, event->value, -1, &gx, NULL);
+		dev->ts.last_slot->commit_pending = true;
+		dev->ts.last_slot->pos_x = gx;
+		dev->ts.last_slot->pos_x_changed = true;
+		break;
+	case ABS_MT_POSITION_Y:
+		touch_debug("EV_ABS ABS_MT_POSITION_Y %d", event->value);
+		touch_pos_proc(dev, -1, event->value, NULL, &gy);
+		dev->ts.last_slot->commit_pending = true;
+		dev->ts.last_slot->pos_y = gy;
+		dev->ts.last_slot->pos_y_changed = true;
+		break;
+	case ABS_MT_SLOT:
+		touch_debug("EV_ABS ABS_MT_SLOT %d", event->value);
+		for (i = 0; i < dev->tinfo.count_slots; i++)
+			if (dev->ts.slots[i].id == event->value)
+				break;
+		if (i == dev->tinfo.count_slots) {
+			touch_err("cannot found slot %d", event->value);
+		} else {
+			dev->ts.last_slot = &dev->ts.slots[i];
+		}
+		break;
+	default:
+		touch_err("unknown code %04X", event->code);
+		return;
+	}
+}
+
+static void touch_key_proc(struct input_device *dev, struct input_event *event)
+{
+	u8 pressed = 0;
+
+	if (dev->tinfo.type == MT_TOUCH)
+		return;
+
+	switch (event->code) {
+	case BTN_TOUCH:
+		touch_debug("EV_KEY BTN_TOUCH %08X", event->value);
+		pressed = dev->ts.slots[0].pressed;
+		if (event->value == pressed) {
+			touch_warn("Pressed status not changed ! %d", pressed);
+		}
+		if (event->value)
+			dev->ts.slots[0].pressed = 1;
+		else
+			dev->ts.slots[0].pressed = 0;
+		dev->ts.slots[0].commit_pending = true;
+		break;
+	default:
+		touch_err("unknown code %04X", event->code);
+		return;
+	}
+}
+
+static void touch_proc(struct input_device *dev, struct input_event *evts,
+		       s32 cnt)
+{
+	struct cb_client_agent *client, *next_client;
+	struct cb_compositor *c = dev->c;
+	s32 src;
+	u8 *cur, *start;
+	u32 sz;
+
+	start = c->raw_input_tx_buffer + sizeof(u32) + sizeof(struct cb_tlv);
+	cur = start;
+	for (src = 0; src < cnt; src++) {
+		switch (c->raw_input_buffer[src].type) {
+		case EV_SYN:
+			touch_syn_proc(dev, &c->raw_input_buffer[src], &cur);
+			break;
+		case EV_ABS:
+			touch_abs_proc(dev, &c->raw_input_buffer[src]);
+			break;
+		case EV_KEY:
+			touch_key_proc(dev, &c->raw_input_buffer[src]);
+			break;
+		default:
+			touch_err("unknown type %04X",
+				  c->raw_input_buffer[src].type);
+			return;
+		}
+	}
+
+	if (cur == start) {
+		touch_err("nothing to send!");
+		return;
+	}
+
+	sz = cur - start;
+	touch_debug("touch event size: %u %ld %ld", sz,
+		    sizeof(struct touch_event), sizeof(struct slot_info));
+
+	dump_touch((struct touch_event *)start, sz);
+
+	list_for_each_entry_safe(client, next_client, &c->clients, link) {
+		if (!(client->capability & CB_CLIENT_CAP_RAW_INPUT))
+			continue;
+		if (!client->raw_input_en)
+			continue;
+		client->send_raw_touch_evts(client, c->raw_input_tx_buffer, sz);
 	}
 }
 
@@ -2955,6 +3676,9 @@ static void add_input_device(struct cb_compositor *c, const char *devpath)
 	type = test_dev(devpath);
 
 	if (type == INPUT_TYPE_UNKNOWN)
+		return;
+
+	if (type == INPUT_TYPE_TOUCH && c->touchscreen_attached)
 		return;
 
 	fd = open(devpath, O_RDWR | O_CLOEXEC, 0644);
@@ -2997,8 +3721,14 @@ static void add_input_device(struct cb_compositor *c, const char *devpath)
 
 	list_add_tail(&dev->link, &c->input_devs);
 	comp_notice("Add %s (%s), type %s",
-		   dev->name,
-		   dev->devpath, type == INPUT_TYPE_MOUSE? "M" : "K");
+		    dev->name,
+		    dev->devpath, input_type_str[type]);
+
+	if (type == INPUT_TYPE_TOUCH) {
+		c->touchscreen_attached = true;
+		retrieve_touch_info(dev);
+		set_fix_touch_min_max_pending(dev);
+	}
 }
 
 static s32 udev_input_hotplug_event_proc(s32 fd, u32 mask, void *data)
@@ -4097,6 +4827,18 @@ static void cb_compositor_set_rd_dbg_level(struct compositor *comp,
 	c->r->set_dbg_level(c->r, level);
 }
 
+static void cb_compositor_set_touch_dbg_level(struct compositor *comp,
+					      enum cb_log_level level)
+{
+	touch_dbg = level;
+}
+
+static void cb_compositor_set_joystick_dbg_level(struct compositor *comp,
+						 enum cb_log_level level)
+{
+	joystick_dbg = level;
+}
+
 static void cb_compositor_set_client_dbg_level(struct compositor *comp,
 					       enum cb_log_level level)
 {
@@ -4119,7 +4861,7 @@ static s32 dbg_changed(s32 fd, u32 mask, void *data)
 {
 	struct cb_compositor *c = data;
 	s32 dbg_fd, ret, pos = 0, event_sz;
-	u8 flag[5] = {1, 1, 1, 1, 1};
+	u8 flag[7] = {1, 1, 1, 1, 1, 1, 1};
 	u8 event_buf[64];
 	struct cb_client_agent *client, *next_client;
 	struct cb_shell_info shell;
@@ -4156,16 +4898,19 @@ static s32 dbg_changed(s32 fd, u32 mask, void *data)
 	if (dbg_fd < 0)
 		return -1;
 
-	read(dbg_fd, &flag[0], 5);
+	read(dbg_fd, &flag[0], 7);
 	close(dbg_fd);
-	comp_notice("debug: %02X %02X %02X %02X %02X",
-		    flag[0], flag[1], flag[2], flag[3], flag[4]);
+	comp_notice("debug: %02X %02X %02X %02X %02X %02X %02X",
+		    flag[0], flag[1], flag[2], flag[3], flag[4],
+		    flag[5], flag[6]);
 
 	comp_dbg = flag[0];
 	c->base.set_client_dbg_level(&c->base, flag[1]);
 	c->base.set_sc_dbg_level(&c->base, flag[2]);
 	c->base.set_rd_dbg_level(&c->base, flag[3]);
 	client_dbg = flag[4];
+	touch_dbg = flag[5];
+	joystick_dbg = flag[6];
 
 	/* broadcast client debug level to all cube clients */
 	memset(&shell, 0, sizeof(shell));
@@ -4328,6 +5073,8 @@ struct compositor *compositor_create(char *device_name,
 	c->base.set_sc_dbg_level = cb_compositor_set_sc_dbg_level;
 	c->base.set_rd_dbg_level = cb_compositor_set_rd_dbg_level;
 	c->base.set_client_dbg_level = cb_compositor_set_client_dbg_level;
+	c->base.set_touch_dbg_level = cb_compositor_set_touch_dbg_level;
+	c->base.set_joystick_dbg_level = cb_compositor_set_joystick_dbg_level;
 
 	return &c->base;
 
