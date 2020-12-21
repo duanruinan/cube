@@ -2833,7 +2833,7 @@ static void event_proc(struct cb_compositor *c, struct input_event *evts,
 			if (c->raw_input_buffer[src].value == 1)
 				break;
 			if (dx || dy) {
-				cursor_accel_set(&dx, &dy, 2.0f);
+				cursor_accel_set(&dx, &dy, c->mc_accel);
 				set_mc_desktop_pos(c, dx, dy);
 				tx_evt[dst].type = EV_ABS;
 				tx_evt[dst].code = ABS_X | ABS_Y;
