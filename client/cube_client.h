@@ -90,15 +90,6 @@ struct cb_client {
 				     		struct touch_event *evts,
 				     		u32 sz));
 
-#ifdef CONFIG_JOYSTICK
-	s32 (*set_raw_joystick_evts_cb)(struct cb_client *client,
-					void *userdata,
-					void (*raw_joystick_evts_cb)(
-						void *userdata,
-						struct joystick_event *evts,
-						u32 count_evts));
-#endif
-
 	s32 (*set_ready_cb)(struct cb_client *client, void *userdata,
 			    void (*ready_cb)(void *userdata));
 

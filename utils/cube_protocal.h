@@ -132,15 +132,10 @@ struct edid_desc {
 	u8 edid[0];
 };
 
-#define CONFIG_JOYSTICK 1
-
 enum cb_tag {
 	CB_TAG_UNKNOWN = 0,
 	CB_TAG_RAW_INPUT,
 	CB_TAG_RAW_TOUCH,
-#ifdef CONFIG_JOYSTICK
-	CB_TAG_RAW_JOYSTICK,
-#endif
 	CB_TAG_RAW_INPUT_EN,
 	CB_TAG_SET_KBD_LED,
 	CB_TAG_GET_KBD_LED_STATUS,
@@ -416,35 +411,6 @@ struct touch_event {
 	u8 payload[0];
 };
 
-#ifdef CONFIG_JOYSTICK
-struct joy_event {
-	u16 type;
-	u16 code;
-	s32 value;
-};
-
-enum joystick_type {
-	XBOX,
-	PS4,
-	NORMAL,
-};
-
-enum joystick_event_type {
-	ADD_EVENT,
-	REMOVE_EVENT,
-	NORMAL_EVENT,
-};
-
-struct joystick_event {
-	u8 joy_id;
-	u8 joy_type;
-	u8 joy_event_type;
-	u8 event_count;
-	struct joy_event event1;
-	struct joy_event event2;
-};
-#endif
-
 #pragma pack()
 
 struct cb_raw_input_event {
@@ -570,10 +536,6 @@ u64 cb_client_parse_destroy_ack_cmd(u8 *data);
 struct cb_raw_input_event *cb_client_parse_raw_input_evt_cmd(u8 *data,
 							     u32 *count_evts);
 struct touch_event *cb_client_parse_raw_touch_evt_cmd(u8 *data, u32 *sz);
-#ifdef CONFIG_JOYSTICK
-struct joystick_event *cb_client_parse_raw_joystick_evt_cmd(u8 *data,
-							    u32 *count_evts);
-#endif
 
 /* client: raw input enable cmd */
 u8 *cb_client_create_raw_input_en_cmd(u64 en, u32 *n);

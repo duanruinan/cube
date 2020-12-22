@@ -3037,10 +3037,6 @@ static void event_proc(struct cb_compositor *c, struct input_event *evts,
 
 static void touch_proc(struct input_device *dev, struct input_event *evts,
 		       s32 cnt);
-#ifdef CONFIG_JOYSTICK
-static void joystick_proc(struct input_device *dev,
-			  struct input_event *evts, s32 cnt);
-#endif
 
 static s32 read_input_event(s32 fd, u32 mask, void *data)
 {
@@ -3059,10 +3055,6 @@ static s32 read_input_event(s32 fd, u32 mask, void *data)
 			   ret / sizeof(struct input_event));
 		break;
 	case INPUT_TYPE_JOYSTICK:
-#ifdef CONFIG_JOYSTICK
-		joystick_proc(dev, c->raw_input_buffer,
-			      ret / sizeof(struct input_event));
-#endif
 		break;
 	case INPUT_TYPE_KBD:
 	case INPUT_TYPE_MOUSE:
@@ -3101,12 +3093,6 @@ static char *input_type_str[] = {
 static void remove_input_device(struct cb_compositor *c, const char *devpath)
 {
 	struct input_device *dev, *next;
-#ifdef CONFIG_JOYSTICK
-	u8 *jevt_buf;
-	size_t jevt_buf_sz;
-	struct joystick_event *jevt;
-	struct cb_client_agent *client, *next_client;
-#endif
 
 	list_for_each_entry_safe(dev, next, &c->input_devs, link) {
 		if (!strcmp(dev->devpath, devpath)) {
@@ -3116,31 +3102,6 @@ static void remove_input_device(struct cb_compositor *c, const char *devpath)
 			if (dev->type == INPUT_TYPE_TOUCH) {
 				c->touchscreen_attached = false;
 			} else if (dev->type == INPUT_TYPE_JOYSTICK) {
-#ifdef CONFIG_JOYSTICK
-				s32 len;
-
-				jevt_buf_sz = sizeof(*jevt) + sizeof(u32)
-						+ sizeof(struct cb_tlv);
-				jevt_buf = calloc(1, jevt_buf_sz);
-				if (!jevt_buf)
-					continue;
-				memset(jevt_buf, 0, jevt_buf_sz);
-				jevt = (struct joystick_event *)(jevt_buf +
-					sizeof(u32) + sizeof(struct cb_tlv));
-				len = strlen(devpath);
-				jevt->joy_id = (u8)atoi(&devpath[len - 1]);
-				jevt->joy_event_type = REMOVE_EVENT;
-				list_for_each_entry_safe(client,
-							 next_client,
-							 &c->clients,
-							 link) {
-					client->send_raw_joystick_evts(client,
-						jevt_buf, 1);
-				}
-				joystick_notice("Remove joystick device %s",
-					        dev->name);
-				free(jevt_buf);
-#endif
 			}
 			input_device_destroy(dev);
 			return;
@@ -3709,84 +3670,11 @@ static void touch_proc(struct input_device *dev, struct input_event *evts,
 	}
 }
 
-#ifdef CONFIG_JOYSTICK
-static void joystick_proc(struct input_device *dev,
-			  struct input_event *evts, s32 cnt)
-{
-	struct cb_compositor *c = dev->c;
-	struct cb_client_agent *client, *next_client;
-	s32 src;
-	struct joystick_event *cur;
-	s32 dst = 0;
-	enum joystick_type type;
-	s32 len = strlen(dev->devpath);
-	u8 id;
-	u8 *start;
-
-	if (strstr(dev->name, "X-Box")) {
-		type = XBOX;
-	} else {
-		type = NORMAL;
-	}
-
-	id = (u8)atoi(&dev->devpath[len - 1]);
-
-	start = c->raw_input_tx_buffer + sizeof(u32) + sizeof(struct cb_tlv);
-	cur = (struct joystick_event *)start;
-
-	for (src = 0; src < cnt; src++) {
-		switch (c->raw_input_buffer[src].type) {
-		case EV_ABS:
-		case EV_KEY:
-			cur->joy_id = id;
-			cur->joy_type = type;
-			cur->joy_event_type = NORMAL_EVENT;
-			cur->event_count = 1;
-			cur->event1.type = c->raw_input_buffer[src].type;
-			cur->event1.code = c->raw_input_buffer[src].code;
-			cur->event1.value = c->raw_input_buffer[src].value;
-			cur->event2.type = c->raw_input_buffer[src].type;
-			cur->event2.code = c->raw_input_buffer[src].code;
-			cur->event2.value = c->raw_input_buffer[src].value;
-			joystick_debug("jevt: %04X %04X %08X",
-				       cur->event1.type, cur->event1.code,
-				       cur->event1.value);
-			cur++;
-			dst++;
-			break;
-		default:
-			break;
-		}
-	}
-
-	if (cur == (struct joystick_event *)start) {
-		joystick_err("nothing to send!");
-		return;
-	}
-
-	list_for_each_entry_safe(client, next_client, &c->clients, link) {
-		if (!(client->capability & CB_CLIENT_CAP_RAW_INPUT))
-			continue;
-		if (!client->raw_input_en)
-			continue;
-		joystick_debug("send joystick evts, nr: %u", dst);
-		client->send_raw_joystick_evts(client,
-					       c->raw_input_tx_buffer, dst);
-	}
-}
-#endif
-
 static void add_input_device(struct cb_compositor *c, const char *devpath)
 {
 	struct input_device *dev, *b;
 	enum input_type type;
 	s32 fd, ret;
-#ifdef CONFIG_JOYSTICK
-	u8 *jevt_buf;
-	size_t jevt_buf_sz;
-	struct joystick_event *jevt;
-	struct cb_client_agent *client, *next_client;
-#endif
 
 	type = test_dev(devpath);
 
@@ -3845,34 +3733,6 @@ static void add_input_device(struct cb_compositor *c, const char *devpath)
 		    dev->devpath, input_type_str[type]);
 
 	if (type == INPUT_TYPE_JOYSTICK) {
-#ifdef CONFIG_JOYSTICK
-		s32 len;
-
-		jevt_buf_sz = sizeof(*jevt) + sizeof(u32)
-					+ sizeof(struct cb_tlv);
-		jevt_buf = calloc(1, jevt_buf_sz);
-		if (!jevt_buf) {
-			remove_input_device(c, devpath);
-			return;
-		}
-		memset(jevt_buf, 0, jevt_buf_sz);
-		jevt = (struct joystick_event *)(jevt_buf +
-					sizeof(u32) + sizeof(struct cb_tlv));
-		len = strlen(devpath);
-		jevt->joy_id = (u8)atoi(&devpath[len - 1]);
-		jevt->joy_event_type = ADD_EVENT;
-		jevt->joy_type = strstr(dev->name, "X-Box") ? XBOX : NORMAL;
-		list_for_each_entry_safe(client,
-					 next_client,
-					 &c->clients,
-					 link) {
-			client->send_raw_joystick_evts(client, jevt_buf, 1);
-		}
-		joystick_notice("Add joystick device: %s, type: %s",
-				dev->name,
-				jevt->joy_type == XBOX ? "X-Box" : "Normal");
-		free(jevt_buf);
-#endif
 	} else if (type == INPUT_TYPE_TOUCH) {
 		c->touchscreen_attached = true;
 		retrieve_touch_info(dev);
