@@ -49,7 +49,7 @@
 #include <cube_client.h>
 #include "stat_tips.h"
 
-#define DMABUF_TEXTURE 1
+/* #define DMABUF_TEXTURE 1 */
 #define LOCK_SCREEN 0
 #define DELTA_MOVE 2
 
