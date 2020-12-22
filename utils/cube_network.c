@@ -114,8 +114,10 @@ s32 cb_tcp_send(s32 sock, void *buf, size_t sz)
 			ret = send(sock, p, byts_to_wr, MSG_NOSIGNAL);
 		} while (ret < 0 && (errno == EINTR || errno == EAGAIN));
 
-		if (ret <= 0) {
+		if (ret < 0) {
 			return -errno;
+		} else if (ret == 0) {
+			return -EIO;
 		}
 
 		p += ret;
@@ -134,13 +136,12 @@ s32 cb_tcp_recv(s32 sock, void *buf, size_t sz)
 	while (byts_to_rd) {
 		do {
 			ret = recv(sock, p, byts_to_rd, 0);
-			if (ret == 0) {
-				return -1;
-			}
 		} while (ret < 0 && (errno == EINTR || errno == EAGAIN));
 
-		if (ret <= 0) {
+		if (ret < 0) {
 			return -errno;
+		} else if (ret == 0) {
+			return -EIO;
 		}
 
 		p += ret;

@@ -134,6 +134,9 @@ s32 cb_sendmsg(s32 sock, u8 *buf, size_t sz, struct cb_fds *fds)
 				strerror(errno));
 		}
 		return -errno;
+	} else if (ret == 0) {
+		fprintf(stderr, "sendmsg return 0\n");
+		return -EIO;
 	}
 
 	/* close fd ? */
@@ -173,12 +176,13 @@ s32 cb_recvmsg(s32 sock, u8 *buf, size_t sz, struct cb_fds *fds)
 
 	if (ret < 0) {
 		if (errno != EAGAIN) {
-			fprintf(stderr, "failed to recvmsg. sock: %d (%s) %s\n",
-				sock, strerror(errno), __func__);
-			fprintf(stderr, "buf = %p, sz = %lu, fds %p %u\n",
-				buf, sz, fds, fds ? fds->count : 0);
+			fprintf(stderr, "failed to recvmsg. sock: %s\n",
+				strerror(errno));
 		}
 		return -errno;
+	} else if (ret == 0) {
+		fprintf(stderr, "recvmsg return 0\n");
+		return -EIO;
 	}
 
 	if (fds)
