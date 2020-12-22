@@ -1199,6 +1199,27 @@ struct touch_event *cb_client_parse_raw_touch_evt_cmd(u8 *data, u32 *sz)
 	return (struct touch_event *)(&tlv->payload[0]);
 }
 
+#ifdef CONFIG_JOYSTICK
+struct joystick_event *cb_client_parse_raw_joystick_evt_cmd(u8 *data,
+							    u32 *count_evts)
+{
+	struct cb_tlv *tlv;
+
+	if (!count_evts || !data)
+		return NULL;
+
+	tlv = (struct cb_tlv *)(data+sizeof(u32));
+
+	if (tlv->tag != CB_TAG_RAW_JOYSTICK)
+		return NULL;
+
+	assert(!(tlv->length % sizeof(struct joystick_event)));
+	*count_evts = tlv->length / sizeof(struct joystick_event);
+
+	return (struct joystick_event *)(&tlv->payload[0]);
+}
+#endif
+
 u8 *cb_client_create_get_kbd_led_st_cmd(u32 *n)
 {
 	struct cb_tlv *tlv;

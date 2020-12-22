@@ -351,6 +351,48 @@ static void cb_client_agent_send_raw_input(struct cb_client_agent *client,
 	}
 }
 
+#ifdef CONFIG_JOYSTICK
+static void cb_client_agent_send_raw_joystick(struct cb_client_agent *client,
+					      u8 *evts, u32 count_evts)
+{
+	size_t length;
+	struct cb_tlv *tlv;
+	s32 ret;
+	u32 *head;
+
+	tlv = (struct cb_tlv *)(evts + sizeof(u32));
+	tlv->length = count_evts * sizeof(struct joystick_event);
+	length = tlv->length + sizeof(*tlv) + sizeof(u32);
+
+	head = (u32 *)evts;
+	*head = 0xFE; /* magic or else */
+
+	tlv->tag = CB_TAG_RAW_JOYSTICK;
+
+	do {
+		ret = cb_sendmsg(client->sock, (u8 *)&length, sizeof(size_t),
+				 NULL);
+	} while (ret == -EAGAIN);
+	clia_debug("send raw joystick length: %llu", length);
+	if (ret < 0) {
+		clia_err("failed to send raw joystick length. %s",
+			 strerror(errno));
+		client->c->rm_client(client->c, client);
+		return;
+	}
+
+	do {
+		ret = cb_sendmsg(client->sock, evts, length, NULL);
+	} while (ret == -EAGAIN);
+	clia_debug("send raw joystick evts: %llu", length);
+	if (ret < 0) {
+		clia_err("failed to send raw joystick evts. %s",
+			 strerror(errno));
+		client->c->rm_client(client->c, client);
+	}
+}
+#endif
+
 static void cb_client_agent_send_raw_touch(struct cb_client_agent *client,
 					   u8 *evts, u32 sz)
 {
@@ -1707,6 +1749,9 @@ struct cb_client_agent *cb_client_agent_create(s32 sock,
 	client->send_bo_complete = cb_client_agent_send_bo_complete;
 	client->send_raw_input_evts = cb_client_agent_send_raw_input;
 	client->send_raw_touch_evts = cb_client_agent_send_raw_touch;
+#ifdef CONFIG_JOYSTICK
+	client->send_raw_joystick_evts = cb_client_agent_send_raw_joystick;
+#endif
 	client->send_hpd_evt = cb_client_agent_send_hpd_evt;
 	client->send_mc_commit_ack = cb_client_agent_send_mc_commit_ack;
 	client->send_shell_cmd = cb_client_agent_send_shell_cmd;

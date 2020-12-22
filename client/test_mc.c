@@ -330,6 +330,41 @@ static void ready_cb(void *userdata)
 	client->send_get_kbd_led_st(client);
 }
 
+#ifdef CONFIG_JOYSTICK
+static void raw_joystick_evts_cb(void *userdata,
+				 struct joystick_event *jevts,
+				 u32 count_evts)
+{
+	s32 i;
+
+	for (i = 0; i < count_evts; i++) {
+		switch (jevts[i].joy_event_type) {
+		case ADD_EVENT:
+			printf("Joystick attached. ID: %02X, type: %s\n",
+				jevts[i].joy_id,
+				jevts[i].joy_type == XBOX ? "X-Box" : "Normal");
+			break;
+		case REMOVE_EVENT:
+			printf("Joystick detached. ID: %02X, type: %s\n",
+				jevts[i].joy_id,
+				jevts[i].joy_type == XBOX ? "X-Box" : "Normal");
+			break;
+		case NORMAL_EVENT:
+			printf("Jevt: ID: %02X [%04X %04X %08X]\n",
+				jevts[i].joy_id,
+				jevts[i].event1.type,
+				jevts[i].event1.code,
+				jevts[i].event1.value);
+			break;
+		default:
+			fprintf(stderr, "illegal joystick event type %02X\n",
+				jevts[i].joy_event_type);
+			break;
+		}
+	}
+}
+#endif
+
 static void raw_touch_evts_cb(void *userdata,
 			      struct touch_event *tevts,
 			      u32 sz)
@@ -464,6 +499,9 @@ s32 main(s32 argc, char **argv)
 	client->set_ready_cb(client, input, ready_cb);
 	client->set_raw_input_evts_cb(client, input, raw_input_evts_cb);
 	client->set_raw_touch_evts_cb(client, input, raw_touch_evts_cb);
+#ifdef CONFIG_JOYSTICK
+	client->set_raw_joystick_evts_cb(client, input, raw_joystick_evts_cb);
+#endif
 
 	if (input->client)
 		client->run(client);

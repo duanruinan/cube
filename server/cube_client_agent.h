@@ -119,6 +119,10 @@ struct cb_client_agent {
 				    u32 count_evts);
 	void (*send_raw_touch_evts)(struct cb_client_agent *client,
 				    u8 *evts, u32 sz);
+#ifdef CONFIG_JOYSTICK
+	void (*send_raw_joystick_evts)(struct cb_client_agent *client,
+				       u8 *evts, u32 count_evts);
+#endif
 	void (*send_hpd_evt)(struct cb_client_agent *client,
 			     struct cb_connector_info *conn_info);
 	void (*send_mc_commit_ack)(struct cb_client_agent *client, u64 result);

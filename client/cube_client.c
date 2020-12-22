@@ -169,6 +169,12 @@ struct client {
 	void *raw_touch_evts_cb_userdata;
 	void (*raw_touch_evts_cb)(void *userdata, struct touch_event *, u32 sz);
 
+#ifdef CONFIG_JOYSTICK
+	void *raw_joystick_evts_cb_userdata;
+	void (*raw_joystick_evts_cb)(void *userdata, struct joystick_event *,
+				     u32 count_evts);
+#endif
+
 	void *ready_cb_userdata;
 	void (*ready_cb)(void *userdata);
 
@@ -708,6 +714,33 @@ static s32 set_raw_input_evts_cb(struct cb_client *client,
 	cli->raw_input_evts_cb = raw_input_evts_cb;
 	return 0;
 }
+
+#ifdef CONFIG_JOYSTICK
+static s32 set_raw_joystick_evts_cb(struct cb_client *client,
+				    void *userdata,
+				    void (*raw_joystick_evts_cb)(
+				    	void *userdata,
+				    	struct joystick_event *,
+				    	u32 count_evts))
+{
+	struct client *cli = to_client(client);
+
+	if (!client)
+		return -EINVAL;
+
+	client_debug(cli, "set raw joystick events cb %p, %p",
+		     raw_joystick_evts_cb, userdata);
+
+	if (!raw_joystick_evts_cb) {
+		client_err(cli, "raw_joystick_evts_cb is null");
+		return -EINVAL;
+	}
+
+	cli->raw_joystick_evts_cb_userdata = userdata;
+	cli->raw_joystick_evts_cb = raw_joystick_evts_cb;
+	return 0;
+}
+#endif
 
 static s32 set_raw_touch_evts_cb(struct cb_client *client,
 				 void *userdata,
@@ -1908,6 +1941,10 @@ static void client_ipc_proc(struct client *cli)
 	u64 id;
 	struct cb_raw_input_event *evts;
 	struct touch_event *tevts;
+#ifdef CONFIG_JOYSTICK
+	struct joystick_event *jevts;
+	u32 count_jevts;
+#endif
 	u32 count_evts, led_status, touch_sz;
 	u64 surface_id, view_id;
 	bool focus_on;
@@ -1922,7 +1959,9 @@ static void client_ipc_proc(struct client *cli)
 	assert(ipc_sz == (tlv->length + sizeof(*tlv) + sizeof(flag)));
 	assert(tlv->tag == CB_TAG_WIN || tlv->tag == CB_TAG_RAW_INPUT ||
 		tlv->tag == CB_TAG_RAW_TOUCH ||
+#ifdef CONFIG_JOYSTICK
 		tlv->tag == CB_TAG_RAW_JOYSTICK ||
+#endif
 		tlv->tag == CB_TAG_GET_KBD_LED_STATUS_ACK ||
 		tlv->tag == CB_TAG_GET_EDID_ACK ||
 		tlv->tag == CB_TAG_VIEW_FOCUS_CHG);
@@ -1957,10 +1996,23 @@ static void client_ipc_proc(struct client *cli)
 		return;
 	}
 
+#ifdef CONFIG_JOYSTICK
 	if (tlv->tag == CB_TAG_RAW_JOYSTICK) {
-		/* TODO */
+		jevts = cb_client_parse_raw_joystick_evt_cmd(buf, &count_jevts);
+		if (!jevts) {
+			client_err(cli, "failed to parse raw joystick evts.");
+			return;
+		}
+		client_debug(cli, "raw joystick evts: %p %p nr: %u",
+			     cli->raw_joystick_evts_cb, jevts, count_jevts);
+		if (cli->raw_joystick_evts_cb) {
+			cli->raw_joystick_evts_cb(
+				cli->raw_joystick_evts_cb_userdata,
+				jevts, count_jevts);
+		}
 		return;
 	}
+#endif
 
 	if (tlv->tag == CB_TAG_VIEW_FOCUS_CHG) {
 		ret = cb_client_parse_view_focus_chg_cmd(buf, &view_id,
@@ -2461,6 +2513,9 @@ struct cb_client *cb_client_create(s32 seat)
 	cli->base.set_client_cap = set_client_cap;
 	cli->base.set_raw_input_evts_cb = set_raw_input_evts_cb;
 	cli->base.set_raw_touch_evts_cb = set_raw_touch_evts_cb;
+#ifdef CONFIG_JOYSTICK
+	cli->base.set_raw_joystick_evts_cb = set_raw_joystick_evts_cb;
+#endif
 	cli->base.set_ready_cb = set_ready_cb;
 	cli->base.set_destroyed_cb = set_destroyed_cb;
 	cli->base.set_raw_input_en = set_raw_input_en;
