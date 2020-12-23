@@ -153,10 +153,7 @@ static s32 client_sock_cb(s32 fd, u32 mask, void *data)
 		/* printf("receive return %d\n", ret); */
 	} while (ret == -EAGAIN);
 
-	if (ret < 0) {
-		fprintf(stderr, "failed to recv log (%s).\n", strerror(-ret));
-		return ret;
-	} else if (ret == 0) {
+	if (ret <= 0) {
 		log_client_destroy(client);
 		list_del(&client->link);
 		return 0;
