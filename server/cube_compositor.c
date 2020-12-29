@@ -2013,33 +2013,6 @@ static struct cb_output *cb_output_create(struct cb_compositor *c,
 	output->g_desktop_rc.w = GLOBAL_DESKTOP_SZ;
 	output->g_desktop_rc.h = GLOBAL_DESKTOP_SZ;
 
-	/* extended */
-	if (output->pipe == 0) {
-		output->desktop_rc.pos.x = 0;
-		output->desktop_rc.pos.y = 0;
-		output->desktop_rc.w = 1920;
-		output->desktop_rc.h = 1200;
-		output->g_desktop_rc.pos.x = 0;
-		output->g_desktop_rc.pos.y = 0;
-		output->g_desktop_rc.w = GLOBAL_DESKTOP_SZ
-				/ (1920 + 1600) * 1920;
-		output->g_desktop_rc.h = GLOBAL_DESKTOP_SZ;
-	} else {
-		output->desktop_rc.pos.x = 1920;
-		output->desktop_rc.pos.y = 0;
-		output->desktop_rc.w = 1600;
-		output->desktop_rc.h = 900;
-		output->g_desktop_rc.pos.x = GLOBAL_DESKTOP_SZ /
-				(1920 + 1600) * 1920;
-		output->g_desktop_rc.pos.y = 0;
-		output->g_desktop_rc.w = GLOBAL_DESKTOP_SZ
-				- output->g_desktop_rc.pos.x;
-		output->g_desktop_rc.h = GLOBAL_DESKTOP_SZ
-				/ 1200 * 900;
-		printf("******************** %u,%u *******************\n",
-			output->g_desktop_rc.w, output->g_desktop_rc.h);
-	}
-
 	/* prepare disable timer */
 	output->disable_pending = false;
 	output->disable_timer = cb_event_loop_add_timer(c->loop,
@@ -4218,6 +4191,9 @@ static void cb_compositor_commit_surface(struct compositor *comp,
 				   view->output_mask, diff);
 		}
 
+		surface->width = surface->buffer_pending->info.width;
+		surface->height = surface->buffer_pending->info.height;
+
 		if (surface->buffer_pending != surface->buffer_cur) {
 			/* buffer changed */
 			c->r->attach_buffer(c->r, surface,
@@ -4228,8 +4204,6 @@ static void cb_compositor_commit_surface(struct compositor *comp,
 			c->r->flush_damage(c->r, surface);
 		}
 
-		surface->width = surface->buffer_pending->info.width;
-		surface->height = surface->buffer_pending->info.height;
 		surface->buffer_cur = surface->buffer_pending;
 
 		o = find_surface_main_output(surface,
