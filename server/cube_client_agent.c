@@ -742,6 +742,8 @@ static void surface_destroy(struct cb_client_agent *client,
 		destroy_bo(client, b);
 	}
 	cb_signal_fini(&s->destroy_signal);
+	cb_region_fini(&s->damage);
+	cb_region_fini(&s->opaque);
 	free(s);
 }
 
@@ -876,12 +878,6 @@ static s32 dma_buf_bo_commit_proc(struct cb_client_agent *client,
 
 	buffer = (struct cb_buffer *)bo_id;
 
-	cb_region_init_rect(&s->damage,
-			    info->bo_damage.pos.x,
-			    info->bo_damage.pos.y,
-			    info->bo_damage.w,
-			    info->bo_damage.h);
-
 	v->area.pos.x = info->view_x;
 	v->area.pos.y = info->view_y;
 	v->area.w = info->view_width;
@@ -893,7 +889,6 @@ static s32 dma_buf_bo_commit_proc(struct cb_client_agent *client,
 	s->use_renderer = false;
 	ret = client->c->commit_dmabuf(client->c, s);
 
-	cb_region_fini(&s->damage);
 	return ret;
 }
 
@@ -911,11 +906,20 @@ static void surface_bo_commit_proc(struct cb_client_agent *client,
 
 	buffer = (struct cb_buffer *)bo_id;
 
-	cb_region_init_rect(&s->damage,
+	cb_region_fini(&s->damage);
+	if (info->bo_damage.w && info->bo_damage.h)
+		cb_region_init_rect(&s->damage,
 			    info->bo_damage.pos.x,
 			    info->bo_damage.pos.y,
 			    info->bo_damage.w,
 			    info->bo_damage.h);
+	cb_region_fini(&s->opaque);
+	if (info->bo_opaque.w && info->bo_opaque.h)
+		cb_region_init_rect(&s->opaque,
+			    info->bo_opaque.pos.x,
+			    info->bo_opaque.pos.y,
+			    info->bo_opaque.w,
+			    info->bo_opaque.h);
 
 	v->area.pos.x = info->view_x;
 	v->area.pos.y = info->view_y;
@@ -927,7 +931,6 @@ static void surface_bo_commit_proc(struct cb_client_agent *client,
 	clia_debug("commit surface");
 	s->use_renderer = true;
 	client->c->commit_surface(client->c, s);
-	cb_region_fini(&s->damage);
 }
 
 static void bo_commit_proc(struct cb_client_agent *client, u8 *buf)

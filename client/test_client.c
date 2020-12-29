@@ -366,6 +366,10 @@ static s32 repaint_cb(void *userdata)
 		c.bo_damage.w = client->width;
 		c.bo_damage.h = client->height;
 	}
+	c.bo_opaque.pos.x = 0;
+	c.bo_opaque.pos.y = 0;
+	c.bo_opaque.w = client->width;
+	c.bo_opaque.h = client->height;
 	c.view_x = client->x;
 	c.view_y = client->y;
 	c.pipe_locked = client->pipe_locked;
@@ -457,6 +461,10 @@ static void view_created_cb(bool success, void *userdata, u64 view_id)
 		c.bo_damage.pos.y = 0;
 		c.bo_damage.w = client->width;
 		c.bo_damage.h = client->height;
+		c.bo_opaque.pos.x = 0;
+		c.bo_opaque.pos.y = 0;
+		c.bo_opaque.w = client->width;
+		c.bo_opaque.h = client->height;
 		c.view_x = client->x;
 		c.view_y = client->y;
 		c.view_width = client->width;

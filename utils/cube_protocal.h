@@ -293,6 +293,7 @@ struct cb_commit_info {
 	u64 bo_id;
 	u64 surface_id;
 	struct cb_rect bo_damage;
+	struct cb_rect bo_opaque;
 
 	s32 shown; /* 0: hide / 1: show */
 
