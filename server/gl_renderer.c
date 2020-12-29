@@ -1711,6 +1711,12 @@ static struct r_output *gl_output_create(struct renderer *renderer,
 	go->base.destroy = gl_output_destroy;
 	go->base.repaint = gl_output_repaint;
 	go->base.layout_changed = gl_output_layout_changed;
+	/* switch to new context ensure flush damage succesful */
+	if (gl_switch_output(go) < 0) {
+		eglDestroySurface(r->egl_display, egl_surface);
+		free(go);
+		return NULL;
+	}
 
 	return &go->base;
 }
