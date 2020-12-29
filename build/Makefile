@@ -8,6 +8,7 @@ all:
 	make -C $(RPATH)/server RPATH=$(RPATH) PLATFORM=$(PLATFORM)
 	make -C $(RPATH)/client RPATH=$(RPATH) PLATFORM=$(PLATFORM)
 	make -C $(RPATH)/tools RPATH=$(RPATH) PLATFORM=$(PLATFORM)
+	make -C $(RPATH)/gui RPATH=$(RPATH) PLATFORM=$(PLATFORM)
 	-@mkdir -p $(RPATH)/out/usr/bin
 	-@mkdir -p $(RPATH)/out/usr/lib
 	-@cp $(RPATH)/utils/*.so $(RPATH)/out/usr/lib
@@ -24,10 +25,12 @@ all:
 	-@cp $(RPATH)/client/stat_tips $(RPATH)/out/usr/bin
 	-@cp $(RPATH)/client/test_stat_tips $(RPATH)/out/usr/bin
 	-@cp $(RPATH)/client/libstat_tips.so $(RPATH)/out/usr/lib
+	-@cp $(RPATH)/gui/cube_desktop $(RPATH)/out/usr/bin
 	-@cp $(RPATH)/tools/detect_drm $(RPATH)/out/usr/bin
 	-@cp $(RPATH)/build/env.sh $(RPATH)/out
 
 clean:
+	make -C $(RPATH)/gui RPATH=$(RPATH) clean
 	make -C $(RPATH)/tools RPATH=$(RPATH) clean
 	make -C $(RPATH)/client RPATH=$(RPATH) clean
 	make -C $(RPATH)/server RPATH=$(RPATH) clean
