@@ -341,6 +341,7 @@ static void view_info_update(struct cube_desktop *desktop)
 	desktop->v.view_id = 0;
 	desktop->v.alpha = 1.0f;
 	desktop->v.zpos = 0;
+	desktop->v.root_view = true;
 	memcpy(&desktop->v.area, &desktop->desktop_rc, sizeof(struct cb_rect));
 	desktop->v.float_view = false;
 }

@@ -175,6 +175,8 @@ struct cb_view {
 	/* for float view: server do not send focus on / lost message */
 	bool float_view;
 
+	bool root_view;
+
 	bool focus_on;
 };
 

@@ -76,6 +76,13 @@ struct cb_client {
 
 	s32 (*set_client_cap)(struct cb_client *client, u64 cap);
 
+	s32 (*set_input_msg_cb)(struct cb_client *client,
+				void *userdata,
+				void (*input_msg_cb)(
+					void *userdata,
+					struct cb_gui_input_msg *msg,
+					u32 count_msg));
+
 	s32 (*set_raw_input_evts_cb)(struct cb_client *client,
 				     void *userdata,
 				     void (*raw_input_evts_cb)(

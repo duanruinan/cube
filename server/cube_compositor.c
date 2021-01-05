@@ -46,6 +46,7 @@
 #include <cube_cache.h>
 #include <cube_client_agent.h>
 #include <cube_def_cursor.h>
+#include <cube_vkey_map.h>
 
 #define DUMMY_WIDTH 640
 #define DUMMY_HEIGHT 480
@@ -146,6 +147,9 @@ static enum cb_log_level joystick_dbg = CB_LOG_NOTICE;
 #define joystick_err(fmt, ...) do { \
 	cb_tlog("[JS  ][ERROR ] " fmt, ##__VA_ARGS__); \
 } while (0);
+
+#define LBTN_DRAG_TIMEOUT 50
+#define DCLK_INTERVAL 500
 
 struct cb_compositor;
 
@@ -380,6 +384,8 @@ struct cb_compositor {
 	size_t raw_input_buffer_sz;
 	u8 *raw_input_tx_buffer;
 	size_t raw_input_tx_buffer_sz;
+	u8 *input_tx_buffer;
+	size_t input_tx_buffer_sz;
 
 	float mc_accel;
 	s32 touch_pipe;
@@ -449,6 +455,22 @@ struct input_device {
 	/* for touch screen */
 	struct touch_info tinfo;
 	struct touch_status ts;
+
+	/* used for gui */
+	struct cb_event_source *lbtn_down_timer;
+	bool drag_flag;
+	bool draging;
+	struct cb_event_source *lbtn_clk_timer;
+	s32 lbtn_clk_cnt;
+	struct cb_event_source *mbtn_clk_timer;
+	s32 mbtn_clk_cnt;
+	struct cb_event_source *rbtn_clk_timer;
+	s32 rbtn_clk_cnt;
+
+	struct cb_event_source *tbtn_down_timer;
+	bool tdrag_flag;
+	bool tdraging;
+	struct cb_pos tpos;
 };
 
 #define NSEC_PER_SEC 1000000000
@@ -2737,13 +2759,14 @@ static enum input_type test_dev(const char *dev)
 	u32 i;
 	u64 props[NLONGS(INPUT_PROP_CNT)];
 
-	comp_debug("begin test %s", dev);
+	comp_notice("begin test %s", dev);
 	fd = open(dev, O_RDWR | O_CLOEXEC, 0644);
 	if (fd < 0)
 		return INPUT_TYPE_UNKNOWN;
 
 	memset(buffer,0, sizeof(buffer));
 	ioctl(fd, EVIOCGNAME(sizeof(buffer) - 1), buffer);
+	comp_notice("Test input device %s", buffer);
 
 #ifndef test_bit
 #define test_bit(bit, array)    (array[bit/8] & (1<<(bit%8)))
@@ -2764,31 +2787,31 @@ static enum input_type test_dev(const char *dev)
 		if (test_bit(i, evbit)) {
 			switch (i) {
 			case EV_KEY:
-				comp_debug("cap: key");
+				comp_notice("cap: key");
 				break;
 			case EV_REL:
-				comp_debug("cap: rel");
+				comp_notice("cap: rel");
 				break;
 			case EV_ABS:
-				comp_debug("cap: abs");
+				comp_notice("cap: abs");
 				break;
 			case EV_MSC:
-				comp_debug("cap: msc");
+				comp_notice("cap: msc");
 				break;
 			case EV_LED:
-				comp_debug("cap: led");
+				comp_notice("cap: led");
 				break;
 			case EV_SND:
-				comp_debug("cap: sound");
+				comp_notice("cap: sound");
 				break;
 			case EV_REP:
-				comp_debug("cap: repeat");
+				comp_notice("cap: repeat");
 				break;
 			case EV_FF:
-				comp_debug("cap: feedback");
+				comp_notice("cap: feedback");
 				break;
 			case EV_SYN:
-				comp_debug("cap: sync");
+				comp_notice("cap: sync");
 				break;
 			}
 		}
@@ -2819,7 +2842,7 @@ static enum input_type test_dev(const char *dev)
 		}
 	}
 
-	comp_debug("end test %s", dev);
+	comp_notice("end test %s", dev);
 
 	return INPUT_TYPE_UNKNOWN;
 }
@@ -2918,24 +2941,132 @@ static s32 cb_compositor_show_mouse_cursor(struct compositor *comp)
 	return 0;
 }
 
-static void event_proc(struct cb_compositor *c, struct input_event *evts,
+static s32 tbtn_down_timeout_cb(void *userdata)
+{
+	struct input_device *dev = userdata;
+
+	dev->tdrag_flag = true;
+	return 0;
+}
+
+static s32 lbtn_down_timeout_cb(void *userdata)
+{
+	struct input_device *dev = userdata;
+
+	dev->drag_flag = true;
+	return 0;
+}
+
+static s32 lbtn_clk_timeout_cb(void *userdata)
+{
+	struct input_device *dev = userdata;
+
+	dev->lbtn_clk_cnt = 0;
+	return 0;
+}
+
+static s32 mbtn_clk_timeout_cb(void *userdata)
+{
+	struct input_device *dev = userdata;
+
+	dev->mbtn_clk_cnt = 0;
+	return 0;
+}
+
+static s32 rbtn_clk_timeout_cb(void *userdata)
+{
+	struct input_device *dev = userdata;
+
+	dev->rbtn_clk_cnt = 0;
+	return 0;
+}
+
+static void view_switch(struct cb_compositor *c, s32 x, s32 y)
+{
+	struct cb_view *top_view, *view, *v, *first_normal_view;
+	struct cb_client_agent *client;
+
+	top_view = c->top_view;
+	/*
+	 * Do not change top view if the current top view is DMA-BUF view.
+	 */
+	if (top_view && top_view->direct_show)
+		return;
+
+	/* Not in the top view's area, check other view's area */
+	view = NULL;
+	list_for_each_entry(v, &c->views, link) {
+		if (v->float_view)
+			continue;
+		if (x >= v->area.pos.x &&
+		    x < (v->area.pos.x + v->area.w) &&
+		    y >= v->area.pos.y &&
+		    y < (v->area.pos.y + v->area.h)) {
+			/* in area */
+			view = v;
+			break;
+		}
+	}
+
+	if (!view) {
+		/* no desktop ? */
+		return;
+	}
+
+	if (top_view != view) {
+		comp_notice("New top view: %lX -> %lX", (u64)top_view,
+			    (u64)view);
+		client = view->surface->client_agent;
+		client->send_view_focus_chg(client, view, true);
+		client = top_view->surface->client_agent;
+		if (top_view) {
+			client->send_view_focus_chg(client, top_view, false);
+		}
+		if (!view->root_view) {
+			list_del(&view->link);
+			first_normal_view = NULL;
+			list_for_each_entry(v, &c->views, link) {
+				if (!v->float_view) {
+					first_normal_view = v;
+					break;
+				}
+			}
+			if (first_normal_view) {
+				list_add(&view->link,
+					 first_normal_view->link.prev);
+			} else {
+				list_add_tail(&view->link, &c->views);
+			}
+		}
+		c->top_view = view;
+		cb_compositor_repaint(c);
+	}
+}
+
+static void event_proc(struct input_device *dev, struct input_event *evts,
 		       s32 cnt)
 {
 	struct cb_client_agent *client, *next_client;
-	s32 src, dst;
+	s32 src, dst, gm_dst;
 	s32 dx, dy;
 	struct cb_raw_input_event *tx_evt;
+	struct cb_gui_input_msg *tx_gm;
+	struct cb_compositor *c = dev->c;
 
 	dx = dy = 0;
 	dst = 0;
+	gm_dst = 0;
 
 	tx_evt = (struct cb_raw_input_event *)(c->raw_input_tx_buffer
 					       + sizeof(u32)
 					       + sizeof(struct cb_tlv));
+	tx_gm = (struct cb_gui_input_msg *)(c->input_tx_buffer
+						+ sizeof(u32)
+						+ sizeof(struct cb_tlv));
 	for (src = 0; src < cnt; src++) {
-		switch (c->raw_input_buffer[src].type) {
+		switch (evts[src].type) {
 		case EV_SYN:
-			if (c->raw_input_buffer[src].value == 1)
+			if (evts[src].value == 1)
 				break;
 			if (dx || dy) {
 				cursor_accel_set(&dx, &dy, c->mc_accel);
@@ -2950,10 +3081,41 @@ static void event_proc(struct cb_compositor *c, struct input_event *evts,
 			}
 
 			tx_evt[dst].type = EV_SYN;
-			tx_evt[dst].code = c->raw_input_buffer[src].code;
-			tx_evt[dst].v.value = c->raw_input_buffer[src].value;
+			tx_evt[dst].code = evts[src].code;
+			tx_evt[dst].v.value = evts[src].value;
 
 			dst++;
+
+			if (dx || dy) {
+				if (dev->drag_flag) {
+					if (!dev->draging) {
+						dev->draging = true;
+						tx_gm[gm_dst].tag =
+							CB_GUI_INP_DRAG_BEGIN;
+						tx_gm[gm_dst].code =
+							CB_GUI_MOUSE_BTN_LEFT;
+						tx_gm[gm_dst].v.abs.x =
+							c->mc_desktop_pos.x;
+						tx_gm[gm_dst].v.abs.y =
+							c->mc_desktop_pos.y;
+						gm_dst++;
+					}
+					tx_gm[gm_dst].tag =
+						CB_GUI_INP_DRAG;
+					tx_gm[gm_dst].code =
+						CB_GUI_MOUSE_BTN_LEFT;
+					tx_gm[gm_dst].v.abs.x =
+						c->mc_desktop_pos.x;
+					tx_gm[gm_dst].v.abs.y =
+						c->mc_desktop_pos.y;
+					gm_dst++;
+				}
+
+				tx_gm[gm_dst].tag = CB_GUI_INP_MOUSE_MOVE;
+				tx_gm[gm_dst].v.abs.x = c->mc_desktop_pos.x;
+				tx_gm[gm_dst].v.abs.y = c->mc_desktop_pos.y;
+				gm_dst++;
+			}
 			break;
 		case EV_MSC:
 			break;
@@ -2961,30 +3123,214 @@ static void event_proc(struct cb_compositor *c, struct input_event *evts,
 			break;
 		case EV_KEY:
 			tx_evt[dst].type = EV_KEY;
-			tx_evt[dst].code = c->raw_input_buffer[src].code;
-			tx_evt[dst].v.value = c->raw_input_buffer[src].value;
+			tx_evt[dst].code = evts[src].code;
+			tx_evt[dst].v.value = evts[src].value;
 			dst++;
+			switch (evts[src].code) {
+			case BTN_LEFT:
+				if (evts[src].value &&
+						dev->type == INPUT_TYPE_MOUSE) {
+					tx_gm[gm_dst].tag =
+						CB_GUI_INP_MOUSE_BTN_DOWN;
+					tx_gm[gm_dst].v.abs.x =
+						c->mc_desktop_pos.x;
+					tx_gm[gm_dst].v.abs.y =
+						c->mc_desktop_pos.y;
+					cb_event_source_timer_update(
+						dev->lbtn_down_timer,
+						LBTN_DRAG_TIMEOUT, 0);
+					view_switch(c, c->mc_desktop_pos.x,
+						    c->mc_desktop_pos.y);
+				} else {
+					if (dev->drag_flag) {
+						dev->drag_flag = false;
+						dev->draging = false;
+						tx_gm[gm_dst].tag =
+							CB_GUI_INP_DRAG_END;
+						tx_gm[gm_dst].code =
+							CB_GUI_MOUSE_BTN_LEFT;
+						tx_gm[gm_dst].v.abs.x =
+							c->mc_desktop_pos.x;
+						tx_gm[gm_dst].v.abs.y =
+							c->mc_desktop_pos.y;
+						gm_dst++;
+					}
+					cb_event_source_timer_update(
+							dev->lbtn_down_timer,
+							0, 0);
+					tx_gm[gm_dst].tag =
+						CB_GUI_INP_MOUSE_BTN_UP;
+					tx_gm[gm_dst].v.abs.x =
+						c->mc_desktop_pos.x;
+					tx_gm[gm_dst].v.abs.y =
+						c->mc_desktop_pos.y;
+					tx_gm[gm_dst].code =
+						CB_GUI_MOUSE_BTN_LEFT;
+					gm_dst++;
+					dev->lbtn_clk_cnt++;
+					if (dev->lbtn_clk_cnt == 2) {
+						dev->lbtn_clk_cnt = 0;
+						tx_gm[gm_dst].tag =
+						    CB_GUI_INP_MOUSE_BTN_DCLK;
+						tx_gm[gm_dst].v.abs.x =
+							c->mc_desktop_pos.x;
+						tx_gm[gm_dst].v.abs.y =
+							c->mc_desktop_pos.y;
+						tx_gm[gm_dst].code =
+							CB_GUI_MOUSE_BTN_LEFT;
+						gm_dst++;
+						break;
+					} else {
+						cb_event_source_timer_update(
+							dev->lbtn_clk_timer,
+							DCLK_INTERVAL, 0);
+					}
+					tx_gm[gm_dst].tag =
+						CB_GUI_INP_MOUSE_BTN_CLK;
+					tx_gm[gm_dst].v.abs.x =
+						c->mc_desktop_pos.x;
+					tx_gm[gm_dst].v.abs.y =
+						c->mc_desktop_pos.y;
+					cb_event_source_timer_update(
+						dev->lbtn_down_timer, 0, 0);
+				}
+				tx_gm[gm_dst].code = CB_GUI_MOUSE_BTN_LEFT;
+				gm_dst++;
+				break;
+			case BTN_RIGHT:
+				if (evts[src].value) {
+					tx_gm[gm_dst].tag =
+						CB_GUI_INP_MOUSE_BTN_DOWN;
+					tx_gm[gm_dst].v.abs.x =
+						c->mc_desktop_pos.x;
+					tx_gm[gm_dst].v.abs.y =
+						c->mc_desktop_pos.y;
+				} else {
+					tx_gm[gm_dst].tag =
+						CB_GUI_INP_MOUSE_BTN_UP;
+					tx_gm[gm_dst].v.abs.x =
+						c->mc_desktop_pos.x;
+					tx_gm[gm_dst].v.abs.y =
+						c->mc_desktop_pos.y;
+					tx_gm[gm_dst].code =
+						CB_GUI_MOUSE_BTN_RIGHT;
+					gm_dst++;
+					dev->rbtn_clk_cnt++;
+					if (dev->rbtn_clk_cnt == 2) {
+						dev->rbtn_clk_cnt = 0;
+						tx_gm[gm_dst].tag =
+						    CB_GUI_INP_MOUSE_BTN_DCLK;
+						tx_gm[gm_dst].v.abs.x =
+							c->mc_desktop_pos.x;
+						tx_gm[gm_dst].v.abs.y =
+							c->mc_desktop_pos.y;
+						tx_gm[gm_dst].code =
+							CB_GUI_MOUSE_BTN_RIGHT;
+						gm_dst++;
+						break;
+					} else {
+						cb_event_source_timer_update(
+							dev->rbtn_clk_timer,
+							DCLK_INTERVAL, 0);
+					}
+					tx_gm[gm_dst].tag =
+						CB_GUI_INP_MOUSE_BTN_CLK;
+					tx_gm[gm_dst].v.abs.x =
+						c->mc_desktop_pos.x;
+					tx_gm[gm_dst].v.abs.y =
+						c->mc_desktop_pos.y;
+				}
+				tx_gm[gm_dst].code = CB_GUI_MOUSE_BTN_RIGHT;
+				gm_dst++;
+				break;
+			case BTN_MIDDLE:
+				if (evts[src].value) {
+					tx_gm[gm_dst].tag =
+						CB_GUI_INP_MOUSE_BTN_DOWN;
+					tx_gm[gm_dst].v.abs.x =
+						c->mc_desktop_pos.x;
+					tx_gm[gm_dst].v.abs.y =
+						c->mc_desktop_pos.y;
+				} else {
+					tx_gm[gm_dst].tag =
+						CB_GUI_INP_MOUSE_BTN_UP;
+					tx_gm[gm_dst].v.abs.x =
+						c->mc_desktop_pos.x;
+					tx_gm[gm_dst].v.abs.y =
+						c->mc_desktop_pos.y;
+					tx_gm[gm_dst].code =
+						CB_GUI_MOUSE_BTN_MIDDLE;
+					gm_dst++;
+					dev->mbtn_clk_cnt++;
+					if (dev->mbtn_clk_cnt == 2) {
+						dev->mbtn_clk_cnt = 0;
+						tx_gm[gm_dst].tag =
+						    CB_GUI_INP_MOUSE_BTN_DCLK;
+						tx_gm[gm_dst].v.abs.x =
+							c->mc_desktop_pos.x;
+						tx_gm[gm_dst].v.abs.y =
+							c->mc_desktop_pos.y;
+						tx_gm[gm_dst].code =
+							CB_GUI_MOUSE_BTN_MIDDLE;
+						gm_dst++;
+						break;
+					} else {
+						cb_event_source_timer_update(
+							dev->mbtn_clk_timer,
+							DCLK_INTERVAL, 0);
+					}
+					tx_gm[gm_dst].tag =
+						CB_GUI_INP_MOUSE_BTN_CLK;
+					tx_gm[gm_dst].v.abs.x =
+						c->mc_desktop_pos.x;
+					tx_gm[gm_dst].v.abs.y =
+						c->mc_desktop_pos.y;
+				}
+				tx_gm[gm_dst].code = CB_GUI_MOUSE_BTN_MIDDLE;
+				gm_dst++;
+				break;
+			default:
+				if (evts[src].value) {
+					tx_gm[gm_dst].tag = CB_GUI_INP_KEY_DOWN;
+					tx_gm[gm_dst].v.kv = CB_GUI_KEY_DOWN;
+				} else {
+					tx_gm[gm_dst].tag = CB_GUI_INP_KEY_UP;
+					tx_gm[gm_dst].v.kv = CB_GUI_KEY_UP;
+				}
+				tx_gm[gm_dst].code = vk_map[evts[src].code];
+				gm_dst++;
+				if (!evts[src].value) {
+					tx_gm[gm_dst].tag =
+						CB_GUI_INP_KEY_PRESS;
+					tx_gm[gm_dst].v.kv = CB_GUI_KEY_UP;
+					gm_dst++;
+				}
+				break;
+			}
 			break;
 		case EV_REP:
 			tx_evt[dst].type = EV_REP;
-			tx_evt[dst].code = c->raw_input_buffer[src].code;
-			tx_evt[dst].v.value = c->raw_input_buffer[src].value;
+			tx_evt[dst].code = evts[src].code;
+			tx_evt[dst].v.value = evts[src].value;
 			dst++;
 			break;
 		case EV_REL:
-			switch (c->raw_input_buffer[src].code) {
+			switch (evts[src].code) {
 			case REL_WHEEL:
 				tx_evt[dst].type = EV_REL;
 				tx_evt[dst].code = REL_WHEEL;
-				tx_evt[dst].v.value =
-					c->raw_input_buffer[src].value;
+				tx_evt[dst].v.value = evts[src].value;
 				dst++;
+				tx_gm[gm_dst].tag = CB_GUI_INP_MOUSE_SCROLL;
+				tx_gm[gm_dst].code = 0;
+				tx_gm[gm_dst].v.sd.d = evts[src].value;
+				gm_dst++;
 				break;
 			case REL_X:
-				dx = c->raw_input_buffer[src].value;
+				dx = evts[src].value;
 				break;
 			case REL_Y:
-				dy = c->raw_input_buffer[src].value;
+				dy = evts[src].value;
 				break;
 			default:
 				break;
@@ -3005,6 +3351,19 @@ static void event_proc(struct cb_compositor *c, struct input_event *evts,
 		if (!client->raw_input_en)
 			continue;
 		client->send_raw_input_evts(client, c->raw_input_tx_buffer,dst);
+	}
+
+	if (c->top_view) {
+		if (!c->top_view->surface)
+			return;
+		if (c->top_view->direct_show)
+			return;
+		client = c->top_view->surface->client_agent;
+		if (!client)
+			return;
+		if (!(client->capability & CB_CLIENT_CAP_INPUT))
+			return;
+		client->send_input_msg(client, c->input_tx_buffer, gm_dst);
 	}
 }
 
@@ -3031,7 +3390,7 @@ static s32 read_input_event(s32 fd, u32 mask, void *data)
 		break;
 	case INPUT_TYPE_KBD:
 	case INPUT_TYPE_MOUSE:
-		event_proc(c, c->raw_input_buffer,
+		event_proc(dev, c->raw_input_buffer,
 			   ret / sizeof(struct input_event));
 		break;
 	default:
@@ -3048,6 +3407,16 @@ static void input_device_destroy(struct input_device *dev)
 
 	comp_debug("Destroy input %s", dev->devpath);
 	list_del(&dev->link);
+	if (dev->type == INPUT_TYPE_TOUCH && dev->tbtn_down_timer)
+		cb_event_source_remove(dev->tbtn_down_timer);
+	if (dev->type == INPUT_TYPE_MOUSE && dev->lbtn_down_timer)
+		cb_event_source_remove(dev->lbtn_down_timer);
+	if (dev->type == INPUT_TYPE_MOUSE && dev->lbtn_clk_timer)
+		cb_event_source_remove(dev->lbtn_clk_timer);
+	if (dev->type == INPUT_TYPE_MOUSE && dev->rbtn_clk_timer)
+		cb_event_source_remove(dev->rbtn_clk_timer);
+	if (dev->type == INPUT_TYPE_MOUSE && dev->mbtn_clk_timer)
+		cb_event_source_remove(dev->mbtn_clk_timer);
 	if (dev->input_source)
 		cb_event_source_remove(dev->input_source);
 	close(dev->fd);
@@ -3180,6 +3549,9 @@ static void set_fix_touch_min_max_pending(struct input_device *dev)
 	}
 }
 
+/*
+ * Multi-screen for touch is not implemented.
+ */
 static void touch_pos_proc(struct input_device *dev, s32 x, s32 y,
 			   u16 *gx, u16 *gy)
 {
@@ -3363,13 +3735,36 @@ static void dump_touch(struct touch_event *te, u32 sz)
 	}
 }
 
-static void touch_syn_proc(struct input_device *dev,
-			   struct input_event *event, u8 **cur)
+static void touch_tpos(struct cb_compositor *c, u16 x, u16 y,
+		       struct cb_pos *pos, bool is_x)
+{
+	struct cb_output *o = c->outputs[c->touch_pipe];
+
+	if (is_x) {
+		/*
+		 *        x             g_desktop_rc.w
+		 * --------------- = --------------------
+		 *      pos->x           desktop_rc.w
+		 */
+		pos->x = x * o->desktop_rc.w / o->g_desktop_rc.w;
+	} else {
+		/*
+		 *        y             g_desktop_rc.h
+		 * --------------- = --------------------
+		 *      pos->y           desktop_rc.h
+		 */
+		pos->y = y * o->desktop_rc.h / o->g_desktop_rc.h;
+	}
+}
+
+static void touch_syn_proc(struct input_device *dev, struct input_event *event,
+			   u8 **cur,
+			   struct cb_gui_input_msg *tx_gm, s32 *tx_gm_index)
 {
 	struct touch_event *te;
 	struct slot_info *si;
 	u16 *pp;
-	s32 i;
+	s32 i, *index = tx_gm_index;
 	u8 count_slots = 0;
 
 	if (!cur || !(*cur))
@@ -3385,6 +3780,29 @@ static void touch_syn_proc(struct input_device *dev,
 			te->payload_sz = 0;
 
 			si = (struct slot_info *)(&te->payload[0]);
+			if (dev->ts.slots[0].pos_x_changed ||
+			    dev->ts.slots[0].pos_y_changed) {
+				if (dev->tdrag_flag) {
+					if (!dev->tdraging) {
+						dev->tdraging = true;
+						tx_gm[*index].tag =
+							CB_GUI_INP_DRAG_BEGIN;
+						tx_gm[*index].code =
+							CB_GUI_TOUCH_BTN;
+						tx_gm[*index].v.abs.x
+							= dev->tpos.x;
+						tx_gm[*index].v.abs.y
+							= dev->tpos.y;
+						(*index)++;
+					}
+					tx_gm[*index].tag =
+						CB_GUI_INP_DRAG;
+					tx_gm[*index].code = CB_GUI_TOUCH_BTN;
+					tx_gm[*index].v.abs.x = dev->tpos.x;
+					tx_gm[*index].v.abs.y = dev->tpos.y;
+					(*index)++;
+				}
+			}
 			si->slot_id = 0;
 			si->pressed = dev->ts.slots[0].pressed;
 			te->payload_sz += sizeof(*si);
@@ -3421,6 +3839,30 @@ static void touch_syn_proc(struct input_device *dev,
 			count_slots = 0;
 			te->payload_sz = 0;
 			si = (struct slot_info *)(&te->payload[0]);
+			if (dev->ts.slots[0].pos_x_changed ||
+			    dev->ts.slots[0].pos_y_changed) {
+				if (dev->tdrag_flag) {
+					if (!dev->tdraging) {
+						dev->tdraging = true;
+						tx_gm[*index].tag =
+							CB_GUI_INP_DRAG_BEGIN;
+						tx_gm[*index].code =
+							CB_GUI_TOUCH_BTN;
+						tx_gm[*index].v.abs.x
+							= dev->tpos.x;
+						tx_gm[*index].v.abs.y
+							= dev->tpos.y;
+						(*index)++;
+					}
+					tx_gm[*index].tag =
+						CB_GUI_INP_DRAG;
+					tx_gm[*index].code = CB_GUI_TOUCH_BTN;
+					tx_gm[*index].v.abs.x = dev->tpos.x;
+					tx_gm[*index].v.abs.y = dev->tpos.y;
+					(*index)++;
+				}
+			}
+
 			for (i = 0; i < dev->tinfo.count_slots; i++) {
 				if (!dev->ts.slots[i].commit_pending)
 					continue;
@@ -3493,6 +3935,7 @@ static void touch_abs_proc(struct input_device *dev, struct input_event *event)
 	u16 gx, gy;
 	s32 i;
 	s16 pressed = -1;
+	struct cb_compositor *c = dev->c;
 
 	switch (event->code) {
 	case ABS_X:
@@ -3543,6 +3986,15 @@ static void touch_abs_proc(struct input_device *dev, struct input_event *event)
 		dev->ts.last_slot->commit_pending = true;
 		dev->ts.last_slot->pos_x = gx;
 		dev->ts.last_slot->pos_x_changed = true;
+		if (dev->ts.last_slot == &dev->ts.slots[0]) {
+			/*
+			 * calc desktop pos for touch
+			 * touch_pipe -> output
+			 */
+			touch_tpos(c, dev->ts.slots[0].pos_x,
+				   dev->ts.slots[0].pos_y,
+				   &dev->tpos, true);
+		}
 		break;
 	case ABS_MT_POSITION_Y:
 		touch_debug("EV_ABS ABS_MT_POSITION_Y %d", event->value);
@@ -3550,6 +4002,15 @@ static void touch_abs_proc(struct input_device *dev, struct input_event *event)
 		dev->ts.last_slot->commit_pending = true;
 		dev->ts.last_slot->pos_y = gy;
 		dev->ts.last_slot->pos_y_changed = true;
+		if (dev->ts.last_slot == &dev->ts.slots[0]) {
+			/*
+			 * calc desktop pos for touch
+			 * touch_pipe -> output
+			 */
+			touch_tpos(c, dev->ts.slots[0].pos_x,
+				   dev->ts.slots[0].pos_y,
+				   &dev->tpos, false);
+		}
 		break;
 	case ABS_MT_SLOT:
 		touch_debug("EV_ABS ABS_MT_SLOT %d", event->value);
@@ -3568,25 +4029,53 @@ static void touch_abs_proc(struct input_device *dev, struct input_event *event)
 	}
 }
 
-static void touch_key_proc(struct input_device *dev, struct input_event *event)
+static void touch_key_proc(struct input_device *dev, struct input_event *event,
+			   struct cb_gui_input_msg *tx_gm, s32 *tx_gm_index)
 {
 	u8 pressed = 0;
-
-	if (dev->tinfo.type == MT_TOUCH)
-		return;
+	s32 *index = tx_gm_index;
+	struct cb_compositor *c = dev->c;
 
 	switch (event->code) {
 	case BTN_TOUCH:
 		touch_debug("EV_KEY BTN_TOUCH %08X", event->value);
-		pressed = dev->ts.slots[0].pressed;
-		if (event->value == pressed) {
-			touch_warn("Pressed status not changed ! %d", pressed);
+		if (dev->tinfo.type == MT_TOUCH) {
+			pressed = dev->ts.slots[0].pressed;
+			if (event->value == pressed) {
+				touch_warn("Pressed status not changed ! %d",
+					   pressed);
+			}
+			if (event->value) {
+				dev->ts.slots[0].pressed = 1;
+			} else {
+				dev->ts.slots[0].pressed = 0;
+			}
+			dev->ts.slots[0].commit_pending = true;
 		}
-		if (event->value)
-			dev->ts.slots[0].pressed = 1;
-		else
-			dev->ts.slots[0].pressed = 0;
-		dev->ts.slots[0].commit_pending = true;
+		if (event->value) {
+			cb_event_source_timer_update(
+						dev->tbtn_down_timer,
+						LBTN_DRAG_TIMEOUT, 0);
+			view_switch(c, dev->tpos.x, dev->tpos.y);
+		} else {
+			if (dev->tdrag_flag) {
+				dev->tdrag_flag = false;
+				dev->tdraging = false;
+				tx_gm[*index].tag = CB_GUI_INP_DRAG_END;
+				tx_gm[*index].v.abs.x = dev->tpos.x;
+				tx_gm[*index].v.abs.y = dev->tpos.y;
+				tx_gm[*index].code = CB_GUI_TOUCH_BTN;
+				(*index)++;
+			}
+			cb_event_source_timer_update(
+						dev->tbtn_down_timer,
+						0, 0);
+			tx_gm[*index].tag = CB_GUI_INP_TOUCH_BTN_CLK;
+			tx_gm[*index].v.abs.x = dev->tpos.x;
+			tx_gm[*index].v.abs.y = dev->tpos.y;
+			tx_gm[*index].code = CB_GUI_TOUCH_BTN;
+			(*index)++;
+		}
 		break;
 	default:
 		touch_err("unknown code %04X", event->code);
@@ -3599,26 +4088,32 @@ static void touch_proc(struct input_device *dev, struct input_event *evts,
 {
 	struct cb_client_agent *client, *next_client;
 	struct cb_compositor *c = dev->c;
-	s32 src;
+	s32 src, gm_dst;
 	u8 *cur, *start;
 	u32 sz;
+	struct cb_gui_input_msg *tx_gm;
 
+	gm_dst = 0;
+	tx_gm = (struct cb_gui_input_msg *)(c->input_tx_buffer
+						+ sizeof(u32)
+						+ sizeof(struct cb_tlv));
 	start = c->raw_input_tx_buffer + sizeof(u32) + sizeof(struct cb_tlv);
 	cur = start;
 	for (src = 0; src < cnt; src++) {
-		switch (c->raw_input_buffer[src].type) {
+		switch (evts[src].type) {
 		case EV_SYN:
-			touch_syn_proc(dev, &c->raw_input_buffer[src], &cur);
+			touch_syn_proc(dev, &evts[src], &cur,
+				       &tx_gm[gm_dst], &gm_dst);
 			break;
 		case EV_ABS:
-			touch_abs_proc(dev, &c->raw_input_buffer[src]);
+			touch_abs_proc(dev, &evts[src]);
 			break;
 		case EV_KEY:
-			touch_key_proc(dev, &c->raw_input_buffer[src]);
+			touch_key_proc(dev, &evts[src],
+				       &tx_gm[gm_dst], &gm_dst);
 			break;
 		default:
-			touch_err("unknown type %04X",
-				  c->raw_input_buffer[src].type);
+			touch_err("unknown type %04X", evts[src].type);
 			return;
 		}
 	}
@@ -3640,6 +4135,19 @@ static void touch_proc(struct input_device *dev, struct input_event *evts,
 		if (!client->raw_input_en)
 			continue;
 		client->send_raw_touch_evts(client, c->raw_input_tx_buffer, sz);
+	}
+
+	if (c->top_view) {
+		if (!c->top_view->surface)
+			return;
+		if (c->top_view->direct_show)
+			return;
+		client = c->top_view->surface->client_agent;
+		if (!client)
+			return;
+		if (!(client->capability & CB_CLIENT_CAP_INPUT))
+			return;
+		client->send_input_msg(client, c->input_tx_buffer, gm_dst);
 	}
 }
 
@@ -3698,6 +4206,69 @@ static void add_input_device(struct cb_compositor *c, const char *devpath)
 			free(dev);
 			return;
 		}
+
+		if (dev->type == INPUT_TYPE_MOUSE) {
+			dev->lbtn_down_timer = cb_event_loop_add_timer(
+							c->loop,
+							lbtn_down_timeout_cb,
+							dev);
+			if (!dev->lbtn_down_timer) {
+				cb_event_source_remove(dev->input_source);
+				close(dev->fd);
+				free(dev);
+				return;
+			}
+
+			dev->lbtn_clk_timer = cb_event_loop_add_timer(
+							c->loop,
+							lbtn_clk_timeout_cb,
+							dev);
+			if (!dev->lbtn_clk_timer) {
+				cb_event_source_remove(dev->lbtn_down_timer);
+				cb_event_source_remove(dev->input_source);
+				close(dev->fd);
+				free(dev);
+				return;
+			}
+
+			dev->rbtn_clk_timer = cb_event_loop_add_timer(
+							c->loop,
+							rbtn_clk_timeout_cb,
+							dev);
+			if (!dev->rbtn_clk_timer) {
+				cb_event_source_remove(dev->lbtn_clk_timer);
+				cb_event_source_remove(dev->lbtn_down_timer);
+				cb_event_source_remove(dev->input_source);
+				close(dev->fd);
+				free(dev);
+				return;
+			}
+
+			dev->mbtn_clk_timer = cb_event_loop_add_timer(
+							c->loop,
+							mbtn_clk_timeout_cb,
+							dev);
+			if (!dev->mbtn_clk_timer) {
+				cb_event_source_remove(dev->rbtn_clk_timer);
+				cb_event_source_remove(dev->lbtn_clk_timer);
+				cb_event_source_remove(dev->lbtn_down_timer);
+				cb_event_source_remove(dev->input_source);
+				close(dev->fd);
+				free(dev);
+				return;
+			}
+		} else if (dev->type == INPUT_TYPE_TOUCH) {
+			dev->tbtn_down_timer = cb_event_loop_add_timer(
+							c->loop,
+							tbtn_down_timeout_cb,
+							dev);
+			if (!dev->tbtn_down_timer) {
+				cb_event_source_remove(dev->input_source);
+				close(dev->fd);
+				free(dev);
+				return;
+			}
+		}
 	}
 
 	list_add_tail(&dev->link, &c->input_devs);
@@ -3751,6 +4322,12 @@ static void cb_compositor_input_fini(struct cb_compositor *c)
 		free(c->raw_input_tx_buffer);
 		c->raw_input_tx_buffer = NULL;
 		c->raw_input_tx_buffer_sz = 0;
+	}
+
+	if (c->input_tx_buffer) {
+		free(c->input_tx_buffer);
+		c->input_tx_buffer = NULL;
+		c->input_tx_buffer_sz = 0;
 	}
 
 	list_for_each_entry_safe(dev, next, &c->input_devs, link) {
@@ -3920,6 +4497,13 @@ static s32 cb_compositor_input_init(struct cb_compositor *c)
 		goto err;
 
 	memset(c->raw_input_buffer, 0, c->raw_input_buffer_sz);
+
+	c->input_tx_buffer_sz = sizeof(struct cb_gui_input_msg) * 4096
+			+ sizeof(struct cb_tlv) + sizeof(u32);
+	c->input_tx_buffer = (u8 *)malloc(c->input_tx_buffer_sz);
+	if (!c->input_tx_buffer)
+		goto err;
+	memset(c->input_tx_buffer, 0, c->input_tx_buffer_sz);
 
 	INIT_LIST_HEAD(&c->input_devs);
 

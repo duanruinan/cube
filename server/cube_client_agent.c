@@ -310,6 +310,46 @@ static void cb_client_agent_send_bo_complete(struct cb_client_agent *client,
 	}
 }
 
+static void cb_client_agent_send_input_msg(struct cb_client_agent *client,
+					   u8 *msg, u32 count_msg)
+{
+	size_t length;
+	struct cb_tlv *tlv;
+	s32 ret;
+	u32 *head;
+
+	tlv = (struct cb_tlv *)(msg + sizeof(u32));
+	tlv->length = count_msg * sizeof(struct cb_gui_input_msg);
+	length = tlv->length + sizeof(*tlv) + sizeof(u32);
+
+	head = (u32 *)msg;
+	*head = 0xFA; /* magic or else */
+
+	tlv->tag = CB_TAG_GUI_INPUT;
+
+	do {
+		ret = cb_sendmsg(client->sock, (u8 *)&length, sizeof(size_t),
+				 NULL);
+	} while (ret == -EAGAIN);
+	clia_debug("send gui input msg length: %llu", length);
+	if (ret < 0) {
+		clia_err("failed to send gui input msg length. %s",
+			 strerror(errno));
+		client->c->rm_client(client->c, client);
+		return;
+	}
+
+	do {
+		ret = cb_sendmsg(client->sock, msg, length, NULL);
+	} while (ret == -EAGAIN);
+	clia_debug("send gui input msg: %llu", length);
+	if (ret < 0) {
+		clia_err("failed to send gui input msg. %s",
+			 strerror(errno));
+		client->c->rm_client(client->c, client);
+	}
+}
+
 static void cb_client_agent_send_raw_input(struct cb_client_agent *client,
 					   u8 *evts,
 					   u32 count_evts)
@@ -1106,6 +1146,7 @@ static void view_create_proc(struct cb_client_agent *client, u8 *buf)
 	s->view = v;
 	v->zpos = vinfo.zpos;
 	v->float_view = vinfo.float_view;
+	v->root_view = vinfo.root_view;
 
 	memcpy(&v->area, &vinfo.area, sizeof(struct cb_rect));
 
@@ -1708,6 +1749,7 @@ struct cb_client_agent *cb_client_agent_create(s32 sock,
 	client->send_bo_commit_ack = cb_client_agent_send_bo_commit_ack;
 	client->send_bo_flipped = cb_client_agent_send_bo_flipped;
 	client->send_bo_complete = cb_client_agent_send_bo_complete;
+	client->send_input_msg = cb_client_agent_send_input_msg;
 	client->send_raw_input_evts = cb_client_agent_send_raw_input;
 	client->send_raw_touch_evts = cb_client_agent_send_raw_touch;
 	client->send_hpd_evt = cb_client_agent_send_hpd_evt;

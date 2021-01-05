@@ -54,6 +54,7 @@ libcube_compositor.so: cube_compositor.o
 		-lcube_gl_renderer -o $@
 
 cube_compositor.o: cube_compositor.c cube_scanout.h cube_compositor.h \
+		cube_vkey_map.h \
 		cube_renderer.h \
 		$(CUBE_UTILS_H) \
 		cube_client_agent.h

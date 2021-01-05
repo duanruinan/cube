@@ -1167,6 +1167,20 @@ u64 cb_client_parse_destroy_ack_cmd(u8 *data)
 	return *((u64 *)(&tlv_result->payload[0]));
 }
 
+struct cb_gui_input_msg *cb_client_parse_input_msg(u8 *data, u32 *count_msg)
+{
+	struct cb_tlv *tlv;
+
+	tlv = (struct cb_tlv *)(data+sizeof(u32));
+
+	if (tlv->tag != CB_TAG_GUI_INPUT)
+		return NULL;
+
+	assert(!(tlv->length % sizeof(struct cb_gui_input_msg)));
+	*count_msg = tlv->length / sizeof(struct cb_gui_input_msg);
+	return (struct cb_gui_input_msg *)(&tlv->payload[0]);
+}
+
 struct cb_raw_input_event *cb_client_parse_raw_input_evt_cmd(u8 *data,
 							     u32 *count_evts)
 {

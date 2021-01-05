@@ -114,6 +114,8 @@ struct cb_client_agent {
 				u64 surface_id);
 	void (*send_bo_complete)(struct cb_client_agent *client, void *bo,
 				 u64 surface_id);
+	void (*send_input_msg)(struct cb_client_agent *client, u8 *msg,
+			       u32 count_msg);
 	void (*send_raw_input_evts)(struct cb_client_agent *client,
 				    u8 *evts,
 				    u32 count_evts);

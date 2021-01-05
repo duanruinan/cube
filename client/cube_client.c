@@ -162,6 +162,10 @@ struct client {
 	void (*get_edid_cb)(void *userdata, u64 pipe, u8 *edid,
 			    size_t edid_len);
 
+	void *input_msg_cb_userdata;
+	void (*input_msg_cb)(void *userdata, struct cb_gui_input_msg *msg,
+			     u32 count_msg);
+
 	void *raw_input_evts_cb_userdata;
 	void (*raw_input_evts_cb)(void *userdata, struct cb_raw_input_event *,
 				  u32 count_evts);
@@ -680,6 +684,32 @@ static s32 set_server_dbg(struct cb_client *client,
 		stop(&cli->base);
 		return -errno;
 	}
+
+	return 0;
+}
+
+static s32 set_input_msg_cb(struct cb_client *client,
+			    void *userdata,
+			    void (*input_msg_cb)(
+			    	void *userdata,
+			    	struct cb_gui_input_msg *msg,
+			    	u32 count_msg))
+{
+	struct client *cli = to_client(client);
+
+	if (!client)
+		return -EINVAL;
+
+	client_debug(cli, "set input msg cb %p, %p",
+		     input_msg_cb, userdata);
+
+	if (!input_msg_cb) {
+		client_err(cli, "input_msg_cb is null");
+		return -EINVAL;
+	}
+
+	cli->input_msg_cb_userdata = userdata;
+	cli->input_msg_cb = input_msg_cb;
 
 	return 0;
 }
@@ -1907,8 +1937,10 @@ static void client_ipc_proc(struct client *cli)
 	struct cb_tlv *tlv;
 	u64 id;
 	struct cb_raw_input_event *evts;
+	struct cb_gui_input_msg *msg;
 	struct touch_event *tevts;
 	u32 count_evts, led_status, touch_sz;
+	u32 count_msg;
 	u64 surface_id, view_id;
 	bool focus_on;
 
@@ -1924,7 +1956,23 @@ static void client_ipc_proc(struct client *cli)
 		tlv->tag == CB_TAG_RAW_TOUCH ||
 		tlv->tag == CB_TAG_GET_KBD_LED_STATUS_ACK ||
 		tlv->tag == CB_TAG_GET_EDID_ACK ||
+		tlv->tag == CB_TAG_GUI_INPUT ||
 		tlv->tag == CB_TAG_VIEW_FOCUS_CHG);
+
+	if (tlv->tag == CB_TAG_GUI_INPUT) {
+		msg = cb_client_parse_input_msg(buf, &count_msg);
+		if (!msg) {
+			client_err(cli, "failed to parse gui input msg.");
+			return;
+		}
+		client_debug(cli, "input msg: %p %p %u",
+			     cli->input_msg_cb, msg, count_msg);
+		if (cli->input_msg_cb) {
+			cli->input_msg_cb(cli->input_msg_cb_userdata,
+					  msg, count_msg);
+		}
+		return;
+	}
 
 	if (tlv->tag == CB_TAG_RAW_INPUT) {
 		evts = cb_client_parse_raw_input_evt_cmd(buf, &count_evts);
@@ -2453,6 +2501,7 @@ struct cb_client *cb_client_create(s32 seat)
 	cli->base.stop = stop;
 	cli->base.set_server_dbg = set_server_dbg;
 	cli->base.set_client_cap = set_client_cap;
+	cli->base.set_input_msg_cb = set_input_msg_cb;
 	cli->base.set_raw_input_evts_cb = set_raw_input_evts_cb;
 	cli->base.set_raw_touch_evts_cb = set_raw_touch_evts_cb;
 	cli->base.set_ready_cb = set_ready_cb;

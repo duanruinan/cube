@@ -89,6 +89,7 @@ struct cube_client {
 	bool use_dmabuf;
 	bool composed;
 	s32 x, y;
+	s32 drag_x, drag_y;
 	u32 width, height;
 	u32 hstride, vstride;
 	enum cb_pix_fmt pix_fmt;
@@ -372,6 +373,7 @@ static s32 repaint_cb(void *userdata)
 	c.bo_opaque.h = client->height;
 	c.view_x = client->x;
 	c.view_y = client->y;
+	printf("show view %d,%d\n", c.view_x, c.view_y);
 	c.pipe_locked = client->pipe_locked;
 	c.view_width = client->width;
 	c.view_height = client->height;
@@ -525,6 +527,130 @@ static void surface_created_cb(bool success, void *userdata, u64 surface_id)
 	}
 }
 
+static void input_msg_cb(void *userdata, struct cb_gui_input_msg *msg,
+			 u32 count_msg)
+{
+	struct cube_client *client = userdata;
+	s32 i;
+
+	for (i = 0; i < count_msg; i++) {
+		switch (msg[i].tag) {
+		case CB_GUI_INP_MOUSE_BTN_DOWN:
+			switch (msg[i].code) {
+			case CB_GUI_MOUSE_BTN_LEFT:
+				printf("-------- GUI Left BTN D --------\n");
+				break;
+			case CB_GUI_MOUSE_BTN_RIGHT:
+				printf("-------- GUI Right BTN D --------\n");
+				break;
+			case CB_GUI_MOUSE_BTN_MIDDLE:
+				printf("-------- GUI Mid BTN D --------\n");
+				break;
+			default:
+				break;
+			}
+			break;
+		case CB_GUI_INP_MOUSE_BTN_UP:
+			switch (msg[i].code) {
+			case CB_GUI_MOUSE_BTN_LEFT:
+				printf("-------- GUI Left BTN U --------\n");
+				break;
+			case CB_GUI_MOUSE_BTN_RIGHT:
+				printf("-------- GUI Right BTN U --------\n");
+				break;
+			case CB_GUI_MOUSE_BTN_MIDDLE:
+				printf("-------- GUI Mid BTN U --------\n");
+				break;
+			default:
+				break;
+			}
+			break;
+		case CB_GUI_INP_MOUSE_BTN_CLK:
+			switch (msg[i].code) {
+			case CB_GUI_MOUSE_BTN_LEFT:
+				printf("-------- GUI Left BTN Clk --------\n");
+				break;
+			case CB_GUI_MOUSE_BTN_RIGHT:
+				printf("-------- GUI Right BTN Clk --------\n");
+				break;
+			case CB_GUI_MOUSE_BTN_MIDDLE:
+				printf("-------- GUI Mid BTN Clk --------\n");
+				break;
+			default:
+				break;
+			}
+			break;
+		case CB_GUI_INP_TOUCH_BTN_CLK:
+			printf(">>>>>>>>>>>>>>\n");
+			switch (msg[i].code) {
+			case CB_GUI_TOUCH_BTN:
+				printf("-------- GUI Touch BTN Clk --------\n");
+				break;
+			default:
+				break;
+			}
+			break;
+		case CB_GUI_INP_MOUSE_BTN_DCLK:
+			switch (msg[i].code) {
+			case CB_GUI_MOUSE_BTN_LEFT:
+				printf("-------- GUI Left BTN DClk !!!\n");
+				break;
+			case CB_GUI_MOUSE_BTN_RIGHT:
+				printf("-------- GUI Right BTN DClk !!!\n");
+				break;
+			case CB_GUI_MOUSE_BTN_MIDDLE:
+				printf("-------- GUI Mid BTN DClk !!!\n");
+				break;
+			default:
+				break;
+			}
+			break;
+		case CB_GUI_INP_MOUSE_MOVE:
+			printf("------- GUI Mouse Move %u, %u ---------\n",
+			       msg[i].v.abs.x, msg[i].v.abs.y);
+			break;
+		case CB_GUI_INP_MOUSE_SCROLL:
+			printf("------- GUI Mouse Scroll %d ---------\n",
+			       msg[i].v.sd.d);
+			break;
+		case CB_GUI_INP_KEY_DOWN:
+			printf("------- GUI Key %04X Down ---------\n",
+			       msg[i].code);
+			break;
+		case CB_GUI_INP_KEY_UP:
+			printf("------- GUI Key %04X Up ---------\n",
+			       msg[i].code);
+			break;
+		case CB_GUI_INP_KEY_PRESS:
+			printf("------- GUI Key %04X Press ---------\n",
+			       msg[i].code);
+			break;
+		case CB_GUI_INP_DRAG_BEGIN:
+			printf("------- GUI Drag Begin %u, %u -----\n",
+			       msg[i].v.abs.x, msg[i].v.abs.y);
+			client->drag_x = msg[i].v.abs.x - client->x;
+			client->drag_y = msg[i].v.abs.y - client->y;
+			printf("------- GUI Drag POS %d,%d -----\n",
+			       client->drag_x, client->drag_y);
+			break;
+		case CB_GUI_INP_DRAG:
+			printf("------- GUI Drag %u, %u -----\n",
+			       msg[i].v.abs.x, msg[i].v.abs.y);
+			client->x = msg[i].v.abs.x - client->drag_x;
+			client->y = msg[i].v.abs.y - client->drag_y;
+			printf("------- New pos: %d, %d -----\n",
+			       client->x, client->y);
+			break;
+		case CB_GUI_INP_DRAG_END:
+			printf("------- GUI Drag End %u, %u -----\n",
+			       msg[i].v.abs.x, msg[i].v.abs.y);
+			break;
+		default:
+			break;
+		}
+	}
+}
+
 static void bo_created_cb(bool success, void *userdata, u64 bo_id)
 {
 	struct cube_client *client = userdata;
@@ -570,6 +696,9 @@ static void ready_cb(void *userdata)
 	struct cb_client *cli = client->cli;
 	struct bo_info *bo_info = &client->bos[0];
 	s32 ret;
+
+	cli->set_client_cap(cli, CB_CLIENT_CAP_INPUT);
+	cli->set_input_msg_cb(cli, client, input_msg_cb);
 
 	cli->set_create_bo_cb(cli, client, bo_created_cb);
 	printf("[TEST_CLIENT] create bo\n");
