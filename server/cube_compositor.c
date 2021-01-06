@@ -4956,6 +4956,24 @@ static s32 cb_compositor_commit_dma_buf(struct compositor *comp,
 			comp_warn("pipe locked: %d", view->pipe_locked);
 			surface->buffer_pending = NULL;
 			surface->buffer_cur = NULL;
+			comp_warn("mask: %08X, new mask: %08X, diff: %08X",
+				  mask, view->output_mask, diff);
+			for (i = 0; i < c->count_outputs; i++) {
+				o = c->outputs[i];
+				pipe = o->pipe;
+				plane = view->planes[pipe];
+				comp_warn("view %p's planes[%d]: %p",
+					  view, pipe, plane);
+				/* put plane it used. */
+				if (plane) {
+					if (plane != o->primary_plane) {
+						put_free_output_plane(o, plane);
+					} else {
+						enable_primary_renderer(o);
+					}
+					view->planes[pipe] = NULL;
+				}
+			}
 			return -ENOENT;
 		}
 		surface->buffer_cur = surface->buffer_pending;
