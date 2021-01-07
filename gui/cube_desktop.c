@@ -216,6 +216,34 @@ static void update_desktop_rc(struct cube_desktop *desktop)
 		desktop->desktop_rc.h);
 }
 
+static void hpd_cb(void *userdata, struct cb_connector_info *info)
+{
+	struct cube_desktop *desktop = userdata;
+	struct cb_client *cli = desktop->cli;
+	struct cb_commit_info c;
+	struct bo_info *bo_info;
+	s32 ret;
+
+	printf("HPD happended, reflush\n");
+	bo_info = desktop->bos[desktop->bo_cur];
+
+	c.bo_id = bo_info->bo_id;
+	c.surface_id = desktop->s.surface_id;
+	memcpy(&c.bo_damage, &desktop->desktop_rc, sizeof(struct cb_rect));
+	memcpy(&c.bo_opaque, &desktop->desktop_rc, sizeof(struct cb_rect));
+	c.view_x = desktop->desktop_rc.pos.x;
+	c.view_y = desktop->desktop_rc.pos.y;
+	c.view_width = desktop->desktop_rc.w;
+	c.view_height = desktop->desktop_rc.h;
+	c.pipe_locked = -1;
+	ret = cli->commit_bo(cli, &c);
+	if (ret < 0) {
+		fprintf(stderr, "failed to commit bo %lX\n", c.bo_id);
+		cli->stop(cli);
+		return;
+	}
+}
+
 static void layout_changed_cb(void *userdata)
 {
 	struct cube_desktop *desktop = userdata;
@@ -585,7 +613,9 @@ static void ready_cb(void *userdata)
 
 	cli->set_layout_query_cb(cli, desktop, layout_query_cb);
 	cli->set_layout_changed_cb(cli, desktop, layout_changed_cb);
-	cli->set_client_cap(cli, CB_CLIENT_CAP_NOTIFY_LAYOUT);
+	cli->set_client_cap(cli, CB_CLIENT_CAP_NOTIFY_LAYOUT |
+				 CB_CLIENT_CAP_HPD);
+	cli->set_hpd_cb(cli, desktop, hpd_cb);
 	cli->query_layout(cli);
 }
 
