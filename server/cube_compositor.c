@@ -2223,6 +2223,9 @@ static s32 cb_compositor_switch_mode(struct compositor *comp, s32 pipe,
 	if (o->switch_mode_pending)
 		return -EINVAL;
 
+	if (!o->enabled)
+		return -EINVAL;
+
 	o->disable_pending = true;
 	o->switch_mode_pending = true;
 	o->pending_mode = mode;
