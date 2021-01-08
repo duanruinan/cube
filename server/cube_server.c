@@ -76,7 +76,7 @@ static enum cb_log_level serv_dbg = CB_LOG_DEBUG;
 	cb_tlog("[SERV][ERROR ] " fmt, ##__VA_ARGS__); \
 } while (0);
 
-static char short_options[] = "bhs:d:t:a:";
+static char short_options[] = "bhs:d:t:a:p:";
 
 static struct option long_options[] = {
 	{"background", 0, NULL, 'b'},
@@ -85,6 +85,7 @@ static struct option long_options[] = {
 	{"device", 1, NULL, 'd'},
 	{"touch-pipe", 1, NULL, 't'},
 	{"mc-accel", 1, NULL, 'a'},
+	{"background", 1, NULL, 'p'},
 	{NULL, 0, NULL, 0},
 };
 
@@ -144,6 +145,7 @@ static void usage(void)
 	printf("\t\t-d, --device=/dev/dri/cardX, device name.\n");
 	printf("\t\t-t, --touch-pipe=pipe number, touch screen index.\n");
 	printf("\t\t-a, --mc-accel=mouse accelerator, default 1.0.\n");
+	printf("\t\t-p, --background=background picture, default no picture\n");
 }
 
 struct child_process {
@@ -154,16 +156,17 @@ struct child_process {
 	struct list_head link;
 };
 
-static s32 find_server_pid(struct list_head *processes)
+static struct child_process *find_pid(struct list_head *processes,
+				      const char *name)
 {
 	struct child_process *p;
 
 	list_for_each_entry(p, processes, link) {
-		if (strstr(p->argv[0], "cube_server"))
-			return p->pid;
+		if (strstr(p->argv[0], name))
+			return p;
 	}
 
-	return 0;
+	return NULL;
 }
 
 static void start_child_process(struct list_head *processes, s32 argc,
@@ -199,39 +202,70 @@ static void start_child_process(struct list_head *processes, s32 argc,
 static s32 child_processes_proc(s32 signal_number, void *data)
 {
 	struct list_head *processes = data;
-	s32 state, pid, server_pid;
-	struct child_process *p, *n;
+	s32 state, pid;
+	struct child_process *p, *p_log, *p_server, *p_desktop;
 	char *av[MAIN_ARG_MAX_NR] = {NULL};
 	s32 i;
+	bool found = false;
 
 	while ((pid = waitpid(-1, &state, WNOHANG)) > 0) {
-		list_for_each_entry_safe(p, n, processes, link) {
+		list_for_each_entry(p, processes, link) {
 			if (pid == p->pid) {
-				list_del(&p->link);
 				fprintf(stderr, "Process %s hangup.\n",
 					p->argv[0]);
-				if (strstr(p->argv[0], "cube_log")) {
-					server_pid = find_server_pid(processes);
-					printf("Kill cube server. %d\n",
-						server_pid);
-					kill(server_pid, SIGKILL);
-				}
-				for (i = 0; i < p->argc; i++) {
-					av[i] = p->argv[i];
-					printf("av[%d]: %s\n", i, av[i]);
-				}
-				av[i] = NULL;
-				start_child_process(processes, p->argc, av, 10);
-				free(p);
+				found = true;
+				break;
 			}
 		}
+		if (!found)
+			return 0;
+
+		p_log = find_pid(processes, "cube_log");
+		if (p_log)
+			list_del(&p_log->link);
+		if (p_log && p_log != p) {
+			kill(p_log->pid, SIGKILL);
+		}
+
+		p_server = find_pid(processes, "cube_server");
+		if (p_server)
+			list_del(&p_server->link);
+		if (p_server && p_server != p) {
+			kill(p_server->pid, SIGKILL);
+		}
+
+		p_desktop = find_pid(processes, "cube_desktop");
+		if (p_desktop)
+			list_del(&p_desktop->link);
+		if (p_desktop && p_desktop != p) {
+			kill(p_desktop->pid, SIGKILL);
+		}
+
+		for (i = 0; i < p_log->argc; i++)
+			av[i] = p_log->argv[i];
+		av[i] = NULL;
+		start_child_process(processes, p_log->argc, av, 10);
+		free(p_log);
+		for (i = 0; i < p_server->argc; i++)
+			av[i] = p_server->argv[i];
+		av[i] = NULL;
+		start_child_process(processes, p_server->argc, av, 10);
+		free(p_server);
+		for (i = 0; i < p_desktop->argc; i++)
+			av[i] = p_desktop->argv[i];
+		av[i] = NULL;
+		start_child_process(processes, p_desktop->argc, av, 10);
+		free(p_desktop);
+
+		break;
 	}
 
 	return 0;
 }
 
 static void run_background(s32 log_argc, char *log_argv[],
-			   s32 server_argc, char *server_argv[])
+			   s32 server_argc, char *server_argv[],
+			   s32 desktop_argc, char *desktop_argv[])
 {
 	s32 pid;
 	struct list_head child_processes;
@@ -264,6 +298,7 @@ static void run_background(s32 log_argc, char *log_argv[],
 	INIT_LIST_HEAD(&child_processes);
 	start_child_process(&child_processes, log_argc, log_argv, 10);
 	start_child_process(&child_processes, server_argc, server_argv, 10);
+	start_child_process(&child_processes, desktop_argc, desktop_argv, 10);
 
 	loop = cb_event_loop_create();
 	(void)cb_event_loop_add_signal(loop, SIGCHLD,
@@ -598,6 +633,11 @@ s32 main(s32 argc, char **argv)
 	char touch_pipe_s[MAIN_ARG_MAX_LEN];
 	char mc_accel_s[MAIN_ARG_MAX_LEN];
 	char processdir[MAIN_ARG_MAX_LEN];
+	char *desktop_argv[MAIN_ARG_MAX_NR] = {NULL};
+	char desktop_argv0[MAIN_ARG_MAX_LEN] = {0};
+	char desktop_argv1[MAIN_ARG_MAX_LEN] = {0};
+	char desktop_argv2[MAIN_ARG_MAX_LEN] = {0};
+	s32 desktop_argc = 1;
 
 	memset(processdir, 0, MAIN_ARG_MAX_LEN);
 	readlink("/proc/self/exe", processdir, MAIN_ARG_MAX_LEN - 1);
@@ -622,6 +662,11 @@ s32 main(s32 argc, char **argv)
 		case 'a':
 			mc_accel = atof(optarg);
 			break;
+		case 'p':
+			strcpy(desktop_argv1, "-p");
+			strcpy(desktop_argv2, optarg);
+			desktop_argc = 3;
+			break;
 		default:
 			usage();
 			return -1;
@@ -630,9 +675,13 @@ s32 main(s32 argc, char **argv)
 
 	if (run_as_background) {
 		strcpy(log_argv0, processdir);
+		strcpy(desktop_argv0, processdir);
 		p = strstr(log_argv0, "cube_server");
 		*p = '\0';
 		strcat(p, "cube_log");
+		p = strstr(desktop_argv0, "cube_server");
+		*p = '\0';
+		strcat(p, "cube_desktop");
 		sprintf(log_argv2, "%d", seat);
 		log_argv[0] = log_argv0;
 		log_argv[1] = "-s";
@@ -652,7 +701,11 @@ s32 main(s32 argc, char **argv)
 		sprintf(mc_accel_s, "%1.1f", mc_accel);
 		server_argv[8] = mc_accel_s;
 		server_argv[9] = NULL;
-		run_background(3, log_argv, 9, server_argv);
+		desktop_argv[0] = desktop_argv0;
+		desktop_argv[1] = desktop_argv1;
+		desktop_argv[2] = desktop_argv2;
+		run_background(3, log_argv, 9, server_argv,
+			       desktop_argc, desktop_argv);
 	}
 
 	server = cb_server_create(seat, device_name, touch_pipe, mc_accel);
