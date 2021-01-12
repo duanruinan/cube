@@ -1366,7 +1366,7 @@ static void mc_proc(struct cb_client_agent *client, u8 *buf)
 		ret = client->c->set_mouse_cursor(client->c, buffer->shm.map,
 					info.cursor.w,
 					info.cursor.h,
-					info.cursor.w,
+					info.cursor.w * 4,
 					info.cursor.hot_x,
 					info.cursor.hot_y,
 					info.alpha_src_pre_mul);
