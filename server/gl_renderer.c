@@ -2028,6 +2028,7 @@ static void gl_flush_damage(struct renderer *renderer,
 
 	cb_region_union(&gs->texture_damage, &gs->texture_damage,
 			&surface->damage);
+	cb_region_clear(&surface->damage);
 
 	if (!buffer)
 		return;

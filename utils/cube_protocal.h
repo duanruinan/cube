@@ -86,6 +86,7 @@ enum cb_cmd_shift {
 	 *         Server should schedule a new repaint request.
 	 */
 	CB_CMD_COMMIT_SHIFT,
+	CB_CMD_AF_COMMIT_SHIFT,
 	/* 9: server feeds back the result of BO's attaching operation */
 	CB_CMD_COMMIT_ACK_SHIFT,
 	/* 10: server notify client the BO flipped event (commited to kernel).*/
@@ -150,6 +151,7 @@ enum cb_tag {
 	CB_TAG_CREATE_VIEW, /* cb_view_info */
 	CB_TAG_CREATE_BO, /* cb_buf_info */
 	CB_TAG_COMMIT_INFO, /* cb_commit_info */
+	CB_TAG_AF_COMMIT_INFO, /* cb_af_commit_info */
 	CB_TAG_SHELL, /* cb_shell_info */
 	CB_TAG_DESTROY, /* destroy all */
 	CB_TAG_VIEW_FOCUS_CHG, /* view focus on / lost */
@@ -290,6 +292,27 @@ struct cb_buffer_info {
 	void *maps[4];
 	s32 planes;
 	bool composed;  /* for DMA-BUF used (to be composed or not) */
+};
+
+#define DAMAGE_AREA_MAX_NR 2048
+
+/* atomic flush commit info */
+struct cb_af_commit_info {
+	u64 bo_id;
+	u64 surface_id;
+	struct cb_rect bo_opaque;
+
+	s32 shown; /* 0: hide / 1: show */
+
+	s32 view_x, view_y;
+	u32 view_width, view_height;
+	s32 pipe_locked;
+
+	/* 0: z order no change / 1: bring to top / -1: falling down */
+	s32 delta_z;
+
+	s32 count_damages;
+	struct cb_rect damages[0];
 };
 
 struct cb_commit_info {
@@ -607,6 +630,27 @@ u8 *cb_client_create_commit_req_cmd(struct cb_commit_info *c, u32 *n);
 u8 *cb_dup_commit_req_cmd(u8 *dst, u8 *src, u32 n, struct cb_commit_info *c);
 /* server: parse bo commit request */
 s32 cb_server_parse_commit_req_cmd(u8 *data, struct cb_commit_info *c);
+
+/*
+ * Create buffer for af (atomic flush) commit (both for client and server)
+ * Atomic flush commit info is not fixed size, because the number of damage area
+ * will be changed during client's rendering process.
+ * 
+ * So alloc buffer big enough to accommodate 2048 damage area (rects).
+ * Client should free it when it is not used (calling "free").
+ * After the buffer is allocated, client should get the "cb_af_commit_info"
+ * structure from buffer by calling cb_client_get_af_commit_info_from_buffer.
+ * Client fills the structure ("damages" is the rect list), then generates
+ * tx command by calling "cb_gen_af_commit_cmd".
+ * Client send tx command at last.
+ */
+u8 *cb_client_create_af_commit_buffer(void);
+/* get cb_af_commit_info from buffer (for client) */
+struct cb_af_commit_info *cb_client_get_af_commit_info_from_buffer(u8 *buffer);
+/* generate af commit command (for client) */
+s32 cb_gen_af_commit_cmd(u8 *buffer, u32 *n);
+/* parse cb_af_commit_info from buffer (for server) */
+struct cb_af_commit_info *cb_server_parse_af_commit_req_cmd(u8 *data);
 
 /* server: bo commit ack */
 u8 *cb_server_create_commit_ack_cmd(u64 ret, u64 surface_id, u32 *n);

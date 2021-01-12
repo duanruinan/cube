@@ -47,6 +47,7 @@ static void usage(void)
 			"--hstride hs --vstride vs --pixel-fmt fourcc "
 			"--dmabuf-zpos zpos "
 			"--pipe-locked pipe "
+			"--atomic-commit Y/N (use atomic flush commit or not) "
 			"--composed Y/N\n");
 }
 
@@ -62,10 +63,11 @@ static struct option options[] = {
 	{"dmabuf-zpos", 1, NULL, 'z'},
 	{"pipe-locked", 1, NULL, 'l'},
 	{"composed", 1, NULL, 'c'},
+	{"atomic-commit", 1, NULL, 'a'},
 	{NULL, 0, NULL, 0},
 };
 
-static char short_options[] = "t:x:y:w:h:p:v:f:z:l:c:";
+static char short_options[] = "t:x:y:w:h:p:v:f:z:l:c:a:";
 
 struct bo_info {
 	void *bo;
@@ -86,6 +88,7 @@ struct cube_client {
 	s32 count_bos;
 	struct bo_info bos[BO_NR];
 
+	bool use_af_commit;
 	bool use_dmabuf;
 	bool composed;
 	s32 x, y;
@@ -118,6 +121,8 @@ struct cube_client {
 	bool replace_flag;
 
 	bool run_background;
+
+	u8 *af_buffer;
 };
 
 static s32 signal_cb(s32 signal_number, void *userdata)
@@ -181,6 +186,48 @@ static void fill_argb_colorbar_m(u8 *data, u32 width, u32 height, u32 stride)
 	u32 *pixel = (u32 *)data + (stride >> 2) * height / 8 * 3;
 	static u32 delta = 2;
 
+	for (i = 0; i < height / 8 * 2; i++) {
+		for (j = 0; j < width; j++) {
+			bar = (j + delta) / interval;
+			bar %= ARRAY_SIZE(ccolors);
+			pixel[j] = ccolors[bar];
+		}
+		pixel += (stride >> 2);
+	}
+	delta += 2;
+	if (delta >= width)
+		delta = 0;
+}
+
+static void fill_argb_colorbar_f(u8 *data, u32 width, u32 height, u32 stride)
+{
+	const u32 ccolors[] = {
+		0xFFFFFFFF, /* white */
+		0xFF00FFFF, /* yellow */
+		0xFFFFFF00, /* cyan */
+		0xFF00FF00, /* green */
+		0xFFFF00FF, /* perple */
+		0xFF0000FF, /* red */
+		0xFF000000, /* black */
+		0xFFFF0000, /* blue */
+	};
+
+	s32 i, j;
+	u32 bar;
+	u32 interval = width / ARRAY_SIZE(ccolors);
+	u32 *pixel = (u32 *)data;
+	static u32 delta = 2;
+
+	for (i = 0; i < height / 8 * 2; i++) {
+		for (j = 0; j < width; j++) {
+			bar = (j + delta) / interval;
+			bar %= ARRAY_SIZE(ccolors);
+			pixel[j] = ccolors[bar];
+		}
+		pixel += (stride >> 2);
+	}
+
+	pixel = (u32 *)data + (stride >> 2) * height / 8 * 3;
 	for (i = 0; i < height / 8 * 2; i++) {
 		for (j = 0; j < width; j++) {
 			bar = (j + delta) / interval;
@@ -292,6 +339,7 @@ static s32 repaint_cb(void *userdata)
 	struct cube_client *client = userdata;
 	struct cb_client *cli = client->cli;
 	struct cb_commit_info c;
+	struct cb_af_commit_info *afc;
 	struct bo_info *bo_info;
 	s32 ret;
 	struct timespec now;
@@ -347,46 +395,94 @@ static s32 repaint_cb(void *userdata)
 	} else {
 		if (client->pix_fmt == CB_PIX_FMT_ARGB8888 ||
 		    client->pix_fmt == CB_PIX_FMT_XRGB8888) {
-			fill_argb_colorbar_m(bo_info->maps[0],
-				   bo_info->width,
-				   bo_info->height,
-				   bo_info->pitches[0]);
+			if (client->use_af_commit) {
+				fill_argb_colorbar_f(bo_info->maps[0],
+					   bo_info->width,
+					   bo_info->height,
+					   bo_info->pitches[0]);
+			} else {
+				fill_argb_colorbar_m(bo_info->maps[0],
+					   bo_info->width,
+					   bo_info->height,
+					   bo_info->pitches[0]);
+			}
 		}
 	}
 
-	c.bo_id = bo_info->bo_id;
-	c.surface_id = client->s.surface_id;
-	if (!client->use_dmabuf) {
-		c.bo_damage.pos.x = 0;
-		c.bo_damage.pos.y = client->height / 8 * 3;
-		c.bo_damage.w = client->width;
-		c.bo_damage.h = client->height / 8 * 2;
-	} else {
-		c.bo_damage.pos.x = 0;
-		c.bo_damage.pos.y = 0;
-		c.bo_damage.w = client->width;
-		c.bo_damage.h = client->height;
-	}
-	c.bo_opaque.pos.x = 0;
-	c.bo_opaque.pos.y = 0;
-	c.bo_opaque.w = client->width;
-	c.bo_opaque.h = client->height;
-	c.view_x = client->x;
-	c.view_y = client->y;
-	printf("show view %d,%d\n", c.view_x, c.view_y);
-	c.pipe_locked = client->pipe_locked;
-	c.view_width = client->width;
-	c.view_height = client->height;
+	if (!client->use_af_commit) {
+		c.bo_id = bo_info->bo_id;
+		c.surface_id = client->s.surface_id;
+		if (!client->use_dmabuf) {
+			c.bo_damage.pos.x = 0;
+			c.bo_damage.pos.y = client->height / 8 * 3;
+			c.bo_damage.w = client->width;
+			c.bo_damage.h = client->height / 8 * 2;
+		} else {
+			c.bo_damage.pos.x = 0;
+			c.bo_damage.pos.y = 0;
+			c.bo_damage.w = client->width;
+			c.bo_damage.h = client->height;
+		}
+		c.bo_opaque.pos.x = 0;
+		c.bo_opaque.pos.y = 0;
+		c.bo_opaque.w = client->width;
+		c.bo_opaque.h = client->height;
+		c.view_x = client->x;
+		c.view_y = client->y;
+		printf("show view %d,%d\n", c.view_x, c.view_y);
+		c.pipe_locked = client->pipe_locked;
+		c.view_width = client->width;
+		c.view_height = client->height;
 
-	clock_gettime(CLOCK_MONOTONIC, &now);
-	printf("[TEST_CLIENT][%05lu:%06lu] commit bo: %lX\n",
-	       now.tv_sec % 86400l, now.tv_nsec / 1000l, c.bo_id);
-	client->commit_ack_received = false;
-	ret = cli->commit_bo(cli, &c);
-	if (ret < 0) {
-		fprintf(stderr, "[TEST_CLIENT] failed to commit bo: %lX, "
-			"ret: %d\n", c.bo_id, ret);
-		cli->stop(cli);
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		printf("[TEST_CLIENT][%05lu:%06lu] commit bo: %lX\n",
+		       now.tv_sec % 86400l, now.tv_nsec / 1000l, c.bo_id);
+		client->commit_ack_received = false;
+		ret = cli->commit_bo(cli, &c);
+		if (ret < 0) {
+			fprintf(stderr, "[TEST_CLIENT] failed to commit bo: "
+				"%lX, ret: %d\n", c.bo_id, ret);
+			cli->stop(cli);
+		}
+	} else {
+		afc = cli->get_af_commit_info(cli, client->af_buffer);
+		if (!afc) {
+			fprintf(stderr, "[TEST_CLIENT] failed to get afc\n");
+			cli->stop(cli);
+			return -1;
+		}
+		afc->bo_id = bo_info->bo_id;
+		afc->surface_id = client->s.surface_id;
+		afc->count_damages = 2;
+		afc->damages[0].pos.x = 0;
+		afc->damages[0].pos.y = 0;
+		afc->damages[0].w = client->width;
+		afc->damages[0].h = client->height / 8 * 2;
+		afc->damages[1].pos.x = 0;
+		afc->damages[1].pos.y = client->height / 8 * 3;
+		afc->damages[1].w = client->width;
+		afc->damages[1].h = client->height / 8 * 2;
+		afc->bo_opaque.pos.x = 0;
+		afc->bo_opaque.pos.y = 0;
+		afc->bo_opaque.w = client->width;
+		afc->bo_opaque.h = client->height;
+		afc->view_x = client->x;
+		afc->view_y = client->y;
+		printf("show view %d,%d\n", afc->view_x, afc->view_y);
+		afc->pipe_locked = client->pipe_locked;
+		afc->view_width = client->width;
+		afc->view_height = client->height;
+
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		printf("[TEST_CLIENT][%05lu:%06lu] commit bo: %lX\n",
+		       now.tv_sec % 86400l, now.tv_nsec / 1000l, afc->bo_id);
+		client->commit_ack_received = false;
+		ret = cli->af_commit_bo(cli, client->af_buffer);
+		if (ret < 0) {
+			fprintf(stderr, "[TEST_CLIENT] failed to af commit bo: "
+				"%lX, ret: %d\n", afc->bo_id, ret);
+			cli->stop(cli);
+		}
 	}
 
 	return 0;
@@ -885,6 +981,9 @@ static s32 client_init(struct cube_client *client)
 		goto err_buf_alloc;
 
 	cli = client->cli;
+	if (client->use_af_commit) {
+		client->af_buffer = cli->alloc_af_commit_info_buffer(cli);
+	}
 	client->signal_handler = cli->add_signal_handler(cli, client,
 							 SIGINT,
 							 signal_cb);
@@ -969,6 +1068,9 @@ static void client_fini(struct cube_client *client)
 		}
 	}
 
+	if (client->af_buffer)
+		free(client->af_buffer);
+
 	if (client->dev_fd)
 		cb_drm_device_close(client->dev_fd);
 }
@@ -984,6 +1086,7 @@ s32 main(s32 argc, char **argv)
 	if (!client)
 		return -ENOMEM;
 
+	client->use_af_commit = false;
 	client->zpos = -1;
 	client->pipe_locked = -1;
 	client->composed = false;
@@ -999,6 +1102,12 @@ s32 main(s32 argc, char **argv)
 	while ((ch = getopt_long(argc, argv, short_options,
 				 options, NULL)) != -1) {
 		switch (ch) {
+		case 'a':
+			if (!strcmp(optarg, "Y") || !strcmp(optarg, "y"))
+				client->use_af_commit = true;
+			else
+				client->use_af_commit = false;
+			break;
 		case 'x':
 			client->x = atoi(optarg);
 			break;

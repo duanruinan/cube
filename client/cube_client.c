@@ -204,10 +204,12 @@ struct client {
 
 	void *bo_created_cb_userdata;
 	void (*bo_created_cb)(bool success, void *userdata, u64 bo_id);
-
 	void *bo_commited_cb_userdata;
 	void (*bo_commited_cb)(bool success, void *userdata, u64 bo_id,
 			       u64 surface_id);
+
+	void (*bo_af_commited_cb)(bool success, void *userdata, u64 bo_id,
+				  u64 surface_id);
 
 	void *bo_flipped_cb_userdata;
 	void (*bo_flipped_cb)(void *userdata, u64 bo_id, u64 surface_id);
@@ -1460,7 +1462,7 @@ static s32 commit_bo(struct cb_client *client, struct cb_commit_info *c)
 	if (!client)
 		return -EINVAL;
 
-	client_debug(cli, "client bo %016X", c);
+	client_debug(cli, "client commit info %016X", c);
 
 	if (!c) {
 		client_err(cli, "c is null");
@@ -1496,6 +1498,73 @@ static s32 commit_bo(struct cb_client *client, struct cb_commit_info *c)
 	} while (ret == -EAGAIN);
 	if (ret < 0) {
 		client_err(cli, "failed to send commit bo cmd. %s",
+			   strerror(errno));
+		stop(&cli->base);
+		return -errno;
+	}
+
+	return 0;
+}
+
+static u8 *alloc_af_commit_info_buffer(struct cb_client *client)
+{
+	return cb_client_create_af_commit_buffer();
+}
+
+struct cb_af_commit_info *get_af_commit_info(struct cb_client *client,
+					     u8 *buffer)
+{
+	struct client *cli = to_client(client);
+
+	if (!buffer) {
+		client_err(cli, "buffer is null");
+		return NULL;
+	}
+
+	return cb_client_get_af_commit_info_from_buffer(buffer);
+}
+
+static s32 af_commit_bo(struct cb_client *client, u8 *buffer)
+{
+	struct client *cli = to_client(client);
+	size_t length;
+	s32 ret;
+	u32 n;
+
+	if (!client)
+		return -EINVAL;
+
+	client_debug(cli, "client af commit buffer %016X", buffer);
+	if (!buffer) {
+		client_err(cli, "buffer is null");
+		return -EINVAL;
+	}
+
+	ret = cb_gen_af_commit_cmd(buffer, &n);
+	if (ret < 0) {
+		client_err(cli, "failed to generate af commit command");
+		return -EINVAL;
+	}
+	client_debug(cli, "af commit command length %u", n);
+
+	length = (size_t)n;
+
+	do {
+		ret = cb_sendmsg(cli->sock, (u8 *)&length, sizeof(size_t),
+				 NULL);
+	} while (ret == -EAGAIN);
+	if (ret < 0) {
+		client_err(cli, "failed to send af commit bo length. %s",
+			   strerror(errno));
+		stop(&cli->base);
+		return -errno;
+	}
+
+	do {
+		ret = cb_sendmsg(cli->sock, buffer, length, NULL);
+	} while (ret == -EAGAIN);
+	if (ret < 0) {
+		client_err(cli, "failed to send af commit bo cmd. %s",
 			   strerror(errno));
 		stop(&cli->base);
 		return -errno;
@@ -2528,6 +2597,9 @@ struct cb_client *cb_client_create(s32 seat)
 	cli->base.create_bo = create_bo;
 	cli->base.set_create_bo_cb = set_create_bo_cb;
 	cli->base.destroy_bo = destroy_bo;
+	cli->base.af_commit_bo = af_commit_bo;
+	cli->base.alloc_af_commit_info_buffer = alloc_af_commit_info_buffer;
+	cli->base.get_af_commit_info = get_af_commit_info;
 	cli->base.commit_bo = commit_bo;
 	cli->base.set_commit_bo_cb = set_commit_bo_cb;
 	cli->base.set_bo_flipped_cb = set_bo_flipped_cb;

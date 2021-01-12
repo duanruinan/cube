@@ -939,6 +939,7 @@ static void surface_bo_commit_proc(struct cb_client_agent *client,
 	struct cb_surface *s;
 	struct cb_view *v;
 	u64 bo_id;
+	struct cb_region d;
 
 	bo_id = info->bo_id;
 	s = (struct cb_surface *)(info->surface_id);
@@ -946,13 +947,16 @@ static void surface_bo_commit_proc(struct cb_client_agent *client,
 
 	buffer = (struct cb_buffer *)bo_id;
 
-	cb_region_fini(&s->damage);
-	if (info->bo_damage.w && info->bo_damage.h)
-		cb_region_init_rect(&s->damage,
+	if (info->bo_damage.w && info->bo_damage.h) {
+		cb_region_init_rect(&d,
 			    info->bo_damage.pos.x,
 			    info->bo_damage.pos.y,
 			    info->bo_damage.w,
 			    info->bo_damage.h);
+		cb_region_union(&s->damage, &s->damage, &d);
+		cb_region_fini(&d);
+	}
+
 	cb_region_fini(&s->opaque);
 	if (info->bo_opaque.w && info->bo_opaque.h)
 		cb_region_init_rect(&s->opaque,
@@ -1071,6 +1075,116 @@ static void bo_commit_proc(struct cb_client_agent *client, u8 *buf)
 		clia_err("unknown buffer type. %d", buffer->info.type);
 		cb_client_agent_send_bo_commit_ack(client, COMMIT_FAILED,
 						   info.surface_id);
+	}
+}
+
+static void surface_bo_afc_commit_proc(struct cb_client_agent *client,
+				       struct cb_af_commit_info *info)
+{
+	struct cb_buffer *buffer;
+	struct cb_surface *s;
+	struct cb_view *v;
+	u64 bo_id;
+	struct cb_region d;
+	s32 i;
+	struct cb_rect *rc;
+
+	bo_id = info->bo_id;
+	s = (struct cb_surface *)(info->surface_id);
+	v = s->view;
+
+	buffer = (struct cb_buffer *)bo_id;
+
+	if (info->count_damages) {
+		for (i = 0; i < info->count_damages; i++) {
+			rc = &info->damages[i];
+			if (rc->w && rc->h) {
+				cb_region_init_rect(&d,
+					    rc->pos.x,
+					    rc->pos.y,
+					    rc->w,
+					    rc->h);
+				cb_region_union(&s->damage, &s->damage, &d);
+				cb_region_fini(&d);
+			}
+		}
+	}
+
+	cb_region_fini(&s->opaque);
+	if (info->bo_opaque.w && info->bo_opaque.h)
+		cb_region_init_rect(&s->opaque,
+			    info->bo_opaque.pos.x,
+			    info->bo_opaque.pos.y,
+			    info->bo_opaque.w,
+			    info->bo_opaque.h);
+
+	v->area.pos.x = info->view_x;
+	v->area.pos.y = info->view_y;
+	v->area.w = info->view_width;
+	v->area.h = info->view_height;
+	v->pipe_locked = info->pipe_locked;
+
+	s->buffer_pending = buffer;
+	clia_debug("af commit surface");
+	s->use_renderer = true;
+	client->c->commit_surface(client->c, s);
+}
+
+static void bo_af_commit_proc(struct cb_client_agent *client, u8 *buf)
+{
+	struct cb_af_commit_info *afc;
+	struct cb_buffer *buffer;
+	struct cb_surface *s;
+	struct cb_view *v;
+	u64 bo_id;
+
+	afc = cb_server_parse_af_commit_req_cmd(buf);
+	if (!afc) {
+		clia_err("failed to parse bo af commit.");
+		cb_client_agent_send_bo_commit_ack(client, COMMIT_FAILED,
+						   afc->surface_id);
+		return;
+	}
+
+	bo_id = afc->bo_id;
+	buffer = (struct cb_buffer *)(bo_id);
+	if (!buffer) {
+		clia_err("invalid buffer for af commit");
+		cb_client_agent_send_bo_commit_ack(client, COMMIT_FAILED,
+						   afc->surface_id);
+		return;
+	}
+
+	s = (struct cb_surface *)(afc->surface_id);
+	if (!s) {
+		clia_err("invalid surface for af commit");
+		cb_client_agent_send_bo_commit_ack(client, COMMIT_FAILED,
+						   afc->surface_id);
+		return;
+	}
+
+	v = s->view;
+	if (!v) {
+		clia_err("invalid view for af commit");
+		cb_client_agent_send_bo_commit_ack(client, COMMIT_FAILED,
+						   afc->surface_id);
+		return;
+	}
+
+	if (buffer->info.type == CB_BUF_TYPE_DMA && !buffer->info.composed) {
+		clia_err("af commit only support renderer surface");
+		cb_client_agent_send_bo_commit_ack(client, COMMIT_FAILED,
+						   afc->surface_id);
+	} else if (buffer->info.type == CB_BUF_TYPE_SHM ||
+		   (buffer->info.type == CB_BUF_TYPE_DMA &&
+		    buffer->info.composed)) {
+		surface_bo_afc_commit_proc(client, afc);
+		cb_client_agent_send_bo_commit_ack(client, bo_id,
+						   afc->surface_id);
+	} else {
+		clia_err("unknown buffer type. %d for af", buffer->info.type);
+		cb_client_agent_send_bo_commit_ack(client, COMMIT_FAILED,
+						   afc->surface_id);
 	}
 }
 
@@ -1531,6 +1645,10 @@ static void ipc_proc(struct cb_client_agent *client)
 	if (flag & (1 << CB_CMD_COMMIT_SHIFT)) {
 		clia_debug("receive commit cmd");
 		bo_commit_proc(client, buf);
+	}
+	if (flag & (1 << CB_CMD_AF_COMMIT_SHIFT)) {
+		clia_debug("receive commit cmd");
+		bo_af_commit_proc(client, buf);
 	}
 	if (flag & (1 << CB_CMD_DESTROY_SHIFT)) {
 		clia_debug("receive destroy cmd");

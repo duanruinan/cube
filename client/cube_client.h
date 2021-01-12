@@ -158,6 +158,11 @@ struct cb_client {
 
 	s32 (*destroy_bo)(struct cb_client *client, u64 bo_id);
 
+	u8 *(*alloc_af_commit_info_buffer)(struct cb_client *client);
+	struct cb_af_commit_info *(*get_af_commit_info)(
+					struct cb_client *client, u8 *buffer);
+	s32 (*af_commit_bo)(struct cb_client *client, u8 *buffer);
+
 	s32 (*commit_bo)(struct cb_client *client, struct cb_commit_info *c);
 	s32 (*set_commit_bo_cb)(struct cb_client *client, void *userdata,
 				void (*bo_commited_cb)(

@@ -1928,3 +1928,98 @@ s32 cb_client_parse_view_focus_chg_cmd(u8 *data, u64 *view_id, bool *on)
 	return 0;
 }
 
+u8 *cb_client_create_af_commit_buffer(void)
+{
+	u32 size, size_commit, size_map;
+	u8 *p;
+
+	size_map = CB_CMD_MAP_SIZE;
+	size_commit = sizeof(struct cb_tlv) + sizeof(struct cb_af_commit_info) +
+			DAMAGE_AREA_MAX_NR * sizeof(struct cb_rect);
+	size = sizeof(struct cb_tlv) + size_map + size_commit + sizeof(u32);
+	p = calloc(1, size);
+	return p;
+}
+
+struct cb_af_commit_info *cb_client_get_af_commit_info_from_buffer(u8 *buffer)
+{
+	u8 *p;
+	u32 size, size_commit, size_map;
+
+	if (!buffer)
+		return NULL;
+
+	size_map = CB_CMD_MAP_SIZE;
+	size_commit = sizeof(struct cb_tlv);
+	size = sizeof(struct cb_tlv) + size_map + size_commit + sizeof(u32);
+	p = buffer + size;
+	return (struct cb_af_commit_info *)p;
+}
+
+s32 cb_gen_af_commit_cmd(u8 *buffer, u32 *n)
+{
+	struct cb_tlv *tlv, *tlv_map, *tlv_commit;
+	u32 size, size_commit, size_map, *map, *head;
+	u8 *p;
+	struct cb_af_commit_info *afc;
+
+	if (!buffer)
+		return -EINVAL;
+
+	afc = cb_client_get_af_commit_info_from_buffer(buffer);
+	if (!afc)
+		return -EINVAL;
+
+	size_map = CB_CMD_MAP_SIZE;
+	size_commit = sizeof(*tlv) + sizeof(struct cb_af_commit_info) +
+			afc->count_damages * sizeof(struct cb_rect);
+	size = sizeof(*tlv) + size_map + size_commit + sizeof(u32);
+
+	p = buffer;
+	head = (u32 *)p;
+	*head = (1 << CB_CMD_AF_COMMIT_SHIFT);
+
+	tlv = (struct cb_tlv *)(p+sizeof(u32));
+	tlv->tag = CB_TAG_WIN;
+	tlv->length = size_commit + size_map;
+	tlv_map = (struct cb_tlv *)(&tlv->payload[0]);
+	tlv_commit = (struct cb_tlv *)(&tlv->payload[0] + size_map);
+	tlv_map->tag = CB_TAG_MAP;
+	tlv_map->length = CB_CMD_MAP_SIZE - sizeof(struct cb_tlv);
+	map = (u32 *)(&tlv_map->payload[0]);
+	map[CB_CMD_AF_COMMIT_SHIFT - CB_CMD_OFFSET] = (u8 *)tlv_commit - p;
+	tlv_commit->tag = CB_TAG_AF_COMMIT_INFO;
+	tlv_commit->length = sizeof(struct cb_af_commit_info) +
+			afc->count_damages * sizeof(struct cb_rect);
+	*n = size;
+
+	return 0;
+}
+
+struct cb_af_commit_info *cb_server_parse_af_commit_req_cmd(u8 *data)
+{
+	struct cb_tlv *tlv, *tlv_map, *tlv_commit;
+	u32 size, *head, *map;
+	struct cb_af_commit_info *afc;
+
+	head = (u32 *)data;
+	if (!((*head) & (1 << CB_CMD_AF_COMMIT_SHIFT)))
+		return NULL;
+
+	tlv = (struct cb_tlv *)(data+sizeof(u32));
+	assert(tlv->tag == CB_TAG_WIN);
+	size = sizeof(*tlv) + sizeof(u32) + tlv->length;
+	tlv_map = (struct cb_tlv *)(&tlv->payload[0]);
+	map = (u32 *)(&tlv_map->payload[0]);
+	if (map[CB_CMD_AF_COMMIT_SHIFT - CB_CMD_OFFSET] >= size)
+		return NULL;
+	tlv_commit = (struct cb_tlv *)(data
+			+ map[CB_CMD_AF_COMMIT_SHIFT-CB_CMD_OFFSET]);
+	if (tlv_commit->tag != CB_TAG_AF_COMMIT_INFO)
+		return NULL;
+	if (tlv_commit->length <= sizeof(*afc))
+		return NULL;
+	afc = (struct cb_af_commit_info *)(&tlv_commit->payload[0]);
+	return afc;
+}
+
