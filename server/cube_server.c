@@ -76,7 +76,7 @@ static enum cb_log_level serv_dbg = CB_LOG_DEBUG;
 	cb_tlog("[SERV][ERROR ] " fmt, ##__VA_ARGS__); \
 } while (0);
 
-static char short_options[] = "bhs:d:t:a:p:";
+static char short_options[] = "bhs:d:t:a:l:";
 
 static struct option long_options[] = {
 	{"background", 0, NULL, 'b'},
@@ -85,7 +85,7 @@ static struct option long_options[] = {
 	{"device", 1, NULL, 'd'},
 	{"touch-pipe", 1, NULL, 't'},
 	{"mc-accel", 1, NULL, 'a'},
-	{"background", 1, NULL, 'p'},
+	{"logo", 1, NULL, 'l'},
 	{NULL, 0, NULL, 0},
 };
 
@@ -145,7 +145,7 @@ static void usage(void)
 	printf("\t\t-d, --device=/dev/dri/cardX, device name.\n");
 	printf("\t\t-t, --touch-pipe=pipe number, touch screen index.\n");
 	printf("\t\t-a, --mc-accel=mouse accelerator, default 1.0.\n");
-	printf("\t\t-p, --background=background picture, default no picture\n");
+	printf("\t\t-p, --logo=24bit bmp logo file, default no logo\n");
 }
 
 struct child_process {
@@ -662,8 +662,8 @@ s32 main(s32 argc, char **argv)
 		case 'a':
 			mc_accel = atof(optarg);
 			break;
-		case 'p':
-			strcpy(desktop_argv1, "-p");
+		case 'l':
+			strcpy(desktop_argv1, "-l");
 			strcpy(desktop_argv2, optarg);
 			desktop_argc = 3;
 			break;

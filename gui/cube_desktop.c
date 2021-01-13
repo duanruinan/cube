@@ -26,6 +26,7 @@
 #include <errno.h>
 #include <getopt.h>
 #include <signal.h>
+#include <fcntl.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include <linux/input.h>
@@ -39,12 +40,29 @@
 #include <cube_client.h>
 
 static struct option options[] = {
-	{"picture", 1, NULL, 'p'},
+	{"logo", 1, NULL, 'l'},
 	{"seat", 1, NULL, 's'},
 	{NULL, 0, NULL, 0},
 };
 
-static char short_options[] = "p:s:";
+#define FILE_PATH_LEN 512
+
+struct logo_desc {
+	char file_path[FILE_PATH_LEN];
+	u32 offs;
+	u32 width;
+	s32 height;
+	u8 *vaddr;
+	bool y_invert;
+	u16 planes;
+	u16 count_bits;
+	u32 compression;
+	u32 size;
+	bool vinvert;
+	s32 fd;
+};
+
+static char short_options[] = "l:s:";
 
 struct bo_info {
 	void *bo;
@@ -84,12 +102,14 @@ struct cube_desktop {
 	struct cb_view_info v;
 
 	s32 pipe;
+	struct logo_desc *logo;
 };
 
 static void usage(void)
 {
 	fprintf(stderr, "cube_desktop --seat seat number "
-			"--picture background picture file.\n");
+			"--logo 24 bit (.BMP) logo picture file "
+			"(centerized).\n");
 }
 
 static void cube_desktop_destroy(struct cube_desktop *desktop)
@@ -123,6 +143,8 @@ static void cube_desktop_destroy(struct cube_desktop *desktop)
 	}
 	usleep(20000);
 
+	if (desktop->logo && desktop->logo->vaddr)
+		free(desktop->logo->vaddr);
 	free(desktop);
 }
 
@@ -133,6 +155,46 @@ static s32 signal_cb(s32 signal_number, void *userdata)
 
 	cli->stop(cli);
 	return 0;
+}
+
+static void fill_logo(u8 *data, u32 width, u32 height, u32 stride,
+		      struct cb_pos *offset, struct logo_desc *logo)
+{
+	s32 i, j;
+	u32 *pixel = (u32 *)data + offset->y * (stride >> 2) + offset->x;
+	u8 *src;
+	u8 *dst;
+	u32 h = logo->height;
+	u32 w = logo->width;
+	u32 v_offs = (height - h) / 2;
+	u32 h_offs = (width - w) / 2;
+
+	dst = (u8 *)pixel + v_offs * stride + h_offs * 4;
+	if (logo->y_invert) {
+		src = logo->vaddr + logo->size - logo->width * 3;
+		for (i = 0; i < h; i++) {
+			for (j = 0; j < w; j++) {
+				*(dst + j * 4) = *(src + j * 3);
+				*(dst + j * 4 + 1) = *(src + j * 3 + 1);
+				*(dst + j * 4 + 2) = *(src + j * 3 + 2);
+				*(dst + j * 4 + 3) = 0xFF;
+			}
+			src -= logo->width * 3;
+			dst += stride;
+		}
+	} else {
+		src = logo->vaddr;
+		for (i = 0; i < h; i++) {
+			for (j = 0; j < w; j++) {
+				*(dst + j * 4) = *(src + j * 3);
+				*(dst + j * 4 + 1) = *(src + j * 3 + 1);
+				*(dst + j * 4 + 2) = *(src + j * 3 + 2);
+				*(dst + j * 4 + 3) = 0xFF;
+			}
+			src += logo->width * 3;
+			dst += stride;
+		}
+	}
 }
 
 static void fill_def_bg(u8 *data, u32 width, u32 height, u32 stride,
@@ -311,27 +373,46 @@ static void layout_changed_cb(void *userdata)
 		fprintf(stderr, "failed to create shm bo\n");
 		goto err;
 	}
+	memset(bo_info->maps[0], 0, bo_info->sizes[0]);
 	bo_info->width = desktop->desktop_rc.w;
 	bo_info->height = desktop->desktop_rc.h;
 	if (desktop->duplicated) {
 		printf("Fill %d,%d %ux%u\n", desktop->desktop_rc.pos.x,
 			desktop->desktop_rc.pos.y,
 			bo_info->width, bo_info->height);
-		fill_def_bg(bo_info->maps[0],
-			   bo_info->width,
-			   bo_info->height,
-			   bo_info->pitches[0],
-			   &desktop->desktop_rc.pos);
+		if (desktop->logo) {
+			fill_logo(bo_info->maps[0],
+				bo_info->width,
+				bo_info->height,
+				bo_info->pitches[0],
+				&desktop->desktop_rc.pos,
+				desktop->logo);
+		} else {
+			fill_def_bg(bo_info->maps[0],
+				bo_info->width,
+				bo_info->height,
+				bo_info->pitches[0],
+				&desktop->desktop_rc.pos);
+		}
 	} else {
 		for (i = 0; i < desktop->heads_nr; i++) {
 			printf("Fill %d,%d %ux%u\n", desktop->heads[i].rc.pos.x,
 				desktop->heads[i].rc.pos.y,
 				desktop->heads[i].rc.w, desktop->heads[i].rc.h);
-			fill_def_bg(bo_info->maps[0],
-				desktop->heads[i].rc.w,
-				desktop->heads[i].rc.h,
-				bo_info->pitches[0],
-				&desktop->heads[i].rc.pos);
+			if (desktop->logo) {
+				fill_logo(bo_info->maps[0],
+					desktop->heads[i].rc.w,
+					desktop->heads[i].rc.h,
+					bo_info->pitches[0],
+					&desktop->heads[i].rc.pos,
+					desktop->logo);
+			} else {
+				fill_def_bg(bo_info->maps[0],
+					desktop->heads[i].rc.w,
+					desktop->heads[i].rc.h,
+					bo_info->pitches[0],
+					&desktop->heads[i].rc.pos);
+			}
 		}
 	}
 
@@ -492,27 +573,48 @@ static void view_created_cb(bool success, void *userdata, u64 view_id)
 		fprintf(stderr, "failed to create shm bo\n");
 		goto err;
 	}
+	memset(bo_info->maps[0], 0, bo_info->sizes[0]);
 	bo_info->width = desktop->desktop_rc.w;
 	bo_info->height = desktop->desktop_rc.h;
 	if (desktop->duplicated) {
 		printf("Fill %d,%d %ux%u\n", desktop->desktop_rc.pos.x,
 			desktop->desktop_rc.pos.y,
 			bo_info->width, bo_info->height);
-		fill_def_bg(bo_info->maps[0],
-			   bo_info->width,
-			   bo_info->height,
-			   bo_info->pitches[0],
-			   &desktop->desktop_rc.pos);
+		if (desktop->logo) {
+			printf("Fill logo\n");
+			fill_logo(bo_info->maps[0],
+				bo_info->width,
+				bo_info->height,
+				bo_info->pitches[0],
+				&desktop->desktop_rc.pos,
+				desktop->logo);
+		} else {
+			printf("Fill bg\n");
+			fill_def_bg(bo_info->maps[0],
+				bo_info->width,
+				bo_info->height,
+				bo_info->pitches[0],
+				&desktop->desktop_rc.pos);
+		}
 	} else {
 		for (i = 0; i < desktop->heads_nr; i++) {
 			printf("Fill %d,%d %ux%u\n", desktop->heads[i].rc.pos.x,
 				desktop->heads[i].rc.pos.y,
 				desktop->heads[i].rc.w, desktop->heads[i].rc.h);
-			fill_def_bg(bo_info->maps[0],
-				desktop->heads[i].rc.w,
-				desktop->heads[i].rc.h,
-				bo_info->pitches[0],
-				&desktop->heads[i].rc.pos);
+			if (desktop->logo) {
+				fill_logo(bo_info->maps[0],
+					desktop->heads[i].rc.w,
+					desktop->heads[i].rc.h,
+					bo_info->pitches[0],
+					&desktop->heads[i].rc.pos,
+					desktop->logo);
+			} else {
+				fill_def_bg(bo_info->maps[0],
+					desktop->heads[i].rc.w,
+					desktop->heads[i].rc.h,
+					bo_info->pitches[0],
+					&desktop->heads[i].rc.pos);
+			}
 		}
 	}
 
@@ -619,7 +721,8 @@ static void ready_cb(void *userdata)
 	cli->query_layout(cli);
 }
 
-static struct cube_desktop *cube_desktop_create(s32 seat)
+static struct cube_desktop *cube_desktop_create(s32 seat,
+						struct logo_desc *logo)
 {
 	struct cube_desktop *desktop;
 	struct cb_client *cli;
@@ -627,6 +730,7 @@ static struct cube_desktop *cube_desktop_create(s32 seat)
 	desktop = calloc(1, sizeof(*desktop));
 	if (!desktop)
 		goto err;
+	desktop->logo = logo;
 
 	desktop->cli = cb_client_create(seat);
 	cli = desktop->cli;
@@ -645,8 +749,9 @@ err:
 s32 main(s32 argc, char *argv[])
 {
 	s32 ch, seat = 0;
-	char *pic_path = NULL;
 	struct cube_desktop *desktop;
+	struct logo_desc logo;
+	bool use_logo = false;
 
 	while ((ch = getopt_long(argc, argv, short_options,
 				 options, NULL)) != -1) {
@@ -654,10 +759,71 @@ s32 main(s32 argc, char *argv[])
 		case 's':
 			seat = atoi(optarg);
 			break;
-		case 'p':
-			pic_path = (char *)malloc(strlen(optarg) + 1);
-			memset(pic_path, 0, strlen(optarg) + 1);
-			strcpy(pic_path, optarg);
+		case 'l':
+			memset(&logo, 0, sizeof(logo));
+			strcpy(logo.file_path, optarg);
+			logo.fd = open(logo.file_path, O_RDONLY, 0644);
+			if (logo.fd < 0) {
+				fprintf(stderr, "logo %s not exist.\n",
+					logo.file_path);
+			} else {
+				lseek(logo.fd, 10, SEEK_SET);
+				read(logo.fd, &logo.offs, sizeof(u32));
+				printf("logo offset: %u\n", logo.offs);
+				lseek(logo.fd, 18, SEEK_SET);
+				read(logo.fd, &logo.width, sizeof(u32));
+				read(logo.fd, &logo.height, sizeof(u32));
+				read(logo.fd, &logo.planes, sizeof(short));
+				read(logo.fd, &logo.count_bits, sizeof(short));
+				read(logo.fd, &logo.compression, sizeof(u32));
+				read(logo.fd, &logo.size, sizeof(u32));
+				if (logo.height > 0) {
+					printf("Y-invert\n");
+					logo.y_invert = true;
+				} else {
+					logo.y_invert = false;
+					logo.height = (-logo.height);
+				}
+				printf("logo widthxheight: %ux%d\n", logo.width,
+					logo.height);
+				printf("logo planes: %u\n", logo.planes);
+				printf("logo count_bits: %u\n",
+					logo.count_bits);
+				printf("logo compression: %u\n",
+					logo.compression);
+				printf("logo size: %u\n", logo.size);
+				if (logo.width > 480 ||
+				    logo.height > 320 ||
+				    logo.planes > 1 ||
+				    logo.count_bits != 24 ||
+				    logo.compression) {
+					fprintf(stderr, "Not supported.\n");
+					printf("Only support:\n");
+					printf("\twidth <= 480 height <= 320\n");
+					printf("\tplanes: 1\n");
+					printf("\tcount_bits: 24\n");
+					printf("\tcompression: No\n");
+					use_logo = false;
+				} else {
+					u32 bytes_to_rd = logo.size;
+					u8 *p;
+					s32 ret;
+
+					use_logo = true;
+					logo.vaddr = malloc(logo.size);
+					p = logo.vaddr;
+					lseek(logo.fd, logo.offs, SEEK_SET);
+					while (bytes_to_rd) {
+						ret = read(logo.fd, p,
+							   bytes_to_rd);
+						if (ret < 0)
+							break;
+						bytes_to_rd -= ret;
+						p += ret;
+					}
+				}
+				close(logo.fd);
+			}
 			break;
 		default:
 			usage();
@@ -665,7 +831,13 @@ s32 main(s32 argc, char *argv[])
 		}
 	}
 
-	desktop = cube_desktop_create(seat);
+	if (!use_logo) {
+		printf("logo: NULL\n");
+		desktop = cube_desktop_create(seat, NULL);
+	} else {
+		printf("logo: %p\n", &logo);
+		desktop = cube_desktop_create(seat, &logo);
+	}
 	if (!desktop)
 		goto out;
 
@@ -673,7 +845,6 @@ s32 main(s32 argc, char *argv[])
 
 out:
 	cube_desktop_destroy(desktop);
-	free(pic_path);
 
 	return 0;
 }
