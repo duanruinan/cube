@@ -844,10 +844,21 @@ static s32 change_layout(struct cb_client *client)
 
 	cli->shell.cmd = CB_SHELL_CANVAS_LAYOUT_SETTING;
 	cli->shell.value.layout.count_heads = client->count_displays;
+	client_debug(cli, "count_displays: %d", client->count_displays);
 	for (i = 0; i < client->count_displays; i++) {
 		disp = &client->displays[i];
+		client_debug(cli, "desktop rc[%d] %d,%d %ux%u", i,
+			     disp->desktop_rc.pos.x,
+			     disp->desktop_rc.pos.y,
+			     disp->desktop_rc.w,
+			     disp->desktop_rc.h);
 		memcpy(&cli->shell.value.layout.cfg[i].desktop_rc,
 		       &disp->desktop_rc, sizeof(struct cb_rect));
+		client_debug(cli, "input rc[%d] %d,%d %ux%u", i,
+			     disp->input_rc.pos.x,
+			     disp->input_rc.pos.y,
+			     disp->input_rc.w,
+			     disp->input_rc.h);
 		memcpy(&cli->shell.value.layout.cfg[i].input_rc,
 		       &disp->input_rc, sizeof(struct cb_rect));
 		cli->shell.value.layout.cfg[i].mode_handle = disp->pending_mode;
@@ -2081,7 +2092,7 @@ static void client_ipc_proc(struct client *cli)
 				   "message. ret = %d", ret);
 		} else {
 			client_debug(cli, "received view focus chg event "
-				     "%016X %c", view_id, focus_on);
+				     "%016X %c", view_id, focus_on ? 'Y': 'N');
 			if (cli->view_focus_chg_cb) {
 				cli->view_focus_chg_cb(
 					cli->view_focus_chg_userdata,
