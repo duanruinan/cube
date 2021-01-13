@@ -2777,7 +2777,7 @@ static void drm_scanout_release_dmabuf(struct scanout *so,
 	cb_signal_fini(&fb->base.destroy_signal);
 	cb_signal_fini(&fb->base.flip_signal);
 	cb_signal_fini(&fb->base.complete_signal);
-	drm_debug("Request to release DMA-BUF");
+	drm_debug("Request to release DMA-BUF %d", fb->fb_id);
 	drm_fb_unref(fb);
 }
 
@@ -2866,6 +2866,7 @@ static struct cb_buffer *drm_scanout_import_dmabuf(struct scanout *so,
 		drm_err("failed to create drm FB2. (%s)", strerror(errno));
 		goto err;
 	}
+	drm_debug("import DMA-BUF bo as DRM FB_ID: %d", fb->fb_id);
 	/*
 	printf("FB info: %ux%u %u ID: %u\n", info->width, info->height,
 		fb->base.info.strides[0], fb->fb_id);

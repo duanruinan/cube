@@ -5026,6 +5026,7 @@ static struct cb_buffer *cb_compositor_import_so_dmabuf(
 			struct compositor *comp, struct cb_buffer_info *info)
 {
 	struct cb_compositor *c = to_cb_c(comp);
+	struct cb_buffer *b;
 
 	if (!comp)
 		return NULL;
@@ -5033,7 +5034,9 @@ static struct cb_buffer *cb_compositor_import_so_dmabuf(
 	if (!info)
 		return NULL;
 
-	return c->so->import_dmabuf(c->so, info);
+	b = c->so->import_dmabuf(c->so, info);
+	comp_debug("import dma-buf %p", b);
+	return b;
 }
 
 static void cb_compositor_release_rd_dmabuf(struct compositor *comp,
@@ -5061,6 +5064,7 @@ static void cb_compositor_release_so_dmabuf(struct compositor *comp,
 	if (!b)
 		return;
 
+	comp_debug("release dma-buf %p", b);
 	c->so->release_dmabuf(c->so, b);
 	if (b->surface && b->surface->buffer_cur == b) {
 		b->surface->buffer_cur = NULL;
