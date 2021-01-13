@@ -58,7 +58,6 @@ struct logo_desc {
 	u16 count_bits;
 	u32 compression;
 	u32 size;
-	bool vinvert;
 	s32 fd;
 };
 
