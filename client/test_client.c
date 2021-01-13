@@ -786,6 +786,19 @@ static void bo_created_cb(bool success, void *userdata, u64 bo_id)
 	}
 }
 
+static void connection_lost_cb(void *userdata)
+{
+	struct cube_client *client = userdata;
+	struct cb_client *cli = client->cli;
+
+	printf("-----------------------------------------------------------\n");
+	printf("----------------------- Server Die ------------------------\n");
+	printf("-----------------------------------------------------------\n");
+	printf("-----------------------------------------------------------\n");
+	printf("-----------------------------------------------------------\n");
+	cli->stop(cli);
+}
+
 static void ready_cb(void *userdata)
 {
 	struct cube_client *client = userdata;
@@ -793,6 +806,7 @@ static void ready_cb(void *userdata)
 	struct bo_info *bo_info = &client->bos[0];
 	s32 ret;
 
+	cli->set_connection_lost_cb(cli, client, connection_lost_cb);
 	cli->set_client_cap(cli, CB_CLIENT_CAP_INPUT);
 	cli->set_input_msg_cb(cli, client, input_msg_cb);
 

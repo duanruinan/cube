@@ -228,6 +228,9 @@ struct client {
 
 	void *view_focus_chg_userdata;
 	void (*view_focus_chg_cb)(void *userdata, u64 view_id, bool on);
+
+	void *connection_lost_cb_userdata;
+	void (*connection_lost_cb)(void *userdata);
 };
 
 struct client_buffer {
@@ -403,6 +406,9 @@ static void set_raw_input_en(struct cb_client *client, bool en)
 	if (ret < 0) {
 		client_err(cli, "failed to send raw input en length. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return;
 	}
@@ -413,6 +419,9 @@ static void set_raw_input_en(struct cb_client *client, bool en)
 	if (ret < 0) {
 		client_err(cli, "failed to send raw input en. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 	}
 }
@@ -437,6 +446,9 @@ static s32 send_get_kbd_led_st(struct cb_client *client)
 	if (ret < 0) {
 		client_err(cli, "failed to send get kbd led st length. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -448,6 +460,9 @@ static s32 send_get_kbd_led_st(struct cb_client *client)
 	if (ret < 0) {
 		client_err(cli, "failed to send get kbd led st cmd. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -476,6 +491,18 @@ static s32 set_kbd_led_st_cb(struct cb_client *client, void *userdata,
 	cli->kbd_led_st_cb = kbd_led_st_cb;
 
 	return 0;
+}
+
+static void set_connection_lost_cb(struct cb_client *client, void *userdata,
+				   void (*connection_lost_cb)(void *))
+{
+	struct client *cli = to_client(client);
+
+	if (!client)
+		assert(0);
+
+	cli->connection_lost_cb_userdata = userdata;
+	cli->connection_lost_cb = connection_lost_cb;
 }
 
 static s32 set_view_focus_chg_cb(struct cb_client *client, void *userdata,
@@ -531,6 +558,9 @@ static s32 send_get_edid(struct cb_client *client, u64 pipe)
 	if (ret < 0) {
 		client_err(cli, "failed to send get edid length. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -542,6 +572,9 @@ static s32 send_get_edid(struct cb_client *client, u64 pipe)
 	if (ret < 0) {
 		client_err(cli, "failed to send get edid cmd. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -578,6 +611,9 @@ static s32 send_set_kbd_led_st(struct cb_client *client, u32 led_status)
 	if (ret < 0) {
 		client_err(cli, "failed to send set kbd led st length. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -589,6 +625,9 @@ static s32 send_set_kbd_led_st(struct cb_client *client, u32 led_status)
 	if (ret < 0) {
 		client_err(cli, "failed to send set kbd led st cmd. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -624,6 +663,9 @@ static s32 set_client_cap(struct cb_client *client, u64 cap)
 	if (ret < 0) {
 		client_err(cli, "failed to send client cap length. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -634,6 +676,9 @@ static s32 set_client_cap(struct cb_client *client, u64 cap)
 	if (ret < 0) {
 		client_err(cli, "failed to send client cap cmd (dbg). %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -673,6 +718,9 @@ static s32 set_server_dbg(struct cb_client *client,
 	if (ret < 0) {
 		client_err(cli, "failed to send shell cmd (dbg) length. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -683,6 +731,9 @@ static s32 set_server_dbg(struct cb_client *client,
 	if (ret < 0) {
 		client_err(cli, "failed to send shell cmd (dbg). %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -880,6 +931,9 @@ static s32 change_layout(struct cb_client *client)
 	if (ret < 0) {
 		client_err(cli, "failed to send shell cmd length. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -890,6 +944,9 @@ static s32 change_layout(struct cb_client *client)
 	if (ret < 0) {
 		client_err(cli, "failed to send shell cmd (layout). %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -952,6 +1009,9 @@ static s32 enumerate_mode(struct cb_client *client, s32 pipe, void *last_mode,
 	if (ret < 0) {
 		client_err(cli, "failed to send shell cmd (enum) length. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -962,6 +1022,9 @@ static s32 enumerate_mode(struct cb_client *client, s32 pipe, void *last_mode,
 	if (ret < 0) {
 		client_err(cli, "failed to send shell cmd (enum). %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1025,6 +1088,9 @@ static s32 query_layout(struct cb_client *client)
 	if (ret < 0) {
 		client_err(cli, "failed to send shell cmd length. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1035,6 +1101,9 @@ static s32 query_layout(struct cb_client *client)
 	if (ret < 0) {
 		client_err(cli, "failed to send shell cmd (query layout). %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1140,6 +1209,9 @@ static s32 create_mode(struct cb_client *client, struct mode_info *info,
 	if (ret < 0) {
 		client_err(cli, "failed to send shell cmd length. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1150,6 +1222,9 @@ static s32 create_mode(struct cb_client *client, struct mode_info *info,
 	if (ret < 0) {
 		client_err(cli, "failed to send shell cmd (create mode). %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1215,6 +1290,9 @@ static s32 create_surface(struct cb_client *client, struct cb_surface_info *s)
 	if (ret < 0) {
 		client_err(cli, "failed to send create surf length. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1226,6 +1304,9 @@ static s32 create_surface(struct cb_client *client, struct cb_surface_info *s)
 	if (ret < 0) {
 		client_err(cli, "failed to send create surf cmd. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1290,6 +1371,9 @@ static s32 create_view(struct cb_client *client, struct cb_view_info *v)
 	if (ret < 0) {
 		client_err(cli, "failed to send create view length. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1301,6 +1385,9 @@ static s32 create_view(struct cb_client *client, struct cb_view_info *v)
 	if (ret < 0) {
 		client_err(cli, "failed to send create view cmd. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1367,6 +1454,9 @@ static s32 create_bo(struct cb_client *client, void *bo)
 	if (ret < 0) {
 		client_err(cli, "failed to send create bo length. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1381,6 +1471,9 @@ static s32 create_bo(struct cb_client *client, void *bo)
 	if (ret < 0) {
 		client_err(cli, "failed to send create bo cmd. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1445,6 +1538,9 @@ static s32 destroy_bo(struct cb_client *client, u64 bo_id)
 	if (ret < 0) {
 		client_err(cli, "failed to send destroy bo length. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1456,6 +1552,9 @@ static s32 destroy_bo(struct cb_client *client, u64 bo_id)
 	if (ret < 0) {
 		client_err(cli, "failed to send destroy bo cmd. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1499,6 +1598,9 @@ static s32 commit_bo(struct cb_client *client, struct cb_commit_info *c)
 	if (ret < 0) {
 		client_err(cli, "failed to send commit bo length. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1510,6 +1612,9 @@ static s32 commit_bo(struct cb_client *client, struct cb_commit_info *c)
 	if (ret < 0) {
 		client_err(cli, "failed to send commit bo cmd. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1567,6 +1672,9 @@ static s32 af_commit_bo(struct cb_client *client, u8 *buffer)
 	if (ret < 0) {
 		client_err(cli, "failed to send af commit bo length. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1577,6 +1685,9 @@ static s32 af_commit_bo(struct cb_client *client, u8 *buffer)
 	if (ret < 0) {
 		client_err(cli, "failed to send af commit bo cmd. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1687,6 +1798,9 @@ static s32 commit_mc(struct cb_client *client, struct cb_mc_info *mc)
 	if (ret < 0) {
 		client_err(cli, "failed to send commit mc length. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -1698,6 +1812,9 @@ static s32 commit_mc(struct cb_client *client, struct cb_mc_info *mc)
 	if (ret < 0) {
 		client_err(cli, "failed to send commit mc cmd. %s",
 			   strerror(errno));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return -errno;
 	}
@@ -2328,10 +2445,16 @@ static s32 sock_cb(s32 fd, u32 mask, void *data)
 	if (ret < 0) {
 		client_err(cli, "failed to recv from server (%s).",
 			   strerror(-ret));
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return ret;
 	} else if (ret == 0) {
 		client_err(cli, "connection lost.");
+		if (cli->connection_lost_cb)
+			cli->connection_lost_cb(
+					cli->connection_lost_cb_userdata);
 		stop(&cli->base);
 		return 0;
 	}
@@ -2593,6 +2716,7 @@ struct cb_client *cb_client_create(s32 seat)
 	cli->base.send_get_kbd_led_st = send_get_kbd_led_st;
 	cli->base.set_kbd_led_st_cb = set_kbd_led_st_cb;
 	cli->base.set_view_focus_chg_cb = set_view_focus_chg_cb;
+	cli->base.set_connection_lost_cb = set_connection_lost_cb;
 	cli->base.enumerate_mode = enumerate_mode;
 	cli->base.set_enumerate_mode_cb = set_enumerate_mode_cb;
 	cli->base.query_layout = query_layout;

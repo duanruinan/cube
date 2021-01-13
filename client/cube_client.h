@@ -193,6 +193,9 @@ struct cb_client {
 				     			       u64 view_id,
 				     			       bool on));
 
+	void (*set_connection_lost_cb)(struct cb_client *client, void *userdata,
+				       void (*connection_lost_cb)(void *));
+
 	void (*add_idle_task)(struct cb_client *client, void *userdata,
 			      void (*idle_task)(void *data));
 
