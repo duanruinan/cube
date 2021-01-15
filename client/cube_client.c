@@ -898,6 +898,15 @@ static s32 change_layout(struct cb_client *client)
 	client_debug(cli, "count_displays: %d", client->count_displays);
 	for (i = 0; i < client->count_displays; i++) {
 		disp = &client->displays[i];
+		if (disp->desktop_rc.w > 4096 || disp->desktop_rc.h > 2160 ||
+		    disp->desktop_rc.w == 0 || disp->desktop_rc.h == 0) {
+			client_err(cli, "desktop rc[%d] out of range. %ux%u",
+				   i, disp->desktop_rc.w, disp->desktop_rc.h);
+			return -ERANGE;
+		}
+	}
+	for (i = 0; i < client->count_displays; i++) {
+		disp = &client->displays[i];
 		client_debug(cli, "desktop rc[%d] %d,%d %ux%u", i,
 			     disp->desktop_rc.pos.x,
 			     disp->desktop_rc.pos.y,

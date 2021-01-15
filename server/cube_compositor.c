@@ -4872,7 +4872,7 @@ static s32 cb_compositor_commit_dma_buf(struct compositor *comp,
 	u32 mask, diff;
 	s32 i, pipe, pipe_locked;
 	struct plane *plane;
-	bool empty, lock_pipe;
+	bool empty, lock_pipe, r;
 
 	comp_debug("commit DMA-BUF direct show surface %p's buffer %p",
 		   surface, surface->buffer_pending);
@@ -4923,7 +4923,11 @@ static s32 cb_compositor_commit_dma_buf(struct compositor *comp,
 		setup_view_output_mask(view, c);
 		diff = mask ^ view->output_mask;
 
-		prepare_dma_buf_planes(surface, surface->buffer_pending);
+		r = prepare_dma_buf_planes(surface, surface->buffer_pending);
+		if (!r) {
+			comp_err("cannot find a plane");
+			return -ENOSPC;
+		}
 
 		empty = true;
 		scanout_buffer_dirty_init(surface->buffer_pending);

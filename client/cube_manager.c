@@ -491,7 +491,13 @@ static void enumerate_mode_cb(void *userdata, struct cb_client_mode_desc *mode)
 			if (manager->change_layout_pending) {
 				parse_layout_param(manager->param_str, client);
 				manager->change_layout_pending = false;
-				client->change_layout(client);
+				ret = client->change_layout(client);
+				if (ret < 0) {
+					printf("failed to change layout %s\n",
+						strerror(-ret));
+					client->stop(client);
+					return;
+				}
 				flag = true;
 			}
 			if (manager->create_mode_pending) {
