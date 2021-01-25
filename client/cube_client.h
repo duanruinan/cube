@@ -44,6 +44,7 @@ struct cb_client_mode_desc {
 struct cb_client_display {
 	s32 pipe; /* read only */
 	struct cb_rect desktop_rc, input_rc; /* read / write */
+	struct mode_req mr; /* write only */
 	void *pending_mode; /* write only */
 	void *mode_current; /* read only */
 	void *mode_custom; /* read only */

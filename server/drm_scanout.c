@@ -1670,6 +1670,39 @@ static struct cb_mode *drm_output_get_custom_mode(struct output *o)
 		return NULL;
 }
 
+static struct cb_mode *
+drm_output_get_mode_by_user_request(struct output *o, struct mode_req *mr)
+{
+	struct drm_output *output = to_drm_output(o);
+	struct drm_mode *mode;
+
+	if (!mr) {
+		drm_err("mr is null");
+		return NULL;
+	}
+
+	if (mr->w == 0 || mr->w > 4096 || mr->h == 0 || mr->h > 2160 ||
+	    mr->refresh == 0 || mr->refresh > 144 ||
+	    mr->pixel_freq == 0 || mr->pixel_freq > 600000) {
+		drm_err("illegal user param. %ux%u %u %u",
+			mr->w, mr->h, mr->refresh, mr->pixel_freq);
+		return NULL;
+	}
+
+	list_for_each_entry(mode, &output->modes, link) {
+		if (mode->base.width == mr->w &&
+		    mode->base.height == mr->h &&
+		    mode->base.vrefresh == mr->refresh &&
+		    ((u32)(mode->base.pixel_freq / 1000.0f))
+		    		== ((u32)(mr->pixel_freq / 1000.0f))) {
+			return &mode->base;
+		}
+	}
+
+	drm_err("cannot find mode by user request.");
+	return NULL;
+}
+
 static struct cb_mode *drm_output_get_preferred_mode(struct output *o)
 {
 	struct drm_output *output = to_drm_output(o);
@@ -3178,10 +3211,37 @@ static void drm_head_update_modes(struct drm_head *head)
 	}
 
 	new_mode = NULL;
+
+	/* for vanxum */
 	list_for_each_entry(mode, &output->modes, link) {
-		if (mode->base.preferred) {
+		if (mode->base.width == 1920 &&
+		    mode->base.height == 1080 &&
+		    mode->base.vrefresh >= 140 &&
+		    mode->base.vrefresh <= 144) {
 			new_mode = mode;
 			break;
+		}
+	}
+
+	/* for vanxum */
+	if (!new_mode) {
+		list_for_each_entry(mode, &output->modes, link) {
+			if (mode->base.width == 1920 &&
+			    mode->base.height == 1080 &&
+			    mode->base.vrefresh >= 120 &&
+			    mode->base.vrefresh < 140) {
+				new_mode = mode;
+				break;
+			}
+		}
+	}
+
+	if (!new_mode) {
+		list_for_each_entry(mode, &output->modes, link) {
+			if (mode->base.preferred) {
+				new_mode = mode;
+				break;
+			}
 		}
 	}
 
@@ -3248,6 +3308,7 @@ drm_scanout_pipeline_create(struct scanout *so, struct pipeline *pipeline_cfg)
 
 	output->enable = drm_output_enable;
 	output->disable = drm_output_disable;
+	output->get_mode_by_user_request = drm_output_get_mode_by_user_request;
 	output->get_preferred_mode = drm_output_get_preferred_mode;
 	output->get_current_mode = drm_output_get_current_mode;
 	output->enumerate_mode = drm_output_enumerate_mode;

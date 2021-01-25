@@ -343,11 +343,18 @@ enum cb_shell_cmd {
 #define CB_CONNECTOR_NAME_MAX_LEN 31
 #define CB_MONITOR_NAME_MAX_LEN 31
 
+struct mode_req {
+	u16 w, h;
+	u32 pixel_freq;
+	u32 refresh;
+};
+
 struct output_config {
 	s32 pipe;
 	struct cb_rect desktop_rc;
 	struct cb_rect input_rc;
 	void *mode_handle;
+	struct mode_req mr;
 	void *custom_mode_handle;
 	char monitor_name[CB_MONITOR_NAME_MAX_LEN];
 	char connector_name[CB_CONNECTOR_NAME_MAX_LEN];

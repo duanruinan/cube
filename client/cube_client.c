@@ -921,7 +921,16 @@ static s32 change_layout(struct cb_client *client)
 			     disp->input_rc.h);
 		memcpy(&cli->shell.value.layout.cfg[i].input_rc,
 		       &disp->input_rc, sizeof(struct cb_rect));
-		cli->shell.value.layout.cfg[i].mode_handle = disp->pending_mode;
+		if (disp->pending_mode) {
+			cli->shell.value.layout.cfg[i].mode_handle
+				= disp->pending_mode;
+			memset(&cli->shell.value.layout.cfg[i].mr, 0,
+				sizeof(struct mode_req));
+		} else {
+			cli->shell.value.layout.cfg[i].mode_handle = NULL;
+			memcpy(&cli->shell.value.layout.cfg[i].mr,
+				&disp->mr, sizeof(struct mode_req));
+		}
 	}
 
 	p = cb_dup_shell_cmd(cli->shell_tx_cmd, cli->shell_tx_cmd_t,

@@ -331,6 +331,7 @@ static void parse_layout_param(char *param, struct cb_client *client)
 				break;
 			j++;
 		}
+		memset(&client->displays[i].mr, 0, sizeof(struct mode_req));
 		if (mode_index != -1) {
 			if (mode_index == 999) {
 				client->displays[i].pending_mode =
@@ -341,7 +342,13 @@ static void parse_layout_param(char *param, struct cb_client *client)
 					m->info.width, m->info.height,
 					m->info.vrefresh,
 					m->handle);
-				client->displays[i].pending_mode = m->handle;
+				client->displays[i].pending_mode = NULL;
+				client->displays[i].mr.w = m->info.width;
+				client->displays[i].mr.h = m->info.height;
+				client->displays[i].mr.pixel_freq =
+							m->info.clock;
+				client->displays[i].mr.refresh =
+							m->info.vrefresh;
 			}
 		} else {
 			client->displays[i].pending_mode = NULL;

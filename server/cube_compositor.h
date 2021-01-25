@@ -293,6 +293,14 @@ struct compositor {
 			     struct cb_mode *mode);
 
 	/*
+	 * Switch video timing according to user request
+	 * It is a asynchronous progress.
+	 * 0 on success, -EAGAIN means to call switch_timing again.
+	 */
+	s32 (*switch_timing_by_user_request)(struct compositor *c, s32 pipe,
+					     struct mode_req *mr);
+
+	/*
 	 * Get desktop canvas layout.
 	 * 	layout: an array of desktop rectangles, pipe (hardware index)
 	 *              and mode handles.

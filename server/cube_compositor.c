@@ -2198,6 +2198,82 @@ static void cb_compositor_resume(struct compositor *comp)
 	/* TODO notify clients about the initial connector status */
 }
 
+static s32 cb_compositor_switch_mode_ext(struct compositor *comp, s32 pipe,
+					 struct mode_req *mr)
+{
+	struct cb_compositor *c = to_cb_c(comp);
+	struct cb_output *o;
+	s32 vid, i;
+	struct cb_mode *mode;
+
+	if (!comp || pipe < 0 || !mr)
+		return -EINVAL;
+
+	for (i = 0; i < c->count_outputs; i++) {
+		o = c->outputs[i];
+		if (o->pipe == pipe)
+			break;
+	}
+
+	if (i == c->count_outputs)
+		return -EINVAL;
+
+	if (o->disable_pending)
+		return -EAGAIN;
+
+	if (o->switch_mode_pending)
+		return -EINVAL;
+
+	if (!o->enabled)
+		return -EINVAL;
+
+	o->disable_pending = true;
+	o->switch_mode_pending = true;
+	mode = o->output->get_mode_by_user_request(o->output, mr);
+	if (mode == NULL) {
+		comp_err("cannot get mode by user's request.");
+		return -EINVAL;
+	}
+	o->pending_mode = mode;
+	o->enabled = false;
+	printf("Try to disable output: %d\n", o->pipe);
+	comp_notice("Try to disable output: %d", o->pipe);
+	if (o->output->disable(o->output) < 0) {
+		cb_event_source_timer_update(o->disable_timer,
+					     OUTPUT_DISABLE_DELAYED_MS,
+					     OUTPUT_DISABLE_DELAYED_US);
+	} else {
+		disable_output_render(o);
+		o->output->switch_mode(o->output, mode);
+		o->output->enable(o->output, mode);
+		o->repaint_status = REPAINT_NOT_SCHEDULED;
+		cancel_so_tasks(o);
+		o->enabled = true;
+		/* update view port before show dummy */
+		update_crtc_view_port(o);
+		show_dummy(o);
+		o->native_surface = o->output->native_surface_create(o->output);
+		if (!o->native_surface) {
+			comp_err("failed to create native surface");
+			assert(o->native_surface);
+		}
+		o->ro = c->r->output_create(c->r, NULL, o->native_surface,
+					    (s32 *)(&c->native_fmt), 1, &vid,
+					    &o->desktop_rc,
+					    o->crtc_w, o->crtc_h, o->pipe);
+		if (!o->ro) {
+			comp_err("failed to create renderer output");
+			assert(o->ro);
+		}
+		o->pending_mode = NULL;
+		o->switch_mode_pending = false;
+		o->disable_pending = false;
+		cb_signal_emit(&o->switch_mode_signal, NULL);
+	}
+
+	return 0;
+}
+
 static s32 cb_compositor_switch_mode(struct compositor *comp, s32 pipe,
 				     struct cb_mode *mode)
 {
@@ -2704,6 +2780,20 @@ static void cb_compositor_set_desktop_layout(struct compositor *comp,
 				comp_notice("client request to switch mode");
 				ret = cb_compositor_switch_mode(comp, pipe,
 						layout->cfg[i].mode_handle);
+				if (ret) {
+					comp_err("failed to switch mode");
+				}
+			} else if (layout->cfg[i].mr.w && layout->cfg[i].mr.h &&
+				   layout->cfg[i].mr.refresh &&
+				   layout->cfg[i].mr.pixel_freq) {
+				comp_notice("client request to switch mode "
+					    "by given param %ux%u@%u %u",
+					    layout->cfg[i].mr.w,
+					    layout->cfg[i].mr.h,
+					    layout->cfg[i].mr.refresh,
+					    layout->cfg[i].mr.pixel_freq);
+				ret = cb_compositor_switch_mode_ext(comp, pipe,
+						&layout->cfg[i].mr);
 				if (ret) {
 					comp_err("failed to switch mode");
 				}
@@ -5655,6 +5745,7 @@ struct compositor *compositor_create(char *device_name,
 	c->base.enumerate_timing = cb_compositor_enumerate_timing;
 	c->base.create_custom_timing = cb_compositor_create_custom_timing;
 	c->base.switch_timing = cb_compositor_switch_mode;
+	c->base.switch_timing_by_user_request = cb_compositor_switch_mode_ext;
 	c->base.set_desktop_layout = cb_compositor_set_desktop_layout;
 	c->base.get_desktop_layout = cb_compositor_get_desktop_layout;
 	c->base.hide_mouse_cursor = cb_compositor_hide_mouse_cursor;
