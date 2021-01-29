@@ -23,6 +23,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
+#include <sys/syscall.h>
+#include <sys/types.h>
 #include <unistd.h>
 #include <assert.h>
 #include <errno.h>
@@ -377,7 +379,7 @@ static void stop(struct cb_client *client)
 {
 	struct client *cli = to_client(client);
 
-	client_debug(cli, "stop run");
+	client_notice(cli, "stop run");
 	cli->exit = true;
 }
 
@@ -880,6 +882,59 @@ static s32 set_destroyed_cb(struct cb_client *client, void *userdata,
 	return 0;
 }
 
+static s32 layout_check(struct cb_client *client)
+{
+	struct client *cli = to_client(client);
+	bool start_from_zero;
+	struct cb_client_display *disp;
+	s32 i;
+
+	for (i = 0; i < client->count_displays; i++) {
+		disp = &client->displays[i];
+		if (disp->desktop_rc.w > 4096 || disp->desktop_rc.h > 2160 ||
+		    disp->desktop_rc.w == 0 || disp->desktop_rc.h == 0) {
+			client_err(cli, "desktop rc[%d] out of range. %ux%u",
+				   i, disp->desktop_rc.w, disp->desktop_rc.h);
+			return -ERANGE;
+		}
+	}
+
+	for (i = 0; i < client->count_displays; i++) {
+		disp = &client->displays[i];
+		if (memcmp(&client->displays[0].desktop_rc,
+			   &disp->desktop_rc, sizeof(struct cb_rect))) {
+			break;
+		}
+	}
+
+	if (i < client->count_displays) {
+		start_from_zero = true;
+		for (i = 0; i < client->count_displays; i++) {
+			disp = &client->displays[i];
+			if (disp->desktop_rc.pos.x ||
+			    disp->desktop_rc.pos.y) {
+				start_from_zero = false;
+				break;
+			}
+		}
+		if (start_from_zero) {
+			client_err(cli, "illegal layout");
+			for (i = 0; i < client->count_displays; i++) {
+				disp = &client->displays[i];
+				client_err(cli, "desktop rc[%d] %d,%d "
+					   "%ux%u", i,
+					   disp->desktop_rc.pos.x,
+					   disp->desktop_rc.pos.y,
+					   disp->desktop_rc.w,
+					   disp->desktop_rc.h);
+			}
+			return -EINVAL;
+		}
+	}
+
+	return 0;
+}
+
 static s32 change_layout(struct cb_client *client)
 {
 	struct client *cli = to_client(client);
@@ -895,23 +950,18 @@ static s32 change_layout(struct cb_client *client)
 
 	cli->shell.cmd = CB_SHELL_CANVAS_LAYOUT_SETTING;
 	cli->shell.value.layout.count_heads = client->count_displays;
-	client_debug(cli, "count_displays: %d", client->count_displays);
+	client_notice(cli, "count_displays: %d", client->count_displays);
+	if ((ret = layout_check(client)) < 0)
+		return ret;
+
 	for (i = 0; i < client->count_displays; i++) {
 		disp = &client->displays[i];
-		if (disp->desktop_rc.w > 4096 || disp->desktop_rc.h > 2160 ||
-		    disp->desktop_rc.w == 0 || disp->desktop_rc.h == 0) {
-			client_err(cli, "desktop rc[%d] out of range. %ux%u",
-				   i, disp->desktop_rc.w, disp->desktop_rc.h);
-			return -ERANGE;
-		}
-	}
-	for (i = 0; i < client->count_displays; i++) {
-		disp = &client->displays[i];
-		client_debug(cli, "desktop rc[%d] %d,%d %ux%u", i,
-			     disp->desktop_rc.pos.x,
-			     disp->desktop_rc.pos.y,
-			     disp->desktop_rc.w,
-			     disp->desktop_rc.h);
+		client_notice(cli, "desktop rc[%d] disp pipe %d %d,%d %ux%u", i,
+			      disp->pipe,
+			      disp->desktop_rc.pos.x,
+			      disp->desktop_rc.pos.y,
+			      disp->desktop_rc.w,
+			      disp->desktop_rc.h);
 		memcpy(&cli->shell.value.layout.cfg[i].desktop_rc,
 		       &disp->desktop_rc, sizeof(struct cb_rect));
 		client_debug(cli, "input rc[%d] %d,%d %ux%u", i,
@@ -919,6 +969,7 @@ static s32 change_layout(struct cb_client *client)
 			     disp->input_rc.pos.y,
 			     disp->input_rc.w,
 			     disp->input_rc.h);
+		cli->shell.value.layout.cfg[i].pipe = disp->pipe;
 		memcpy(&cli->shell.value.layout.cfg[i].input_rc,
 		       &disp->input_rc, sizeof(struct cb_rect));
 		if (disp->pending_mode) {
@@ -1092,10 +1143,10 @@ static s32 query_layout(struct cb_client *client)
 		return -EINVAL;
 	}
 
-	client_debug(cli, "Query layout heads nr(%d) cfg[%d] cfg[%d]",
-		     cli->shell.value.layout.count_heads,
-		     cli->shell.value.layout.cfg[0].pipe,
-		     cli->shell.value.layout.cfg[1].pipe);
+	client_notice(cli, "Query layout heads nr(%d) cfg[%d] cfg[%d]",
+		      cli->shell.value.layout.count_heads,
+		      cli->shell.value.layout.cfg[0].pipe,
+		      cli->shell.value.layout.cfg[1].pipe);
 	
 	length = cli->shell_tx_len;
 
@@ -1994,6 +2045,7 @@ static s32 shell_proc(struct client *cli, u8 *buf)
 				cli->shell.value.layout.count_heads;
 			for (i = 0; i < cli->base.count_displays; i++) {
 				cfg = &cli->shell.value.layout.cfg[i];
+				client_notice(cli, "cfg pipe: %d", cfg->pipe);
 				disp = &cli->base.displays[i];
 				disp->pipe = cfg->pipe;
 				memcpy(&disp->desktop_rc, &cfg->desktop_rc,
@@ -2031,6 +2083,7 @@ static s32 shell_proc(struct client *cli, u8 *buf)
 		}
 		for (j = 0; j < cli->shell.value.layout.count_heads; j++) {
 			cfg = &cli->shell.value.layout.cfg[j];
+			client_notice(cli, "cfg pipe: %d", cfg->pipe);
 			for (i = 0; i < cli->base.count_displays; i++) {
 				disp = &cli->base.displays[i];
 				if (cfg->pipe == disp->pipe) {
@@ -2600,7 +2653,7 @@ struct cb_client *cb_client_create(s32 seat)
 	cli->debug_level = CB_LOG_NOTICE;
 
 	memset(cli->pid_name, 0, 9);
-	sprintf(cli->pid_name, "%08X", getpid());
+	sprintf(cli->pid_name, "%08lX", syscall(SYS_gettid));
 
 	memset(name, 0, 64);
 	snprintf(name, 64, "%s/%s-%d", LOG_SERVER_NAME_PREFIX,
