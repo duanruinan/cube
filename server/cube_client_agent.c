@@ -1441,13 +1441,15 @@ static void shell_proc(struct cb_client_agent *client, u8 *buf)
 			client->c, shell_info.value.dbg_flags.client_flag);
 		break;
 	case CB_SHELL_CANVAS_LAYOUT_SETTING:
-		clia_debug("setting layout. nr: %d",
-			   shell_info.value.layout.count_heads);
+		clia_notice("setting layout. nr: %d",
+			    shell_info.value.layout.count_heads);
 		for (i = 0; i < shell_info.value.layout.count_heads; i++) {
 			rc = &shell_info.value.layout.cfg[i].desktop_rc;
-			clia_debug("\tdesktop[%d]: %d,%d %ux%u mode: %p", i,
-				   rc->pos.x, rc->pos.y, rc->w, rc->h,
-				   shell_info.value.layout.cfg[i].mode_handle);
+			clia_notice("\tdesktop[%d]: pipe (%d) %d,%d %ux%u "
+				    "mode: %p", i,
+				    shell_info.value.layout.cfg[i].pipe,
+				    rc->pos.x, rc->pos.y, rc->w, rc->h,
+				    shell_info.value.layout.cfg[i].mode_handle);
 		}
 		client->c->set_desktop_layout(client->c,
 					      &shell_info.value.layout);
@@ -1460,9 +1462,11 @@ static void shell_proc(struct cb_client_agent *client, u8 *buf)
 					      &shell_info.value.layout);
 		for (i = 0; i < shell_info.value.layout.count_heads; i++) {
 			rc = &shell_info.value.layout.cfg[i].desktop_rc;
-			clia_debug("\tdesktop[%d]: %d,%d %ux%u mode: %p", i,
-				   rc->pos.x, rc->pos.y, rc->w, rc->h,
-				   shell_info.value.layout.cfg[i].mode_handle);
+			clia_notice("\tdesktop[%d]: pipe (%d) %d,%d %ux%u "
+				    "mode: %p", i,
+				    shell_info.value.layout.cfg[i].pipe,
+				    rc->pos.x, rc->pos.y, rc->w, rc->h,
+				    shell_info.value.layout.cfg[i].mode_handle);
 		}
 		cb_client_agent_send_shell_cmd(client, &shell_info);
 		break;
