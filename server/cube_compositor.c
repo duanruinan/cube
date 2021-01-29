@@ -1421,6 +1421,28 @@ static void enable_primary_renderer(struct cb_output *o)
 	o->primary_renderer_enable_pending = true;
 }
 
+static void dump_planes(struct cb_compositor *c, struct cb_output *o)
+{
+	struct cb_client_agent *client;
+	struct cb_surface *s;
+	struct cb_view *v;
+	struct plane *plane;
+
+	list_for_each_entry(client, &c->clients, link) {
+		comp_warn("check client %p's plane of pipe %d", client,
+			  o->pipe);
+		list_for_each_entry(s, &client->surfaces, link) {
+			v = s->view;
+			plane = v->planes[o->pipe];
+			comp_warn("Plane: %p", plane);
+			if (plane) {
+				comp_warn("Plane info: Type: %u zpos: %lu",
+					  plane->type, plane->zpos);
+			}
+		}
+	}
+}
+
 static bool prepare_dma_buf_planes(struct cb_surface *surface,
 				   struct cb_buffer *buffer)
 {
@@ -1448,18 +1470,30 @@ static bool prepare_dma_buf_planes(struct cb_surface *surface,
 
 		if (!(mask & (1U << o->pipe))) {
 			if (plane) {
-				if (plane != o->primary_plane)
+				if (plane != o->primary_plane) {
+					comp_info("put plane zpos: %d, "
+						  "type %d",
+						  plane->zpos,
+						  plane->type);
 					put_free_output_plane(o, plane);
-				else
+				} else {
+					comp_warn("enable primary "
+						  "render");
 					enable_primary_renderer(o);
+				}
 				view->planes[pipe] = NULL;
 			}
 			continue;
 		}
 
 		if (plane) {
-			if (plane != o->primary_plane)
+			if (plane != o->primary_plane) {
+				comp_info("put plane zpos: %d, "
+					  "type %d",
+					  plane->zpos,
+					  plane->type);
 				put_free_output_plane(o, plane);
+			}
 			view->planes[pipe] = NULL;
 		}
 
@@ -1470,12 +1504,13 @@ static bool prepare_dma_buf_planes(struct cb_surface *surface,
 					       view->zpos);
 		}
 		if (!plane) {
-			comp_warn("cannot find plane.");
+			comp_warn("cannot find plane for output %d", o->pipe);
 			if (primary_support_fmt(o, buffer->info.pix_fmt)) {
 				plane = o->primary_plane;
 				if (o->primary_renderer_disabled) {
 					comp_warn("output %d's primary already "
 						  "be used", o->pipe);
+					dump_planes(c, o);
 					return false;
 				}
 				comp_warn("Use primary");
@@ -1509,8 +1544,8 @@ static bool prepare_dma_buf_planes(struct cb_surface *surface,
 				return false;
 			}
 		} else {
-			comp_debug("get this plane zpos: %d, type %d",
-				   plane->zpos, plane->type);
+			comp_info("get this plane zpos: %d, type %d",
+				  plane->zpos, plane->type);
 			get_free_output_plane(o, plane);
 			view->planes[pipe] = plane;
 			if (!plane->scale_support) {
@@ -2693,6 +2728,16 @@ static void cb_compositor_get_desktop_layout(struct compositor *comp,
 			sizeof(struct cb_rect));
 		memcpy(&layout->cfg[i].input_rc, &o->g_desktop_rc,
 			sizeof(struct cb_rect));
+		comp_notice("\t----- desktop[%d]: %d,%d %ux%u", i,
+			    layout->cfg[i].desktop_rc.pos.x,
+			    layout->cfg[i].desktop_rc.pos.y,
+			    layout->cfg[i].desktop_rc.w,
+			    layout->cfg[i].desktop_rc.h);
+		comp_notice("\t----- input[%d]: %d,%d %ux%u", i,
+			    layout->cfg[i].input_rc.pos.x,
+			    layout->cfg[i].input_rc.pos.y,
+			    layout->cfg[i].input_rc.w,
+			    layout->cfg[i].input_rc.h);
 		name = comp->get_monitor_name(comp, o->pipe);
 		if (name)
 			strncpy(layout->cfg[i].monitor_name,
@@ -2745,6 +2790,7 @@ static void cb_compositor_set_desktop_layout(struct compositor *comp,
 
 	for (i = 0; i < layout->count_heads; i++) {
 		pipe = layout->cfg[i].pipe;
+		comp_notice("cfg %d pipe %d", i, layout->cfg[i].pipe);
 		for (j = 0; j < c->count_outputs; j++) {
 			o = c->outputs[j];
 			if (o->pipe != pipe)
@@ -2758,18 +2804,18 @@ static void cb_compositor_set_desktop_layout(struct compositor *comp,
 			} else {
 				memcpy(rc_dst, rc_src, sizeof(*rc_dst));
 			}
-			printf("\t----- desktop[%d]: %d,%d %ux%u\n", pipe,
-				rc_dst->pos.x, rc_dst->pos.y,
-				rc_dst->w, rc_dst->h);
+			comp_notice("\t----- desktop[%d]: %d,%d %ux%u", pipe,
+				    rc_dst->pos.x, rc_dst->pos.y,
+				    rc_dst->w, rc_dst->h);
 			if (!rc_src_input->w || !rc_src_input->h) {
 				memset(rc_dst_input, 0, sizeof(*rc_dst_input));
 			} else {
 				memcpy(rc_dst_input, rc_src_input,
 				       sizeof(*rc_dst_input));
 			}
-			printf("\t----- input[%d]: %d,%d %ux%u\n", pipe,
-				rc_dst_input->pos.x, rc_dst_input->pos.y,
-				rc_dst_input->w, rc_dst_input->h);
+			comp_notice("\t----- input[%d]: %d,%d %ux%u", pipe,
+				    rc_dst_input->pos.x, rc_dst_input->pos.y,
+				    rc_dst_input->w, rc_dst_input->h);
 			update_crtc_view_port(o);
 			/* update renderer's layout */
 			if (o->enabled) {
@@ -4984,7 +5030,7 @@ static s32 cb_compositor_commit_dma_buf(struct compositor *comp,
 			if (view->output_mask & (1U << o->pipe)) {
 				if (plane) {
 					if (plane != o->primary_plane) {
-						comp_warn("put plane zpos: %d, "
+						comp_info("put plane zpos: %d, "
 							  "type %d",
 							  plane->zpos,
 							  plane->type);
@@ -5023,8 +5069,24 @@ static s32 cb_compositor_commit_dma_buf(struct compositor *comp,
 		scanout_buffer_dirty_init(surface->buffer_pending);
 		for (i = 0; i < c->count_outputs; i++) {
 			o = c->outputs[i];
-			if (!o->enabled)
+			if (!o->enabled) {
+				pipe = o->pipe;
+				plane = view->planes[pipe];
+				if (plane) {
+					if (plane != o->primary_plane) {
+						comp_info("put plane zpos: %d, "
+							  "type %d",
+							  plane->zpos,
+							  plane->type);
+						put_free_output_plane(o, plane);
+					} else {
+						comp_warn("enable primary "
+							  "render");
+						enable_primary_renderer(o);
+					}
+				}
 				continue;
+			}
 			if (lock_pipe && o->pipe != pipe_locked)
 				continue;
 			comp_debug("view->output_mask: %08X",view->output_mask);
@@ -5064,8 +5126,14 @@ static s32 cb_compositor_commit_dma_buf(struct compositor *comp,
 				/* put plane it used. */
 				if (plane) {
 					if (plane != o->primary_plane) {
+						comp_info("put plane zpos: %d, "
+							  "type %d",
+							  plane->zpos,
+							  plane->type);
 						put_free_output_plane(o, plane);
 					} else {
+						comp_warn("enable primary "
+							  "render");
 						enable_primary_renderer(o);
 					}
 					view->planes[pipe] = NULL;
