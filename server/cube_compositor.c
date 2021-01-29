@@ -5084,6 +5084,7 @@ static s32 cb_compositor_commit_dma_buf(struct compositor *comp,
 							  "render");
 						enable_primary_renderer(o);
 					}
+					view->planes[pipe] = NULL;
 				}
 				continue;
 			}
