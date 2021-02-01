@@ -1405,6 +1405,7 @@ static void show_dummy(struct cb_output *output)
 
 static void disable_primary_renderer(struct cb_output *o)
 {
+	o->primary_renderer_enable_pending = false;
 	if (o->primary_renderer_disabled || o->primary_renderer_disable_pending)
 		return;
 
@@ -1414,6 +1415,7 @@ static void disable_primary_renderer(struct cb_output *o)
 
 static void enable_primary_renderer(struct cb_output *o)
 {
+	o->primary_renderer_disable_pending = false;
 	if (!o->primary_renderer_disabled || o->primary_renderer_enable_pending)
 		return;
 
