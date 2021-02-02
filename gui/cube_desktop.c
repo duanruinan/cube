@@ -102,6 +102,8 @@ struct cube_desktop {
 
 	s32 pipe;
 	struct logo_desc *logo;
+
+	bool create_bo_pending;
 };
 
 static void usage(void)
@@ -352,10 +354,20 @@ static void layout_changed_cb(void *userdata)
 		printf("Duplicated mode.\n");
 	}
 	update_desktop_rc(desktop);
-
+	if (desktop->create_bo_pending) {
+		printf("There is a create bo pending state already.\n");
+		return;
+	}
 	printf("switch bo cur\n");
 	desktop->bo_cur = 1 - desktop->bo_cur;
 	bo_info = desktop->bos[desktop->bo_cur];
+	if (bo_info->bo && bo_info->bo_id) {
+		printf("Destroy old bo directly\n");
+		cli->destroy_bo(cli, bo_info->bo_id);
+		cb_client_shm_bo_destroy(bo_info->bo);
+		memset(bo_info, 0, sizeof(*bo_info));
+	}
+	desktop->create_bo_pending = true;
 	bo_info->bo = cb_client_shm_bo_create(CB_PIX_FMT_ARGB8888,
 					desktop->desktop_rc.w,
 					desktop->desktop_rc.h,
@@ -500,6 +512,8 @@ static void bo_created_cb(bool success, void *userdata, u64 bo_id)
 		return;
 	}
 
+	printf("Bo created.\n");
+	desktop->create_bo_pending = false;
 	bo_info = desktop->bos[desktop->bo_cur];
 	printf("bo_id: %016lX\n", bo_id);
 	bo_info->bo_id = bo_id;
@@ -554,6 +568,7 @@ static void view_created_cb(bool success, void *userdata, u64 view_id)
 		desktop->bos[i] = calloc(1, sizeof(struct bo_info));
 		if (!desktop->bos[i])
 			goto err;
+		memset(desktop->bos[i], 0, sizeof(struct bo_info));
 	}
 	bo_info = desktop->bos[desktop->bo_cur];
 	bo_info->bo = cb_client_shm_bo_create(CB_PIX_FMT_ARGB8888,
