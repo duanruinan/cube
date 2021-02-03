@@ -44,6 +44,7 @@
 #include <cube_scanout.h>
 
 #define USE_DRM_PRIME 1
+#define PRESET_MODE_CFG "/etc/preset_mode.cfg"
 
 /* static enum cb_log_level drm_dbg = CB_LOG_DEBUG; */
 static enum cb_log_level drm_dbg = CB_LOG_NOTICE;
@@ -602,6 +603,9 @@ struct drm_scanout {
 	void *ps_cache;
 	void *os_cache;
 	void *pls_cache;
+
+	bool check_preset_mode;
+	u32 preset_width, preset_height, preset_min_refresh, preset_max_refresh;
 };
 
 static inline struct drm_scanout *to_dev(struct scanout *so)
@@ -3161,11 +3165,13 @@ static void drm_head_update_modes(struct drm_head *head)
 	struct drm_output *output;
 	struct drm_mode *mode, *new_mode;
 	struct drm_mode *custom_mode;
+	struct drm_scanout *dev;
 	bool preserved = false;
 	s32 i;
 	drmModeConnectorPtr conn;
 
 	output = to_drm_output(head->base.output);
+	dev = output->dev;
 
 	/* preserve custom mode */
 	if (output->custom_mode) {
@@ -3212,24 +3218,12 @@ static void drm_head_update_modes(struct drm_head *head)
 
 	new_mode = NULL;
 
-	/* for vanxum */
-	list_for_each_entry(mode, &output->modes, link) {
-		if (mode->base.width == 1920 &&
-		    mode->base.height == 1080 &&
-		    mode->base.vrefresh >= 140 &&
-		    mode->base.vrefresh <= 144) {
-			new_mode = mode;
-			break;
-		}
-	}
-
-	/* for vanxum */
-	if (!new_mode) {
+	if (dev->check_preset_mode) {
 		list_for_each_entry(mode, &output->modes, link) {
-			if (mode->base.width == 1920 &&
-			    mode->base.height == 1080 &&
-			    mode->base.vrefresh >= 120 &&
-			    mode->base.vrefresh < 140) {
+			if (mode->base.width == dev->preset_width &&
+			    mode->base.height == dev->preset_height &&
+			    mode->base.vrefresh >= dev->preset_min_refresh &&
+			    mode->base.vrefresh <= dev->preset_max_refresh) {
 				new_mode = mode;
 				break;
 			}
@@ -3662,6 +3656,100 @@ static u32 drm_get_clock_type(struct scanout *so)
 	}
 }
 
+static void load_preset_mode(struct drm_scanout *dev)
+{
+	s32 fd;
+	char *buf, *p, *q;
+
+	if (!dev)
+		return;
+
+	fd = open(PRESET_MODE_CFG, O_RDONLY, 0644);
+	if (fd < 0) {
+		dev->check_preset_mode = false;
+		drm_warn("no preset mode %s", strerror(errno));
+		return;
+	}
+
+	dev->check_preset_mode = true;
+	buf = malloc(512);
+	if (!buf) {
+		drm_err("cannot alloc memory for load preset mode");
+		dev->check_preset_mode = false;
+		close(fd);
+		return;
+	}
+	memset(buf, 0, 512);
+
+	if (read(fd, buf, 511) < 0) {
+		drm_err("cannot read preset mode config file. %s",
+			strerror(errno));
+		dev->check_preset_mode = false;
+		goto out;
+	}
+	p = buf;
+
+	/* find width */
+	q = p;
+	while (*q != '\n')
+		q++;
+	if (*q == '\n') {
+		*q = '\0';
+		q++;
+	} else {
+		drm_err("cannot find preset width");
+		dev->check_preset_mode = false;
+		goto out;
+	}
+	dev->preset_width = atoi(p);
+	p = p + strlen(p) + 1;
+
+	/* find height */
+	q = p;
+	while ((*q) != '\n' && (*q) != 0)
+		q++;
+	if (*q == '\n') {
+		*q = '\0';
+		q++;
+	} else {
+		drm_err("cannot find preset refresh");
+		dev->check_preset_mode = false;
+		goto out;
+	}
+	dev->preset_height = atoi(p);
+	p = p + strlen(p) + 1;
+
+	/* find min refresh */
+	q = p;
+	while ((*q) != '\n' && (*q) != 0)
+		q++;
+	if (*q == '\n') {
+		*q = '\0';
+		q++;
+	}
+	dev->preset_min_refresh = atoi(p);
+	p = p + strlen(p) + 1;
+
+	/* find max refresh */
+	q = p;
+	while ((*q) != '\n' && (*q) != 0)
+		q++;
+	if (*q == '\n') {
+		*q = '\0';
+		q++;
+	}
+	dev->preset_max_refresh = atoi(p);
+	p = p + strlen(p) + 1;
+
+	drm_warn("preset mode %ux%up@(%u-%u)", dev->preset_width,
+		 dev->preset_height, dev->preset_min_refresh,
+		 dev->preset_max_refresh);
+
+out:
+	free(buf);
+	close(fd);
+}
+
 struct scanout *scanout_create(const char *dev_path, struct cb_event_loop *loop)
 {
 	struct drm_scanout *dev = NULL;
@@ -3792,6 +3880,8 @@ struct scanout *scanout_create(const char *dev_path, struct cb_event_loop *loop)
 	dev->base.add_buffer_flip_notify = drm_add_buffer_flip_notify;
 	dev->base.add_buffer_complete_notify = drm_add_buffer_complete_notify;
 	dev->base.get_clock_type = drm_get_clock_type;
+
+	load_preset_mode(dev);
 
 	drm_info("Create scanout device complete.");
 	return &dev->base;
