@@ -471,6 +471,11 @@ s32 main(s32 argc, char **argv)
 	struct cb_listener buffer_complete_l_1 = {
 		.notify = buffer_complete_cb,
 	};
+
+	INIT_LIST_HEAD(&buffer_flipped_l_0.link);
+	INIT_LIST_HEAD(&buffer_flipped_l_1.link);
+	INIT_LIST_HEAD(&buffer_complete_l_0.link);
+	INIT_LIST_HEAD(&buffer_complete_l_1.link);
 	
 	if (argc == 6) {
 		cfg.head_index = atoi(argv[1]);
