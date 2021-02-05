@@ -413,6 +413,10 @@ static void layout_query_cb(void *userdata)
 			disp->width_preferred, disp->height_preferred,
 			disp->vrefresh_preferred,
 			disp->pixel_freq_preferred / 1000.0f);
+		printf("\tCurrent: %ux%u@%u %0.3fMHz\n",
+			disp->width_current, disp->height_current,
+			disp->vrefresh_current,
+			disp->pixel_freq_current / 1000.0f);
 		printf("\tenabled: %d\n", disp->enabled);
 	}
 
@@ -463,6 +467,10 @@ static void layout_changed_cb(void *userdata)
 			disp->width_preferred, disp->height_preferred,
 			disp->vrefresh_preferred,
 			disp->pixel_freq_preferred / 1000.0f);
+		printf("\tCurrent: %ux%u@%u %0.3fMHz\n",
+			disp->width_current, disp->height_current,
+			disp->vrefresh_current,
+			disp->pixel_freq_current / 1000.0f);
 		printf("\tenabled: %d\n", disp->enabled);
 	}
 	client->stop(client);

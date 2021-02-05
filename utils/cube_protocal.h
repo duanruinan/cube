@@ -360,6 +360,8 @@ struct output_config {
 	char connector_name[CB_CONNECTOR_NAME_MAX_LEN];
 	u16 width_preferred, height_preferred;
 	u32 vrefresh_preferred, pixel_freq_preferred;
+	u16 width_current, height_current;
+	u32 vrefresh_current, pixel_freq_current;
 };
 
 struct cb_canvas_layout {

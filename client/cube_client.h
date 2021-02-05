@@ -59,6 +59,9 @@ struct cb_client_display {
 	u16 width_preferred, height_preferred;
 	u32 vrefresh_preferred;
 	u32 pixel_freq_preferred;
+	u16 width_current, height_current;
+	u32 vrefresh_current;
+	u32 pixel_freq_current;
 
 	bool hotplug_occur; /* read only, auto cleared after cb */
 	struct list_head modes; /* read only */

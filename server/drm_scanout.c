@@ -520,6 +520,7 @@ struct drm_output {
 	bool modeset_pending;
 	bool disable_pending;
 	struct drm_mode *current_mode, *pending_mode;
+	struct cb_mode last_mode;
 	struct list_head modes;
 	struct drm_mode *custom_mode;
 
@@ -545,6 +546,9 @@ struct drm_head {
 	struct drm_scanout *dev;
 
 	char monitor_name[MONITOR_NAME_LEN];
+	/* last monitor name is used to judge whether monitor is changed.
+	 * if monitor is not changed, use the last video timing. */
+	char last_monitor_name[MONITOR_NAME_LEN];
 
 	struct {
 		u8 *data;
@@ -1384,6 +1388,14 @@ static s32 drm_output_commit(drmModeAtomicReq *req,
 			printf("[output %d] refresh time: %u (ns)\n",
 					output->base.index,
 					output->base.refresh_nsec);
+			output->last_mode.width =
+					output->pending_mode->base.width;
+			output->last_mode.height =
+					output->pending_mode->base.height;
+			output->last_mode.vrefresh =
+					output->pending_mode->base.vrefresh;
+			output->last_mode.pixel_freq =
+					output->pending_mode->base.pixel_freq;
 			output->pending_mode = NULL;
 			if (!output->current_mode->blob_id) {
 				drmModeCreatePropertyBlob(output->dev->fd,
@@ -3167,11 +3179,28 @@ static void drm_head_update_modes(struct drm_head *head)
 	struct drm_mode *custom_mode;
 	struct drm_scanout *dev;
 	bool preserved = false;
+	bool changed = false;
 	s32 i;
 	drmModeConnectorPtr conn;
 
 	output = to_drm_output(head->base.output);
 	dev = output->dev;
+
+	if (strlen(head->monitor_name) > 0) {
+		if (strlen(head->last_monitor_name) > 0) {
+			drm_info("last monitor: %s", head->last_monitor_name);
+			drm_info("current monitor name: %s",head->monitor_name);
+			if (strcmp(head->last_monitor_name,
+				   head->monitor_name)) {
+				drm_notice("monitor changed.");
+				changed = true;
+			} else {
+				drm_notice("monitor unchange.");
+			}
+		}
+	}
+
+	strcpy(head->last_monitor_name, head->monitor_name);
 
 	/* preserve custom mode */
 	if (output->custom_mode) {
@@ -3218,7 +3247,20 @@ static void drm_head_update_modes(struct drm_head *head)
 
 	new_mode = NULL;
 
-	if (dev->check_preset_mode) {
+	if (!changed) { /* monitor is not changed. */
+		list_for_each_entry(mode, &output->modes, link) {
+			if (mode->base.width == output->last_mode.width &&
+			    mode->base.height == output->last_mode.height &&
+			    mode->base.vrefresh == output->last_mode.vrefresh &&
+			    mode->base.pixel_freq ==
+					output->last_mode.pixel_freq) {
+				new_mode = mode;
+				break;
+			}
+		}
+	}
+
+	if (dev->check_preset_mode && !new_mode) {
 		list_for_each_entry(mode, &output->modes, link) {
 			if (mode->base.width == dev->preset_width &&
 			    mode->base.height == dev->preset_height &&

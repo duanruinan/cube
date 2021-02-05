@@ -1975,6 +1975,14 @@ static s32 shell_proc(struct client *cli, u8 *buf)
 					cfg->vrefresh_preferred;
 				disp->pixel_freq_preferred =
 					cfg->pixel_freq_preferred;
+				disp->width_current =
+					cfg->width_current;
+				disp->height_current =
+					cfg->height_current;
+				disp->vrefresh_current =
+					cfg->vrefresh_current;
+				disp->pixel_freq_current =
+					cfg->pixel_freq_current;
 				strncpy(disp->monitor_name,
 					cfg->monitor_name,
 					CB_MONITOR_NAME_MAX_LEN - 1);
@@ -2016,6 +2024,14 @@ static s32 shell_proc(struct client *cli, u8 *buf)
 						cfg->vrefresh_preferred;
 					disp->pixel_freq_preferred =
 						cfg->pixel_freq_preferred;
+					disp->width_current =
+						cfg->width_current;
+					disp->height_current =
+						cfg->height_current;
+					disp->vrefresh_current =
+						cfg->vrefresh_current;
+					disp->pixel_freq_current =
+						cfg->pixel_freq_current;
 					strncpy(disp->monitor_name,
 						cfg->monitor_name,
 						CB_MONITOR_NAME_MAX_LEN - 1);
@@ -2062,6 +2078,14 @@ static s32 shell_proc(struct client *cli, u8 *buf)
 					cfg->vrefresh_preferred;
 				disp->pixel_freq_preferred =
 					cfg->pixel_freq_preferred;
+				disp->width_current =
+					cfg->width_current;
+				disp->height_current =
+					cfg->height_current;
+				disp->vrefresh_current =
+					cfg->vrefresh_current;
+				disp->pixel_freq_current =
+					cfg->pixel_freq_current;
 				strncpy(disp->monitor_name,
 					cfg->monitor_name,
 					CB_MONITOR_NAME_MAX_LEN - 1);
@@ -2104,6 +2128,14 @@ static s32 shell_proc(struct client *cli, u8 *buf)
 						cfg->vrefresh_preferred;
 					disp->pixel_freq_preferred =
 						cfg->pixel_freq_preferred;
+					disp->width_current =
+						cfg->width_current;
+					disp->height_current =
+						cfg->height_current;
+					disp->vrefresh_current =
+						cfg->vrefresh_current;
+					disp->pixel_freq_current =
+						cfg->pixel_freq_current;
 					strncpy(disp->monitor_name,
 						cfg->monitor_name,
 						CB_MONITOR_NAME_MAX_LEN - 1);

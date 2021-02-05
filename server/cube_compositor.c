@@ -2763,6 +2763,27 @@ static void cb_compositor_get_desktop_layout(struct compositor *comp,
 			layout->cfg[i].vrefresh_preferred = mode->vrefresh;
 			layout->cfg[i].pixel_freq_preferred = mode->pixel_freq;
 		}
+
+		if (o->pending_mode) {
+			layout->cfg[i].width_current =
+				o->pending_mode->width;
+			layout->cfg[i].height_current =
+				o->pending_mode->height;
+			layout->cfg[i].vrefresh_current =
+				o->pending_mode->vrefresh;
+			layout->cfg[i].pixel_freq_current =
+				o->pending_mode->pixel_freq;
+		} else {
+			mode = o->output->get_current_mode(o->output);
+			if (mode) {
+				layout->cfg[i].width_current = mode->width;
+				layout->cfg[i].height_current = mode->height;
+				layout->cfg[i].vrefresh_current =
+					mode->vrefresh;
+				layout->cfg[i].pixel_freq_current =
+					mode->pixel_freq;
+			}
+		}
 	}
 }
 
